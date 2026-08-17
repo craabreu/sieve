@@ -22,6 +22,7 @@ evaluation protocol); those are listed as open in §9.
 | Descriptive moments only; shrinkage derived | §4 |
 | Immutable models combined by a merge monoid | §5 |
 | Bottom-up inference with early termination | §6 |
+| Vectorised fit: void-view dedupe + two-pass `bincount` | §7 |
 
 §3.6 records a design option that has been **measured but not adopted** — coarsening the neighbour
 attribute schema. Figures quoted elsewhere in this document as "measured on cosmobase" come from
@@ -84,8 +85,10 @@ chain for free, which is why §3.5 costs nothing structurally.
 level-$(k-1)$ identifier. Partitions are nested, $\Pi_0\succeq\Pi_1\succeq\cdots\succeq\Pi_L$, and each
 node's classes form a chain $C_0(v)\supseteq C_1(v)\supseteq\cdots\supseteq C_L(v)$ [Kriege2016WLOA].
 
-Consequently every class has **exactly one** parent. This is an invariant worth asserting, not
-assuming — a violation means a hash collision.
+Consequently every class has **exactly one** parent. Whether this needs asserting depends on how ids
+are minted: it is *structural* when they come from deduplicating signatures that contain the parent
+(§7.2), and an invariant to check when they come from truncated digests, where a violation signals a
+collision.
 
 **2.2 Matched depths form a prefix.** If $h_k(v)\notin D_k$ then $h_{k+1}(v)\notin D_{k+1}$.
 
@@ -320,8 +323,13 @@ Bessel's correction is an estimator adjustment, not a property of the data held.
 un-applying it on every merge is doing inference in the storage layer — the same reason shrunk means
 are excluded from stored state (§4.2).
 
-**Accumulation.** Use Welford's recurrence [Welford1962Variance], not $\sum y^2-(\sum y)^2/n$. For a
-new observation $y$ against running $(n,\bar y,M_2)$:
+**Accumulation.** Never $\sum y^2-(\sum y)^2/n$ — see §7.4. Which stable algorithm to use depends on
+how the data arrives:
+
+- **Batch** (the normal case): the two-pass reduction of §7.3. Faster and simpler than a recurrence,
+  because the whole shard is in memory at once.
+- **Streaming**, one observation at a time: Welford's recurrence [Welford1962Variance], against
+  running $(n,\bar y,M_2)$:
 
 $$
 n'=n+1,\qquad
@@ -331,7 +339,7 @@ M_2'=M_2+\delta\,(y-\bar y')
 $$
 
 The last step uses **both** the old and the new mean; using either one twice is a common and silently
-wrong variant. $M_2$ here is *scratch state during accumulation*; store $\sigma^2=M_2/n$ at the end.
+wrong variant. In both cases $M_2$ is *scratch*; store $\sigma^2=M_2/n$ at the end.
 
 **Variance access.** $s^2=\dfrac{N}{N-1}\,\sigma^2$, **undefined at $N=1$** — return `None`, never
 `0.0`. A stored zero is indistinguishable from a genuinely homogeneous class and silently corrupts
@@ -530,24 +538,135 @@ and it is why the default should not be 1.
 
 ## 7. Fit path
 
+Fitting is fully vectorised: one pass per level over the entire corpus, with no per-molecule and no
+per-atom Python loop. Timings below are cosmobase — 147,412 atoms, 289,774 directed edges, max
+degree 6, levels 0–5, measured 2026-08-17.
+
 ```text
-for each shard / batch:
-    refine all graphs through all L levels, retaining h_0..h_L per node
-        levels 0..m-1  : add one attribute group each  (§3.5)
-        levels m..L    : WL rounds
-    for k = 0..L ascending:
-        intern h_k into vocab[k]
-        Welford-update (count, mean, M2); store sigma^2 = M2/N at the end
-        record parent id from level k-1, asserting uniqueness
+concatenate corpus block-diagonally, build CSR            (§7.1)
+for k = 1..L:  refine all atoms at once                   (§7.2)
+for k = 0..L:  two-pass bincount -> (N, mean, sigma^2)    (§7.3)
+               parent falls out of the deduped signatures
     -> an immutable shard model
-
-reduce shard models pairwise as a balanced tree   (§5.4)
-
-optionally materialize shrunk estimates top-down  (§4.2)
+reduce shard models pairwise as a balanced tree           (§5.4)
+optionally materialise shrunk estimates top-down          (§4.2)
 ```
 
-Fitting is two passes if you want exact allocation without any growth logic: one to build `vocab[k]`,
-one to accumulate. With the merge design, growth logic is unnecessary in either case.
+### 7.1 Corpus layout
+
+Concatenate every molecule into one block-diagonal graph with offset-adjusted indices, so a level is
+a single array operation rather than a loop over molecules. Store edges in CSR order and precompute
+each edge's position within its source atom's adjacency block:
+
+```python
+order  = np.argsort(src, kind="stable")
+deg    = np.bincount(src, minlength=n_atoms)
+indptr = np.concatenate([[0], np.cumsum(deg)])
+slot   = np.arange(n_edges) - indptr[src]     # position within the node's block
+```
+
+`slot` is computed once and reused at every level.
+
+### 7.2 Refinement
+
+```python
+pair = labels[dst] * n_bond + bond            # encode (neighbour label, bond)
+pad  = np.full((n_atoms, max_deg), -1, np.int64)
+pad[src, slot] = pair
+pad.sort(axis=1)                              # canonical multiset; -1 pads sort first
+sig  = np.concatenate([labels[:, None], pad], axis=1)
+labels, uniq_rows = dense_rows(sig)           # dense ids
+parent = uniq_rows[:, 0]                      # column 0 is the parent id
+```
+
+Padding with $-1$ makes the row length uniform while still encoding degree, since a node's pad count
+is fixed. Two consequences worth noting:
+
+- **`parent` is free, and single-parenthood becomes structural.** The parent id is column 0 of the
+  signature, so all members of a class necessarily share it. The assertion §2.1 recommends is
+  redundant on this path — it is only needed when identifiers come from truncated digests.
+- **No cryptographic hashing is required to fit.** Dense ids come from deduplication. Hashing
+  matters only for cross-run stable identifiers at serialisation (§3.3, §3.4).
+
+**Dedupe rows through a void view, not `axis=0`.** This is the whole performance story:
+
+| 6 levels over 147k atoms | time |
+|---|---:|
+| void-view `np.unique` | **0.27 s** |
+| `np.unique(..., axis=0)` | 0.70 s |
+| naive Python dict loop | 0.71 s |
+
+`np.unique(axis=0)` is *no faster than the dict loop*. Viewing each row as a `np.void` scalar and
+deduplicating in 1-D is what buys the 2.6×:
+
+```python
+def dense_rows(mat):
+    m = np.ascontiguousarray(mat)
+    v = m.view(np.dtype((np.void, m.dtype.itemsize * m.shape[1]))).ravel()
+    # numpy returns (unique, index, inverse) in a FIXED order, whatever
+    # order the keywords are passed in
+    uniq, idx, inv = np.unique(v, return_index=True, return_inverse=True)
+    return inv.ravel().astype(np.int64), m[idx]
+```
+
+Per-level breakdown: gather+encode 1.0 ms, scatter 1.5 ms, row-sort 2.8 ms, dedupe 51 ms. Dedupe
+dominates by an order of magnitude; optimising anything else is wasted effort.
+
+### 7.3 Statistics
+
+```python
+N    = np.bincount(labels, minlength=nc)
+S    = np.bincount(labels, weights=y, minlength=nc)
+mean = np.divide(S, N, out=np.zeros(nc), where=N > 0)
+d    = y - mean[labels]                       # centre first, then reduce
+M2   = np.bincount(labels, weights=d * d, minlength=nc)
+sigma2 = np.divide(M2, N, out=np.zeros(nc), where=N > 0)
+```
+
+| level-2 aggregation, 147k atoms → 25,382 classes | time |
+|---|---:|
+| two-pass `bincount` | **1.0 ms** |
+| `reduceat` (including the sort it requires) | 11.8 ms |
+| Welford loop | 109.5 ms |
+
+### 7.4 Two traps
+
+**`reduceat` instead of `bincount`.** It requires the data sorted by group — an $O(n\log n)$ argsort
+`bincount` avoids — and it corrupts empty groups silently. When `starts[i] >= starts[i+1]` it returns
+`y[starts[i]]` rather than $0$:
+
+```text
+labels [0 0 3 3]   y [10 20 30 40]      # classes 1 and 2 empty
+bincount : [30.  0.  0. 70.]
+reduceat : [30. 30. 30. 70.]            <- classes 1,2 silently wrong
+```
+
+Empty groups cannot occur while ids are interned per shard, but they appear the moment a shard is
+indexed against a merged global vocabulary — which is exactly what §5 does. Use `bincount`.
+
+**Power sums instead of centring.** The one-pass form $Q/N-\bar y^2$ with $Q=\sum y^2$ is the obvious
+vectorisation and is unusable, as §4.1 argues on principle and this measures in practice. On targets
+with mean $10^6$ and spread $3$:
+
+| | max rel. error vs Welford | negative variances |
+|---|---:|---:|
+| two-pass `bincount` | 5.4e-08 | 0 |
+| `reduceat` | 5.4e-08 | 0 |
+| power sums | **1.3e+02** | **2** |
+
+Centring costs one extra pass and one gather. The fast-looking formula and the correct formula are
+not the same formula.
+
+### 7.5 Input alignment is the highest-severity failure mode
+
+When targets live in a separate array indexed by atom position, a misalignment between the parsed
+molecule and its target rows corrupts every label with **no error raised**. `MolFromSmiles` does
+preserve the input SMILES heavy-atom order, but `AddHs` appends hydrogens at the end, and any
+canonicalisation round-trip reorders.
+
+Guard it on load: assert per-molecule atom counts match the row slice, and store element symbols
+alongside the targets so atomic numbers can be verified against the parsed molecule. The check costs
+milliseconds and rules out the one bug that otherwise surfaces only as unexplained inaccuracy.
 
 ---
 
