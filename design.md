@@ -23,6 +23,10 @@ evaluation protocol); those are listed as open in §9.
 | Immutable models combined by a merge monoid | §5 |
 | Bottom-up inference with early termination | §6 |
 
+§3.6 records a design option that has been **measured but not adopted** — coarsening the neighbour
+attribute schema. Figures quoted elsewhere in this document as "measured on cosmobase" come from
+that experiment.
+
 ---
 
 ## 1. Notation
@@ -198,9 +202,79 @@ WL level $\ge1$, backing off drops to the full-attribute level $m-1$ and loses *
 information in one step; graded attributes do not soften that transition. The gain is confined to
 nodes whose own attribute vector is unseen.
 
+**How often that actually happens — measured.** On cosmobase (§3.6), under a molecule-level 80/20
+split, global fallback fires for **0.03%** of held-out atoms at $n_{\min}=1$ and **0.11%** at
+$n_{\min}=5$. The depth-0 cliff essentially never occurs on this chemistry, so graded attributes
+help almost nobody here.
+
+That is an in-distribution random split, and the feature is insurance against *shift* — unseen
+elements, unusual charge or protonation states, a corpus that does not resemble the training set —
+which such a split cannot exercise. The construction is cheap and structurally free, so it is kept.
+But it should not be presented as a significant accuracy contribution on cosmobase-like data, and
+any claim to that effect needs an out-of-distribution split behind it.
+
 **Precedent.** Backing off over an ordered set of factors rather than a single context is exactly
 the structure of factored language models with generalized parallel backoff
 [Bilmes2003FactoredLM], including the problem of choosing the order.
+
+### 3.6 Neighbour attribute resolution — evaluated, not adopted
+
+**The idea.** Let neighbours contribute a *coarser* WL state than the centre. The centre keeps the
+full attribute vector; neighbours contribute an element-only chain $g$:
+
+$$
+g_k(u)=H\bigl(g_{k-1}(u),\ \operatorname{MULTISET}\{g_{k-1}(w)\}\bigr),
+\qquad
+h_k(v)=H\bigl(h_{k-1}(v),\ \operatorname{MULTISET}\{\phi(g_{k-1}(u),e_{uv})\}\bigr)
+$$
+
+Note $h_k$ still takes $h_{k-1}$ as an explicit argument, so §2 holds unchanged and this stays a
+single chain — nothing in §4–§7 is affected.
+
+**A degenerate variant to avoid.** If neighbours contribute a *static* coarse attribute (their
+element, not their element-only WL state) the multiset is identical at every level, so
+$h_k=H(h_{k-1},\text{same multiset})$ and the partition stabilises at $k=1$. Nothing propagates.
+The neighbour descriptor must itself be a refining chain.
+
+**Measurement.** cosmobase, all 13,092 parseable molecules (147,412 heavy atoms, 11.3 per molecule),
+levels 0–5, molecule-level 80/20 split, 2026-08-17. Full attribute schema: element, degree, formal
+charge, aromaticity, hybridization, H count. Coarse schema: element only. Edge attributes stay at
+full resolution in both arms.
+
+| | full | coarse |
+|---|---:|---:|
+| mean matched level, $n_{\min}=5$ | 2.48 | **3.06** |
+| median support at matched class | 28 | 28 |
+| held-out atoms matching at level $\ge3$ | 42.4% | **61.7%** |
+| singleton-class atoms at level 3 | 24.0% | 13.5% |
+| distinct classes at level 2 | 25,382 | 9,895 |
+
+Coarsening buys roughly **0.6 levels of extra reach at identical support**.
+
+**Why it works here.** The non-element attributes are nearly redundant given element and bonding:
+
+$$
+H\bigl(\text{charge},\text{aromatic},\text{hybridization},n_H \;\big|\; \text{element},\text{bond multiset}\bigr)
+= 0.133 \text{ bits of } 3.095
+$$
+
+so 95.7% of that information is already implied, and element-only neighbours discard almost nothing
+while collapsing the neighbour alphabet about fourfold. This is a property of *this* corpus. A
+dataset rich in charged species, tautomers, or unusual protonation states would score higher here
+and benefit less — the entropy is the diagnostic to run before assuming the result transfers.
+
+**Why this is not yet a decision.** The comparison is not like-for-like. Since the fine partition
+refines the coarse one at every level (§2.1), coarse level $k$ is strictly *less* informative than
+full level $k$. Coarsening therefore trades attribute resolution for topological reach at constant
+support; it does not add information. Whether the trade pays depends on whether the target responds
+more to nearby detail or to longer-range topology, and cosmobase carries no atom-level targets, so
+this measurement cannot settle it. **The decisive experiment is MAE at the matched class with real
+targets attached, not coverage.**
+
+**A warning about synthetic validation.** An earlier synthetic motif corpus put the benefit at about
+one percentage point — an order of magnitude too small. Template-built molecules make attributes
+near-deterministic given element, which drives the conditional entropy above toward zero and makes
+the two arms nearly identical *by construction*. Do not use synthetic graphs to size this effect.
 
 ---
 
@@ -446,6 +520,12 @@ deepest-match ($n_{\min}=1$) is available but should not be the default: at larg
 toward singletons, so it recalls a single training label with undefined variance — maximum estimator
 variance exactly where the model looks most confident.
 
+**Grounded on cosmobase** (§3.6, full-attribute arm): singleton-class atoms rise from 9.6% at level 2
+to 24.0% at level 3 and 42.7% at level 5. On held-out atoms, $n_{\min}=1$ matches at mean level 3.17
+with median support **6**, while $n_{\min}=5$ matches at mean level 2.48 with median support **28** —
+half a level shallower for four-and-a-half times the support. That is the trade $n_{\min}$ controls,
+and it is why the default should not be 1.
+
 ---
 
 ## 7. Fit path
@@ -503,14 +583,11 @@ Treat as an opt-in compaction of a finished raw-mean model, not a default.
 6. **The attribute order in §3.5**, and its granularity — one level per attribute, or grouped levels
    (e.g. aromaticity and hybridization together). The proposed chemical default is a starting point,
    not a measured one.
-7. **Whether neighbors should carry a coarser attribute schema than the centre.** Running WL with
-   element-only neighbour states slows class fragmentation, but synthetic corpora suggest it buys
-   roughly one extra level rather than a different regime, and the gain shrinks as structural
-   redundancy rises: on motif-built molecules it moved singleton-class occupancy at level 4 only
-   from 9.1% to 8.1%. The benefit is bounded by how much the non-element attributes vary
-   independently of element and topology, which is cheap to measure on the real corpus and should
-   be measured before the feature is built. Implement as a configurable neighbour schema — an
-   ablation flag, not an architecture.
+7. **Whether neighbours should carry a coarser attribute schema than the centre (§3.6).** Measured on
+   cosmobase: coarsening buys ~0.6 levels of extra reach at identical support. What remains open is
+   whether that reach is *worth* the attribute resolution it costs, which needs targets. Run the
+   comparison again with real σ-profiles or partial charges and decide on MAE at the matched class.
+   Implement as a configurable neighbour schema — an ablation flag, not an architecture.
 
 ---
 
