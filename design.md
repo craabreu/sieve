@@ -12,7 +12,7 @@ ideas only. This document records what is actually settled. Where the two disagr
 
 Everything below concerns how a fitted WLLR model is **represented, built, combined, and queried**.
 It does not attempt to settle the method's statistical questions (choice of $K$, shrinkage strength,
-evaluation protocol); those are listed as open in §9.
+evaluation protocol); those are listed as open in §13.
 
 | Settled | Section |
 |---|---|
@@ -767,7 +767,252 @@ Treat as an opt-in compaction of a finished raw-mean model, not a default.
 
 ---
 
-## 9. Open questions
+## 9. Serialisation
+
+**Everything the model holds is already an array**, including the vocabulary. §7.2 mints class ids by
+deduplicating signature rows, and the deduped rows *are* the vocabulary: row $i$ of `vocab[k]` is the
+signature of class $i$ at level $k$. There is no dict to encode, and no digest to store.
+
+This settles what was an open question: **`vocab` is stored as an `(n_classes, width)` integer array**,
+not `dict[bytes, int]`. Storage is compact, serialisation is trivial, and at load time either form can
+be rebuilt — a dict for $O(1)$ lookup, or a lexsorted view for binary search at lower memory.
+
+### 9.1 Format
+
+A single `.npz`, since every member is an array:
+
+```text
+config              JSON bytes: see below
+global              (2 + 2d,)  N, then mean and sigma^2 of the whole training set
+level_{k}_vocab     (n_k, w_k)  int64   signature rows; row i is class i
+level_{k}_count     (n_k,)      int64
+level_{k}_mean      (n_k, d)    float64
+level_{k}_msd       (n_k, d)    float64
+level_{k}_parent    (n_k,)      int32   index into level k-1; -1 at level 0
+```
+
+Shrunk estimates are **not** stored — they are derived (§4.2), and storing them would both bloat the
+file and let $\alpha$ drift out of sync with the values it produced.
+
+### 9.2 Config
+
+```json
+{
+  "format_version": 1,
+  "schema_version": "<hash of the fields below>",
+  "target_dim": 50,
+  "attribute_levels": [["element"], ["aromatic","hybridization"], ["formal_charge"]],
+  "edge_attributes": ["bond_type"],
+  "neighbour_schema": null,
+  "max_wl_depth": 3,
+  "n_levels": 6,
+  "n_min": 5,
+  "alpha": 2.0
+}
+```
+
+Two version fields, doing different jobs:
+
+- **`format_version`** describes the file layout. A reader that does not recognise it must refuse to
+  load, not guess.
+- **`schema_version`** is a digest over everything that affects what a class *means* — the attribute
+  levels and their order, edge attributes, neighbour schema, depth. Two models may be merged (§5.4)
+  only if their `schema_version` matches. This is the mechanism behind "reject incompatible configs
+  loudly"; without it, config drift silently produces a model whose classes mean two different things.
+
+`n_min` and `alpha` are inference-time parameters, not part of `schema_version` — changing them does
+not invalidate the fitted statistics, and two models differing only in $\alpha$ are still mergeable.
+
+### 9.3 Round-trip guarantee
+
+Save/load must reproduce predictions **bit-exactly**. Nothing here is lossy: ids are `int64`, moments
+are `float64`, and no floating-point recomputation happens on load. Derived quantities ($s^2$,
+shrunk means) are recomputed identically from identical inputs. This is a testable property, not an
+aspiration — see the round-trip requirement in §10.4.
+
+---
+
+## 10. Public API
+
+### 10.1 The core is functional
+
+A fitted model is immutable (§5.1), so the core does not use the fit-mutates-self convention:
+
+```python
+model = wllr.fit(batch, config)              # -> WLLRModel, immutable
+values = model.predict(batch)                # -> (n_atoms, d)
+detail = model.predict_detailed(batch)       # -> Predictions (§12)
+merged = model_a.merge(model_b)              # or model_a + model_b
+model.save(path);  WLLRModel.load(path)
+```
+
+```python
+@dataclass(frozen=True)
+class WLLRConfig:
+    target_dim: int
+    attribute_levels: tuple[tuple[str, ...], ...]   # graded order, §3.5
+    max_wl_depth: int
+    edge_attributes: tuple[str, ...] = ("bond_type",)
+    neighbour_schema: tuple[str, ...] | None = None # §3.6; None = same as centre
+    n_min: int = 1
+    alpha: float | None = None                      # None = raw means, §4.2
+    chunk_size: int | None = None                   # §4.1; None = whole corpus
+```
+
+`alpha` and `n_min` are read at prediction time from the model's config, so sweeping them does not
+require refitting — a `with_params()` returning a new model sharing the same arrays is the cheap way
+to expose that.
+
+### 10.2 A scikit-learn wrapper, not a scikit-learn core
+
+Contorting the immutable core into `get_params`/`set_params`/`fit(self)` would forfeit the merge
+monoid for the sake of an interface. Provide instead a thin adapter that wraps the functional core, so
+`GridSearchCV` and friends work for the $\alpha$ / $n_{\min}$ / $K$ sweeps without the core inheriting
+mutable-estimator semantics.
+
+The adapter must default to **graph-level** splitting. Node-level random splitting puts WL-identical
+atoms from one molecule on both sides and inflates scores badly; this is the single easiest way to
+produce a misleading number with this method, so the safe behaviour belongs in the default rather than
+in the documentation.
+
+### 10.3 Leave-one-out prediction
+
+```python
+model.predict_loo(batch) -> Predictions
+```
+
+A training node contributes its own label to its class mean, so any in-sample score is meaningless —
+at $n_{\min}=1$ and large $L$ it approaches perfect recall. Leave-one-out removes the node's own
+contribution before predicting:
+
+$$
+\bar y^{(-v)}_{k,c}=\frac{N_{k,c}\,\bar y_{k,c}-y_v}{N_{k,c}-1},
+$$
+
+with the class treated as **unsupported** when $N_{k,c}=1$, so backoff proceeds to the parent rather
+than dividing by zero. This is the standard remedy from the target-encoding literature
+[MicciBarreca2001HighCardinality], and it is also the cheapest test that the implementation is not
+leaking — which is why it is a first-class method rather than a notebook recipe.
+
+### 10.4 Behaviours that must hold
+
+These are the properties an implementation has to satisfy; they follow from §2 and §5 and are the
+natural test suite.
+
+| Property | Source |
+|---|---|
+| Same partition regardless of node ordering within a graph | §7.2 |
+| Isomorphic graphs give matching class multisets at every level | §2.1 |
+| Every class has exactly one parent; $N_{k,c}\le N_{k-1,p(c)}$ | §2.1, §2.3 |
+| Matched levels form a prefix — no gaps are constructible | §2.2 |
+| Deepest supported level wins; $n_{\min}$ shifts it shallower, never deeper | §6.3 |
+| Global fallback iff level 0 is unsupported | §2.2 |
+| `merge` is associative, commutative, with the empty model as identity | §5.4 |
+| `merge` of disjoint shards equals fitting their union | §5.2 |
+| $\alpha=0$ reproduces raw means; $\alpha\to\infty$ reproduces the global mean | §4.2 |
+| Save/load reproduces predictions bit-exactly | §9.3 |
+| Changing only target values leaves every class id unchanged | §7.2 |
+| Batched and per-node prediction agree | §6.1 |
+| `predict_loo` on a class of size 2 returns the other member's value | §10.3 |
+| Two 1-WL-indistinguishable graphs *do* collide | accepted limit |
+
+The last is a negative control: it pins the known 1-WL expressiveness bound as intended behaviour
+rather than an undetected bug.
+
+---
+
+## 11. Input contract
+
+### 11.1 The batch
+
+The core is graph-library agnostic. Everything upstream reduces to one columnar structure, which is
+also exactly what §7.1 consumes:
+
+```python
+@dataclass(frozen=True)
+class AtomBatch:
+    node_attrs: np.ndarray     # (n_atoms, n_attr)  int64, encoded categoricals
+    edge_src:   np.ndarray     # (n_edges,)   int64, CSR-sorted
+    edge_dst:   np.ndarray     # (n_edges,)   int64
+    edge_attrs: np.ndarray     # (n_edges, n_edge_attr) int64
+    graph_id:   np.ndarray     # (n_atoms,)   int64
+    y:          np.ndarray | None   # (n_atoms, d) float64
+```
+
+Edges are stored **both directions** for undirected graphs; §7.1's CSR construction assumes it.
+
+`graph_id` is not optional. It is what makes graph-level splitting possible (§10.2), and a batch that
+loses it cannot be validated correctly no matter what the splitter does.
+
+### 11.2 Adapters
+
+```python
+wllr.io.from_rdkit(mols, y=None, *, config)      -> AtomBatch
+wllr.io.from_smiles(smiles, y=None, *, config)   -> AtomBatch
+```
+
+The adapter owns attribute encoding: it maps each configured attribute name to a dense integer code
+and stores the mapping, so that an unseen category at inference produces a *reserved unknown code*
+rather than a silent collision with a seen one. An unknown code then simply fails to match at level 0
+and backs off, which is the correct behaviour.
+
+### 11.3 Alignment is checked, not assumed
+
+For the dataframe-plus-atom-array layout this is the highest-severity failure mode (§7.5): a
+misalignment corrupts every label and raises nothing. The adapter must verify, not trust:
+
+1. the number of atoms parsed from each molecule equals the length of its target slice;
+2. atomic numbers stored alongside the targets match the parsed molecule, element by element.
+
+The second check is what actually catches reordering — counts alone will not, since a permutation
+preserves them. It costs one integer comparison per atom and rules out the only bug in this system
+that presents purely as unexplained inaccuracy.
+
+`MolFromSmiles` preserves the input SMILES heavy-atom order, but `AddHs` appends hydrogens at the end
+and any canonicalisation round-trip reorders, so the guard must run after whatever preprocessing the
+pipeline applies, not before.
+
+---
+
+## 12. Prediction metadata
+
+`predict_detailed` returns a columnar struct, matching the rest of the design rather than a list of
+per-node dicts:
+
+```python
+@dataclass(frozen=True)
+class Predictions:
+    value:            np.ndarray   # (n, d)  the prediction
+    matched_level:    np.ndarray   # (n,)    k*, or -1 for global fallback
+    class_id:         np.ndarray   # (n,)    id at the matched level, -1 if none
+    support:          np.ndarray   # (n,)    N at the matched class
+    variance:         np.ndarray   # (n, d)  s^2, NaN where support == 1
+    threshold_bound:  np.ndarray   # (n,)    bool: stopped by n_min, not by OOV
+    # present only when alpha is not None
+    raw_value:        np.ndarray   # (n, d)  before shrinkage
+    shrinkage_weight: np.ndarray   # (n,)    N / (N + alpha)
+```
+
+`threshold_bound` exists because a shallow match caused by $n_{\min}$ and one caused by genuine OOV
+are different situations with different remedies — more data versus better coverage — and without the
+flag they are indistinguishable in every downstream analysis.
+
+`variance` carries `NaN` rather than `0.0` at $N=1$, for the reason given in §4.1: a zero is
+indistinguishable from a genuinely homogeneous class. `NaN` propagates instead of silently reading as
+confidence.
+
+**These are diagnostics, not calibrated uncertainties.** The triple
+$(k^\star,\,N,\,s^2)$ says how specific the matched environment was, how much training support it had,
+and how heterogeneous its labels were. That is genuinely informative for triage, and it is not a
+predictive interval — anything claiming to be one needs conformal prediction or the machinery of
+[JonasKuhn2019Uncertainty], neither of which is in scope. Any write-up must say so explicitly.
+
+A high global-fallback rate is a *featurisation* alarm, not a prediction: it means atoms are arriving
+whose level-0 attributes were never seen. Surface it prominently rather than burying it in a column.
+
+---
+
+## 13. Open questions
 
 1. **Default $n_{\min}$.** Argued above that 1 is a poor default; the value should be set empirically
    on the first real dataset rather than by fiat.
@@ -794,7 +1039,7 @@ Treat as an opt-in compaction of a finished raw-mean model, not a default.
 
 ---
 
-## 10. Deliberately not settled here
+## 14. Deliberately not settled here
 
 Statistical and experimental questions — evaluation protocol, baselines, splitting strategy, leakage
 controls, the relationship to message-passing GNNs, and the novelty argument — are untouched by this
