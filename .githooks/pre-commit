@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# ============================================================================
+# pre-commit — validate the reference registry before allowing a commit
+# ============================================================================
+#
+# Runs references/generate_bibtex.sh --check against the STAGED content, so a
+# commit cannot introduce an unresolvable DOI, a duplicate citekey, an
+# unverified manual entry, or a citation in wllr.md with no registered source.
+#
+# Install (once per clone):   git config core.hooksPath .githooks
+# Bypass (deliberately):      git commit --no-verify
+# ============================================================================
+
+set -uo pipefail
+
+# --- Only run when the bibliography or the manuscript is actually touched. ---
+# Without this gate every unrelated commit pays the validation cost.
+if ! git diff --cached --name-only --diff-filter=ACMR \
+     | grep -qE '^(references/|wllr\.md$)'; then
+  exit 0
+fi
+
+repo=$(git rev-parse --show-toplevel) || exit 1
+
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT
+
+# --- Validate the index, not the working tree. -------------------------------
+# Checking the working tree is the classic pre-commit bug: it would pass a
+# broken staged doi_list.txt whenever the working copy happened to be clean,
+# and fail a good staged fix whenever the working copy happened to be broken.
+# checkout-index materialises exactly what is about to be committed, without
+# touching or stashing the working tree.
+if ! git checkout-index -a --prefix="$tmp/" 2>/dev/null; then
+  echo "pre-commit: could not materialise the index; skipping bibliography check" >&2
+  exit 0
+fi
+
+script="$tmp/references/generate_bibtex.sh"
+
+# The workflow may legitimately not exist yet in this commit (e.g. rewriting
+# history, or a commit that removes it). Nothing to check.
+[[ -f "$script" ]] || exit 0
+
+# Reuse the real resolver cache so the hook stays offline and fast, and so any
+# DOI newly fetched during the check is cached for the next run.
+if [[ -d "$repo/references/.cache" ]]; then
+  ln -s "$repo/references/.cache" "$tmp/references/.cache"
+fi
+
+echo "pre-commit: validating reference registry..."
+
+if [[ -x "$script" ]]; then
+  "$script" --check
+else
+  bash "$script" --check
+fi
+status=$?
+
+if [[ $status -ne 0 ]]; then
+  cat >&2 <<'MSG'
+
+pre-commit: bibliography validation FAILED — commit aborted.
+
+Fix the errors above, or bypass deliberately with:
+    git commit --no-verify
+MSG
+fi
+
+exit $status

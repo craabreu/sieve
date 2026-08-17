@@ -15,6 +15,33 @@ explicitly quarantined set of DOI-less references.
 The script exits nonzero and **writes nothing** if any check fails, so a broken
 bibliography cannot be produced by a partially successful run.
 
+## Enforcing it on commit
+
+A tracked pre-commit hook lives in `.githooks/pre-commit`. Enable it **once per clone**:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Git does not track `.git/hooks/`, so the hook is kept in a tracked directory and
+`core.hooksPath` is pointed at it. That one config line is the only per-clone setup;
+without it the hook is inert, so a fresh clone silently has no protection until it runs.
+
+The hook:
+
+- runs only when the commit touches `references/` or `wllr.md`, so unrelated commits
+  pay nothing;
+- validates the **staged** content, not the working tree — it materialises the index
+  with `git checkout-index` into a temp directory rather than stashing, so it neither
+  passes a broken staged file that happens to have a clean working copy, nor
+  false-positives on a good staged fix while the working copy is still broken;
+- reuses `references/.cache/` via a symlink, so it stays offline and fast, and any DOI
+  it does fetch is cached for the next run;
+- blocks the commit on failure. Bypass deliberately with `git commit --no-verify`.
+
+The one case that needs the network is adding a DOI that has never been resolved
+before — which is exactly the case worth being online for.
+
 ## Adding a reference
 
 1. Find its DOI.
