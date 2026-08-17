@@ -20,6 +20,7 @@ Rogers2010ECFP                  10.1021/ci100050t
 # --- Smoothing, backoff, target encoding ---
 Katz1987Backoff                 10.1109/TASSP.1987.1165125
 MicciBarreca2001HighCardinality 10.1145/507533.507538
+Bilmes2003FactoredLM             10.3115/1073483.1073485
 
 # --- Numerical statistics (online / mergeable moments) ---
 Welford1962Variance             10.1080/00401706.1962.10490022

@@ -16,8 +16,9 @@ evaluation protocol); those are listed as open in §9.
 
 | Settled | Section |
 |---|---|
-| Per-depth arrays, not `(depth, hash)` keys | §3 |
+| Per-level arrays, not `(depth, hash)` keys | §3 |
 | Depth folded into the hash input | §3.3 |
+| Graded attribute levels below depth 0 | §3.5 |
 | Descriptive moments only; shrinkage derived | §4 |
 | Immutable models combined by a merge monoid | §5 |
 | Bottom-up inference with early termination | §6 |
@@ -26,7 +27,12 @@ evaluation protocol); those are listed as open in §9.
 
 ## 1. Notation
 
-For WL depth $k$ and identifier $c$:
+Throughout, $k$ indexes a **level** of the refinement chain, $0\le k\le L$. In the base method a
+level is a WL depth and $L=K$; with graded features (§3.5) the first levels refine the node's own
+attributes before any WL round begins, and $L>K$. Nothing else in this document depends on which
+kind of level $k$ refers to — that is the point of §3.5.
+
+For level $k$ and identifier $c$:
 
 $$
 C_{k,c}=\{v:h_k(v)=c\},\qquad
@@ -35,7 +41,7 @@ N_{k,c}=|C_{k,c}|,\qquad
 $$
 
 $C_{k,c}$ ranges over **labeled training nodes**. $N_{k,c}$ is that class's support — the quantity
-that governs both depth selection (§6) and shrinkage weight (§4.2).
+that governs both level selection (§6) and shrinkage weight (§4.2).
 
 $\sigma^2_{k,c}$ is the **population variance of the class** — the mean squared deviation, divisor
 $N$:
@@ -66,9 +72,13 @@ $p(c)$ is the depth-$(k-1)$ parent of class $c$. $\mu_{\text{global}}$ is the tr
 
 These are properties of WL refinement, not design choices. Everything downstream follows from them.
 
-**2.1 Nesting.** $h_k(v)$ is computed from $h_{k-1}(v)$, so the depth-$k$ identifier determines the
-depth-$(k-1)$ identifier. Partitions are nested, $\Pi_0\succeq\Pi_1\succeq\cdots\succeq\Pi_K$, and each
-node's classes form a chain $C_0(v)\supseteq C_1(v)\supseteq\cdots\supseteq C_K(v)$ [Kriege2016WLOA].
+They depend on exactly one thing: that each level's identifier is computed **from the previous
+level's identifier plus strictly more information**. Any construction with that property extends the
+chain for free, which is why §3.5 costs nothing structurally.
+
+**2.1 Nesting.** $h_k(v)$ is computed from $h_{k-1}(v)$, so the level-$k$ identifier determines the
+level-$(k-1)$ identifier. Partitions are nested, $\Pi_0\succeq\Pi_1\succeq\cdots\succeq\Pi_L$, and each
+node's classes form a chain $C_0(v)\supseteq C_1(v)\supseteq\cdots\supseteq C_L(v)$ [Kriege2016WLOA].
 
 Consequently every class has **exactly one** parent. This is an invariant worth asserting, not
 assuming — a violation means a hash collision.
@@ -92,7 +102,7 @@ Two corollaries:
 
 ---
 
-## 3. Vocabulary layout
+## 3. The refinement chain and vocabulary layout
 
 ### 3.1 Decision
 
@@ -143,6 +153,54 @@ At least 128 bits. With $n$ distinct environments and a $b$-bit digest the birth
 $P_{\text{collision}}\approx n^2/2^{b+1}$: at $n=10^8$, 64 bits yields $\approx0.3$, 128 bits
 $\approx10^{-20}$. A collision both merges unrelated environments and breaks the single-parent
 invariant of §2.1.
+
+### 3.5 Graded features below depth 0
+
+**The problem.** With a single depth-0 identifier over the full attribute vector, global fallback
+fires precisely when that vector is unseen — and it is a cliff. A carbon with an unusual
+charge/hybridization combination goes straight from a fully specified atom to the mean of *every
+labeled node in the dataset*. For atom-level regression that is the difference between a usable
+prediction and a worthless one.
+
+**The construction.** Replace the single $h_0$ with a sub-chain that introduces attributes one group
+at a time, in a declared order $f_1,\ldots,f_m$:
+
+$$
+h_{0}=H(f_1),\qquad
+h_{j}=H\bigl(h_{j-1},\,f_{j+1}\bigr)\quad\text{for } j=1,\ldots,m-1
+$$
+
+WL refinement then begins from $h_{m-1}$, so the full chain has $L=m-1+K$ levels: the first $m$ are
+attribute levels, the rest WL depths. Backoff now degrades an unseen atom through
+*element+hybridization* to *element* before ever reaching the global mean.
+
+**Why it is free.** Each level is built from the previous one plus strictly more information, which
+is the only premise §2 needs. Nesting, the prefix property, support monotonicity, the single-parent
+invariant, the merge (§5), and bottom-up early termination (§6) all carry over with no modification —
+these are simply more levels on the same chain. The vocabulary cost is negligible: attribute levels
+are tiny (elements $\sim10$ classes, $+$hybridization $\sim40$).
+
+**The order is declared, never learned.** It is a hyperparameter with $m!$ settings and must be
+serialized with the model. Order by expected effect size, so backoff discards the least informative
+attribute first. A reasonable default for scalar atomic properties:
+
+$$
+\text{element}\rightarrow\text{aromaticity/hybridization}\rightarrow\text{formal charge}
+\rightarrow\text{H count}\rightarrow\text{chirality}
+$$
+
+Learning the order would move the method toward DASH's attention-derived expansion hierarchy and
+forfeit the "no learned representation" position; declaring it a priori is what keeps the
+distinction.
+
+**What it does not fix.** This smooths the tail, not the dominant path. Once refinement has reached
+WL level $\ge1$, backing off drops to the full-attribute level $m-1$ and loses *all* neighbor
+information in one step; graded attributes do not soften that transition. The gain is confined to
+nodes whose own attribute vector is unseen.
+
+**Precedent.** Backing off over an ordered set of factors rather than a single context is exactly
+the structure of factored language models with generalized parallel backoff
+[Bilmes2003FactoredLM], including the problem of choosing the order.
 
 ---
 
@@ -355,12 +413,12 @@ property-tested directly. Those tests are cheap and catch remapping bugs immedia
 
 ### 6.1 Bottom-up with early termination
 
-Computing $h_K$ requires every $h_{k<K}$ anyway, so retaining the whole chain costs nothing. But the
+Computing $h_L$ requires every $h_{k<L}$ anyway, so retaining the whole chain costs nothing. But the
 search runs **upward**, not downward:
 
 ```text
 best = global_mean
-for k in 0..K:
+for k in 0..L:                                 # attribute levels then WL depths (§3.5)
     h = refine(k)                              # incremental
     if h not in vocab[k]:      break           # §2.2: all deeper levels also miss
     if count[k][id] < n_min:   break           # §2.3: support only decreases
@@ -368,8 +426,9 @@ for k in 0..K:
 return best
 ```
 
-Identical answer to a top-down $K\to0$ scan, but never refines past $k^\star+1$. Both `break`
-conditions are valid only because of the prefix properties in §2.
+Identical answer to a top-down $L\to0$ scan, but never refines past $k^\star+1$. Both `break`
+conditions are valid only because of the prefix properties in §2. The loop is indifferent to whether
+a level refines attributes or neighborhoods, which is what makes §3.5 a pure extension.
 
 ### 6.2 The honest caveat
 
@@ -378,7 +437,7 @@ its whole neighborhood. So per-node early exit saves little on its own.
 
 The version that pays is a **graph-level stop** — refine level by level and halt entirely once no node
 in the graph still has a hit. That helps on graphs dominated by novel environments and does nothing
-when most nodes match at depth $K$.
+when most nodes match at the deepest level.
 
 ### 6.3 Depth selection
 
@@ -393,11 +452,13 @@ variance exactly where the model looks most confident.
 
 ```text
 for each shard / batch:
-    refine all graphs to depth K, retaining h_0..h_K per node
-    for k = 0..K ascending:
+    refine all graphs through all L levels, retaining h_0..h_L per node
+        levels 0..m-1  : add one attribute group each  (§3.5)
+        levels m..L    : WL rounds
+    for k = 0..L ascending:
         intern h_k into vocab[k]
         Welford-update (count, mean, M2); store sigma^2 = M2/N at the end
-        record parent id from depth k-1, asserting uniqueness
+        record parent id from level k-1, asserting uniqueness
     -> an immutable shard model
 
 reduce shard models pairwise as a balanced tree   (§5.4)
@@ -439,6 +500,17 @@ Treat as an opt-in compaction of a finished raw-mean model, not a default.
    `vocab` and config, but this is not yet decided.
 5. **Whether `vocab` should stay `dict[bytes, int]`** or move to a sorted array with binary search,
    which would serialize more compactly at some lookup cost.
+6. **The attribute order in §3.5**, and its granularity — one level per attribute, or grouped levels
+   (e.g. aromaticity and hybridization together). The proposed chemical default is a starting point,
+   not a measured one.
+7. **Whether neighbors should carry a coarser attribute schema than the centre.** Running WL with
+   element-only neighbour states slows class fragmentation, but synthetic corpora suggest it buys
+   roughly one extra level rather than a different regime, and the gain shrinks as structural
+   redundancy rises: on motif-built molecules it moved singleton-class occupancy at level 4 only
+   from 9.1% to 8.1%. The benefit is bounded by how much the non-element attributes vary
+   independently of element and topology, which is cheap to measure on the real corpus and should
+   be measured before the feature is built. Implement as a configurable neighbour schema — an
+   ablation flag, not an architecture.
 
 ---
 
