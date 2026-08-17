@@ -20,7 +20,7 @@ set -uo pipefail
 # root-level *.md. Matching only specific filenames here would silently skip
 # validation for any new document added later.
 if ! git diff --cached --name-only --diff-filter=ACMR \
-     | grep -qE '^(references/|[^/]*\.md$)'; then
+     | grep -qE '^(references/|[^/]*\.md$|drafts/.*\.md$)'; then
   exit 0
 fi
 

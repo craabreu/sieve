@@ -2,6 +2,16 @@
 
 ## Method definition, implementation specification, and literature assessment
 
+> ## ⚠ SUPERSEDED — DO NOT IMPLEMENT FROM THIS FILE
+>
+> This is brainstorming output from another LLM, retained for its literature review
+> (§15–§20) and novelty assessment, which remain the best manuscript material available.
+>
+> **The implementation specification is `design.md`.** This document contradicts it in
+> several places — the rejected `(depth, hash)` layout, scalar-only targets, a Welford
+> instruction that no longer applies, and a test list written against the old design.
+> Where the two disagree, `design.md` is correct.
+
 **Status:** consolidated working document
 **Date:** 2026-08-17
 **Supersedes:** `wllr_implementation_spec.md`, `wllr_extended_literature_search.md`

@@ -218,7 +218,7 @@ echo "    $cached cached, $fetched fetched"
 # discusses the citation syntax in prose and would trip the check on its own
 # examples.
 docs=()
-for f in "$DOC_DIR"/*.md; do
+for f in "$DOC_DIR"/*.md "$DOC_DIR"/drafts/*.md; do
   [[ -f "$f" ]] && docs+=("$f")
 done
 
