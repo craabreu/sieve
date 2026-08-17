@@ -323,23 +323,39 @@ Bessel's correction is an estimator adjustment, not a property of the data held.
 un-applying it on every merge is doing inference in the storage layer — the same reason shrunk means
 are excluded from stored state (§4.2).
 
-**Accumulation.** Never $\sum y^2-(\sum y)^2/n$ — see §7.4. Which stable algorithm to use depends on
-how the data arrives:
+**Accumulation is one mechanism, not a choice between two.** Never
+$\sum y^2-(\sum y)^2/n$ (§7.4). Otherwise there is a single rule:
 
-- **Batch** (the normal case): the two-pass reduction of §7.3. Faster and simpler than a recurrence,
-  because the whole shard is in memory at once.
-- **Streaming**, one observation at a time: Welford's recurrence [Welford1962Variance], against
-  running $(n,\bar y,M_2)$:
+> Reduce a chunk with the two-pass form (§7.3); combine chunks with the merge of §5.2.
+
+Chunk size is a free parameter, fixed by how the data reaches the trainer rather than by the
+statistics. The endpoints happen to have names, which is why this is easily mistaken for two
+algorithms:
+
+| chunk size | this is called | $\sigma^2$ rel. error |
+|---|---|---:|
+| whole corpus | the two-pass algorithm | **0** (it is the definition) |
+| a shard or batch | chunked / parallel reduction | $\sim10^{-13}$ |
+| 1 observation | Welford's recurrence | $7.6\times10^{-12}$ |
+
+**Welford is the $n_B=1$ case of the merge, not an alternative to it.** Substituting $n_B=1$,
+$\bar y_B=y$, $\sigma^2_B=0$ into §5.2 gives
 
 $$
-n'=n+1,\qquad
-\delta=y-\bar y,\qquad
-\bar y'=\bar y+\frac{\delta}{n'},\qquad
-M_2'=M_2+\delta\,(y-\bar y')
+\sigma^{2\prime}=\frac{n_A}{n}\sigma^2_A+\frac{n_A}{n^{2}}\delta^{2},
 $$
 
-The last step uses **both** the old and the new mean; using either one twice is a common and silently
-wrong variant. In both cases $M_2$ is *scratch*; store $\sigma^2=M_2/n$ at the end.
+which is exactly what Welford's $M_2'=M_2+\delta(y-\bar y')$ yields after dividing by $n$. Stepping
+both through 500 observations agrees to $1.7\times10^{-9}$ absolute on values of magnitude $10^6$ —
+rounding noise, not a different algorithm. So the recurrence needs no separate implementation
+[Welford1962Variance]; it falls out of the merge already required by §5.
+
+**Practical consequence: chunk as large as memory allows.** Accuracy is flat across chunk sizes and
+*best* at the large end, so there is no statistical argument for smaller chunks — only a memory one.
+For a corpus that fits in memory as a dataframe plus an atom-indexed array, that means a single
+chunk, or a handful of shards purely to parallelise, and the scalar recurrence never appears at all.
+It becomes relevant only when data is streamed from disk or arrives as online updates, and even then
+the right response is a smaller chunk, not a chunk of one.
 
 **Variance access.** $s^2=\dfrac{N}{N-1}\,\sigma^2$, **undefined at $N=1$** — return `None`, never
 `0.0`. A stored zero is indistinguishable from a genuinely homogeneous class and silently corrupts
@@ -408,6 +424,10 @@ $$
 This is the **law of total variance**, not an ad hoc correction factor — it is Chan, Golub and
 LeVeque's parallel form [Chan1983ParallelVariance] expressed in intensive variables. Results are
 bit-comparable to a single pass and independent of merge order.
+
+It does double duty: besides combining fitted models, this is also the *accumulation* mechanism
+(§4.1). Reducing a chunk and merging chunks are the same operation at different granularities, so
+there is no separate streaming path to implement.
 
 Commutativity is manifest: $w_A\leftrightarrow w_B$ swaps the averaged terms, and $\delta\mapsto
 -\delta$ leaves $\delta^2$ unchanged while $w_Aw_B$ is symmetric. Associativity is not visible by
@@ -623,11 +643,17 @@ M2   = np.bincount(labels, weights=d * d, minlength=nc)
 sigma2 = np.divide(M2, N, out=np.zeros(nc), where=N > 0)
 ```
 
+This reduces one chunk. Chunks combine through §5.2 — see §4.1: chunk size is a memory decision, and
+the scalar recurrence is simply the chunk-of-one endpoint, not a different code path.
+
 | level-2 aggregation, 147k atoms → 25,382 classes | time |
 |---|---:|
-| two-pass `bincount` | **1.0 ms** |
+| two-pass `bincount`, whole corpus as one chunk | **1.0 ms** |
 | `reduceat` (including the sort it requires) | 11.8 ms |
-| Welford loop | 109.5 ms |
+| chunk-of-one (scalar Welford loop) | 109.5 ms |
+
+The last row is the cost of choosing the smallest chunk rather than the largest: same statistics,
+110× the time.
 
 ### 7.4 Two traps
 
