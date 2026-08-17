@@ -31,21 +31,26 @@ For WL depth $k$ and identifier $c$:
 $$
 C_{k,c}=\{v:h_k(v)=c\},\qquad
 N_{k,c}=|C_{k,c}|,\qquad
-\bar y_{k,c}=\frac{1}{N_{k,c}}\sum_{v\in C_{k,c}}y_v
+S_{k,c}=\sum_{v\in C_{k,c}}y_v
 $$
 
 $C_{k,c}$ ranges over **labeled training nodes**. $N_{k,c}$ is that class's support — the quantity
-that governs both depth selection (§6) and shrinkage weight (§4.2).
+that governs both depth selection (§6) and shrinkage weight (§4.2). $S_{k,c}$ is the target sum.
 
-$M_{2}$ is the **sum of squared deviations from the class mean**:
+The class mean is **derived, not stored**:
+
+$$
+\bar y_{k,c}=S_{k,c}\big/N_{k,c}
+$$
+
+$M_2$ is the sum of squared deviations from that mean:
 
 $$
 M_{2,k,c}=\sum_{v\in C_{k,c}}\bigl(y_v-\bar y_{k,c}\bigr)^{2}
 $$
 
-so that the unbiased sample variance is $s^2_{k,c}=M_{2,k,c}/(N_{k,c}-1)$. In code this is the `m2`
-array. It is a plain sum of squares — *not* a variance, and not divided by anything — which is
-exactly why it is the stored form; see §4.1.
+with unbiased sample variance $s^2_{k,c}=M_{2,k,c}/(N_{k,c}-1)$. Note that $M_2$ is a plain sum of
+squares — *not* a variance, and not divided by anything.
 
 $p(c)$ is the depth-$(k-1)$ parent of class $c$. $\mu_{\text{global}}$ is the training-set mean.
 
@@ -90,8 +95,8 @@ Two corollaries:
 ```python
 # for each depth k
 vocab[k]  : dict[bytes, int]      # WL identifier -> local class id
-count[k]  : np.ndarray[int64]
-mean[k]   : np.ndarray[float64]
+count[k]  : np.ndarray[int64]     # N
+sum_y[k]  : np.ndarray[float64]   # S = sum of targets; mean is derived as S/N
 m2[k]     : np.ndarray[float64]   # sum of squared deviations from the mean (§1)
 parent[k] : np.ndarray[int32]     # index into depth k-1 arrays; -1 at depth 0
 ```
@@ -139,17 +144,30 @@ invariant of §2.1.
 
 ### 4.1 Sufficient statistics only
 
-The model stores `count`, `mean`, `m2`, `parent`, plus global `(N, mean, m2)`. Nothing else.
+The model stores, per class, the triple $(N,\,S,\,M_2)$ plus `parent`, and the same triple globally.
+Nothing else. Mean and variance are both **derived on access**.
 
-**Why $M_2$ rather than the variance.** Variance does not compose: you cannot combine two classes'
-variances without recovering their sums of squares first. $M_2$ does compose, via the merge formula
-in §5.2. Storing $M_2$ is therefore what makes §5's merge monoid possible at all — the same reason
-shrunk means are excluded from stored state (§4.2). Variance is a *presentation* concern, computed
-only when someone asks for it.
+**Why sums rather than means.** $(N,S)$ are the sufficient statistics; a mean is a derived summary,
+so storing it as though it were state is a mild category error. Storing sums makes the merge of §5
+*manifestly* additive — $N$ and $S$ combine by plain addition, so commutativity is visible by
+inspection instead of requiring algebra. And it is numerically free: computing the merge correction
+from stored sums agrees with computing it from stored means to $2.8\times10^{-14}$ relative on
+adversarial data (similar large means, small spread).
 
-Accumulate $M_2$ with Welford's recurrence [Welford1962Variance] rather than the textbook
-$\sum y^2-(\sum y)^2/n$, which loses catastrophic precision when the mean is large relative to the
-spread. For a new observation $y$ against running $(n,\bar y,M_2)$:
+**Why $M_2$ rather than $\sum y^2$.** The fully additive choice is raw power sums
+$(N,\sum y,\sum y^2)$, which would make the entire merge elementwise vector addition with no
+correction term at all. It is tempting and it is wrong. Recovering the variance then requires
+$\sum y^2 - S^2/N$, which cancels catastrophically: on targets with mean $10^6$ and spread $3$ that
+form errs by $2.2\times10^{-5}$ relative, against $2.8\times10^{-14}$ for $M_2$ — nine orders of
+magnitude. $M_2$ retains exactly one non-additive term in the merge, and that term is the price of
+numerical stability. Pay it.
+
+More generally, variance does not compose: two classes cannot be combined without recovering their
+sums of squares first. $M_2$ does compose (§5.2), which is what makes the merge monoid possible at
+all — the same reason shrunk means are excluded from stored state (§4.2).
+
+**Accumulation.** Use Welford's recurrence [Welford1962Variance], not the textbook
+$\sum y^2-(\sum y)^2/n$. For a new observation $y$ against running $(n,\bar y,M_2)$:
 
 $$
 n'=n+1,\qquad
@@ -158,10 +176,11 @@ n'=n+1,\qquad
 M_2'=M_2+\delta\,(y-\bar y')
 $$
 
-Note the last step uses **both** the old and the new mean; using either one twice is a common and
-silently wrong variant.
+The last step uses **both** the old and the new mean; using either one twice is a common and silently
+wrong variant. The running $\bar y$ here is *scratch state during accumulation*, not stored state —
+accumulate $S$ alongside it by plain addition and store $(N,S,M_2)$ at the end.
 
-Variance is derived as $M_2/(N-1)$ and is **undefined at $N=1$** — surface it as `None`, never `0.0`.
+**Variance access.** $s^2 = M_2/(N-1)$, **undefined at $N=1$** — surface it as `None`, never `0.0`.
 A stored zero is indistinguishable from a genuinely homogeneous class and silently corrupts any
 diagnostic that reads variance as a confidence proxy. $M_2$ itself is legitimately $0$ at $N=1$; it is
 the division by $N-1$ that is undefined, so the guard belongs in the accessor, not the accumulator.
@@ -204,17 +223,37 @@ and distributed fitting are a fold over independently fitted shards.
 
 ### 5.2 Merging statistics
 
-Chan, Golub and LeVeque's parallel form [Chan1983ParallelVariance] merges two accumulators exactly:
+Two of the three fields merge by plain addition:
 
 $$
-n=n_A+n_B,\qquad \delta=\bar y_B-\bar y_A
+N=N_A+N_B,\qquad S=S_A+S_B
 $$
+
+The third uses Chan, Golub and LeVeque's parallel form [Chan1983ParallelVariance], with the means
+recovered from the stored sums:
+
 $$
-\bar y=\bar y_A+\delta\frac{n_B}{n},\qquad
-M_2=M_{2,A}+M_{2,B}+\delta^2\frac{n_A n_B}{n}
+\delta=\frac{S_B}{N_B}-\frac{S_A}{N_A},
+\qquad
+M_2=M_{2,A}+M_{2,B}+\delta^{2}\,\frac{N_A N_B}{N}
 $$
 
 Results are bit-comparable to a single pass and independent of merge order.
+
+Commutativity is now manifest in all three fields: addition is symmetric, and the correction term is
+invariant under $A\leftrightarrow B$ since $\delta\mapsto-\delta$ leaves $\delta^2$ unchanged and
+$N_AN_B$ is symmetric. Associativity is not visible by inspection and remains a property test (§5.4).
+
+**One edge case the sums form loses.** When a class is absent from A, $N_A=0$ and $S_A/N_A$ is $0/0$.
+With means stored this was branch-free — $\bar y_A=0$ gave $\delta=\bar y_B$, and the correction
+vanished anyway because $N_A=0$. With sums, guard the division:
+
+$$
+\bar y_A = \begin{cases} S_A/N_A & N_A>0\\ 0 & \text{otherwise}\end{cases}
+$$
+
+`N` and `S` remain branch-free; only the $M_2$ correction needs the guard. $N_B\ge1$ always, since a
+class only appears in B's vocabulary once it has an observation, so $S_B/N_B$ is always safe.
 
 ### 5.3 Id remapping
 
@@ -236,7 +275,7 @@ def merge_level(A, B, remap_prev):
 
     m, n_new = len(A.vocab), len(vocab)
     count  = np.zeros(n_new, np.int64);    count[:m]  = A.count
-    mean   = np.zeros(n_new, np.float64);  mean[:m]   = A.mean
+    sum_y  = np.zeros(n_new, np.float64);  sum_y[:m]  = A.sum_y
     m2     = np.zeros(n_new, np.float64);  m2[:m]     = A.m2
     parent = np.full(n_new, -1, np.int32); parent[:m] = A.parent
 
@@ -244,20 +283,26 @@ def merge_level(A, B, remap_prev):
     nA = count[i].astype(np.float64)
     nB = B.count.astype(np.float64)
     n  = nA + nB
-    delta = B.mean - mean[i]
 
-    mean[i]   = mean[i] + delta * nB / n
+    # mean of A's side; 0 where the class is new (N_A = 0), see §5.2
+    mA = np.divide(sum_y[i], nA, out=np.zeros_like(nA), where=nA > 0)
+    delta = B.sum_y / nB - mA      # nB >= 1 always, so this division is safe
+
     m2[i]     = m2[i] + B.m2 + delta**2 * nA * nB / n
-    count[i]  = n.astype(np.int64)
+    sum_y[i]  = sum_y[i] + B.sum_y                  # plain addition
+    count[i]  = n.astype(np.int64)                  # plain addition
     parent[i] = -1 if remap_prev is None else remap_prev[B.parent]
 
-    return FrozenLevel(vocab, count, mean, m2, parent), remap
+    return FrozenLevel(vocab, count, sum_y, m2, parent), remap
 ```
 
-Two things fall out for free:
+Three things worth noting:
 
-- **No branch for B-only classes.** Where a class exists only in B, the zero-initialized target gives
-  $n_A=0$ and $\delta=\bar y_B$, so `mean → B.mean` and `m2 → B.m2` exactly.
+- **Order matters within the merge.** `mA` is read from `sum_y[i]` *before* `sum_y[i]` is updated.
+  Swapping those two lines silently corrupts every $M_2$ for classes present in both models.
+- **B-only classes need no branch except in the guard.** `count` and `sum_y` absorb them by plain
+  addition into a zero-initialized target. Only $\bar y_A$ needs the `where=` guard, and once it is
+  $0$ the correction term vanishes anyway since $N_A=0$, giving `m2 → B.m2` exactly.
 - **Parent reassignment is an integrity check.** For classes in both, `remap_prev[B.parent]` must
   equal the parent already stored, by §2.1. Assert rather than overwrite and the hash-collision alarm
   costs nothing.
@@ -325,7 +370,7 @@ for each shard / batch:
     refine all graphs to depth K, retaining h_0..h_K per node
     for k = 0..K ascending:
         intern h_k into vocab[k]
-        Welford-update (count, mean, m2)
+        Welford-update m2 (running mean is scratch); accumulate count and sum_y
         record parent id from depth k-1, asserting uniqueness
     -> an immutable shard model
 
