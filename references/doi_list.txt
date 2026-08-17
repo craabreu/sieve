@@ -21,6 +21,10 @@ Rogers2010ECFP                  10.1021/ci100050t
 Katz1987Backoff                 10.1109/TASSP.1987.1165125
 MicciBarreca2001HighCardinality 10.1145/507533.507538
 
+# --- Numerical statistics (online / mergeable moments) ---
+Welford1962Variance             10.1080/00401706.1962.10490022
+Chan1983ParallelVariance        10.1080/00031305.1983.10483115
+
 # --- NMR / cheminformatics lookup prediction ---
 Steinbeck2003NMRShiftDB         10.1021/ci0341363
 Kuhn2008NMR                     10.1186/1471-2105-9-400

@@ -26,7 +26,7 @@ MANUAL_BIB="manual.bib"
 OUTPUT="references.bib"
 CACHE_DIR=".cache"
 FETCHER="./doi2bib.sh"
-DOC="../wllr.md"
+DOC_DIR=".."          # root-level *.md files are cross-checked for citations
 
 # Seconds to wait between live fetches, to stay polite to the DOI resolver.
 FETCH_DELAY="${FETCH_DELAY:-1}"
@@ -214,21 +214,32 @@ echo "    $cached cached, $fetched fetched"
 # ---------------------------------------------------------------------------
 # 4. Cross-check citations in the manuscript (heuristic, warning-level)
 # ---------------------------------------------------------------------------
-if [[ -f "$DOC" ]]; then
-  echo "==> Cross-checking citations in $DOC"
+# Scans every root-level *.md. Deliberately NOT recursive: references/README.md
+# discusses the citation syntax in prose and would trip the check on its own
+# examples.
+docs=()
+for f in "$DOC_DIR"/*.md; do
+  [[ -f "$f" ]] && docs+=("$f")
+done
+
+if [[ ${#docs[@]} -gt 0 ]]; then
+  echo "==> Cross-checking citations in ${#docs[@]} document(s)"
   defined=$(printf '%s\n' "${keys[@]}" "${manual_keys[@]}" | sort -u)
-  # Matches the [Key1234Suffix] citation style used in wllr.md.
-  cited=$(grep -oE '\[[A-Z][A-Za-z0-9]*[0-9]{4}[A-Za-z0-9]*\]' "$DOC" \
+  # Matches the [Key1234Suffix] citation style used in the documents.
+  cited=$(grep -hoE '\[[A-Z][A-Za-z0-9]*[0-9]{4}[A-Za-z0-9]*\]' "${docs[@]}" \
           | tr -d '[]' | sort -u)
 
   while IFS= read -r c; do
     [[ -z "$c" ]] && continue
-    grep -qx "$c" <<< "$defined" || err "$DOC cites [$c], which is not defined in $DOI_LIST or $MANUAL_BIB"
+    if ! grep -qx "$c" <<< "$defined"; then
+      where=$(grep -lE "\[$c\]" "${docs[@]}" | xargs -n1 basename | tr '\n' ' ')
+      err "${where}cites [$c], which is not defined in $DOI_LIST or $MANUAL_BIB"
+    fi
   done <<< "$cited"
 
   while IFS= read -r d; do
     [[ -z "$d" ]] && continue
-    grep -qx "$d" <<< "$cited" || warn "$d is registered but never cited in $DOC"
+    grep -qx "$d" <<< "$cited" || warn "$d is registered but never cited"
   done <<< "$defined"
 fi
 
