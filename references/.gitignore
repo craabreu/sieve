@@ -1,0 +1,5 @@
+# Generated artifact — rebuild with ./generate_bibtex.sh
+references.bib
+
+# Resolver response cache (keyed by DOI)
+.cache/

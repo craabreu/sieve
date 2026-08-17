@@ -1,0 +1,40 @@
+# WLLR reference registry — DOI-bearing entries
+#
+# Format:  <citekey>  <DOI>
+#   - one entry per line, whitespace-separated
+#   - blank lines and '#' comments ignored
+#   - citekeys must be unique and are the STABLE identifier cited from wllr.md;
+#     the generator rewrites the publisher's key (e.g. "Bremser_1978") to this one,
+#     so the manuscript never breaks when the bib is regenerated
+#
+# To add a reference: append a line here, run ./generate_bibtex.sh, cite the key.
+# NEVER hand-write an entry into references.bib — it is a generated artifact.
+#
+# References with no registered DOI live in manual.bib (see the header there).
+
+# --- Structural / substructure codes and fingerprints ---
+Morgan1965                      10.1021/c160017a018
+Bremser1978HOSE                 10.1016/S0003-2670(01)83100-7
+Rogers2010ECFP                  10.1021/ci100050t
+
+# --- Smoothing, backoff, target encoding ---
+Katz1987Backoff                 10.1109/TASSP.1987.1165125
+MicciBarreca2001HighCardinality 10.1145/507533.507538
+
+# --- NMR / cheminformatics lookup prediction ---
+Steinbeck2003NMRShiftDB         10.1021/ci0341363
+Kuhn2008NMR                     10.1186/1471-2105-9-400
+JonasKuhn2019Uncertainty        10.1186/s13321-019-0374-3
+
+# --- Environment-conditioned empirical property statistics ---
+Dalke2018MMPDB                  10.1021/acs.jcim.8b00173
+Kammeraad2020Representations    10.1021/acs.jcim.9b00721
+
+# --- WL theory and graph neural networks ---
+Morris2019WLGoNeural            10.1609/aaai.v33i01.33014602
+Schulz2022GeneralizedWL         10.1007/s10994-022-06131-w
+DInverno2024NodeRegression      10.1007/s00500-024-09676-1
+
+# --- Hierarchical substructure hierarchies (DASH) ---
+Lehner2023DASH                  10.1021/acs.jcim.3c00800
+Lehner2024DASHProperties        10.1063/5.0218154
