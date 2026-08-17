@@ -37,6 +37,16 @@ $$
 $C_{k,c}$ ranges over **labeled training nodes**. $N_{k,c}$ is that class's support — the quantity
 that governs both depth selection (§6) and shrinkage weight (§4.2).
 
+$M_{2}$ is the **sum of squared deviations from the class mean**:
+
+$$
+M_{2,k,c}=\sum_{v\in C_{k,c}}\bigl(y_v-\bar y_{k,c}\bigr)^{2}
+$$
+
+so that the unbiased sample variance is $s^2_{k,c}=M_{2,k,c}/(N_{k,c}-1)$. In code this is the `m2`
+array. It is a plain sum of squares — *not* a variance, and not divided by anything — which is
+exactly why it is the stored form; see §4.1.
+
 $p(c)$ is the depth-$(k-1)$ parent of class $c$. $\mu_{\text{global}}$ is the training-set mean.
 
 ---
@@ -82,7 +92,7 @@ Two corollaries:
 vocab[k]  : dict[bytes, int]      # WL identifier -> local class id
 count[k]  : np.ndarray[int64]
 mean[k]   : np.ndarray[float64]
-m2[k]     : np.ndarray[float64]   # Welford sum of squared deviations
+m2[k]     : np.ndarray[float64]   # sum of squared deviations from the mean (§1)
 parent[k] : np.ndarray[int32]     # index into depth k-1 arrays; -1 at depth 0
 ```
 
@@ -131,11 +141,30 @@ invariant of §2.1.
 
 The model stores `count`, `mean`, `m2`, `parent`, plus global `(N, mean, m2)`. Nothing else.
 
-Variance is derived as $m2/(N-1)$ and is **undefined at $N=1$** — surface it as `None`, never `0.0`.
-A stored zero is indistinguishable from a genuinely homogeneous class and silently corrupts any
-diagnostic that reads variance as a confidence proxy.
+**Why $M_2$ rather than the variance.** Variance does not compose: you cannot combine two classes'
+variances without recovering their sums of squares first. $M_2$ does compose, via the merge formula
+in §5.2. Storing $M_2$ is therefore what makes §5's merge monoid possible at all — the same reason
+shrunk means are excluded from stored state (§4.2). Variance is a *presentation* concern, computed
+only when someone asks for it.
 
-`m2` uses Welford's recurrence [Welford1962Variance] rather than a naive sum of squares.
+Accumulate $M_2$ with Welford's recurrence [Welford1962Variance] rather than the textbook
+$\sum y^2-(\sum y)^2/n$, which loses catastrophic precision when the mean is large relative to the
+spread. For a new observation $y$ against running $(n,\bar y,M_2)$:
+
+$$
+n'=n+1,\qquad
+\delta=y-\bar y,\qquad
+\bar y'=\bar y+\frac{\delta}{n'},\qquad
+M_2'=M_2+\delta\,(y-\bar y')
+$$
+
+Note the last step uses **both** the old and the new mean; using either one twice is a common and
+silently wrong variant.
+
+Variance is derived as $M_2/(N-1)$ and is **undefined at $N=1$** — surface it as `None`, never `0.0`.
+A stored zero is indistinguishable from a genuinely homogeneous class and silently corrupts any
+diagnostic that reads variance as a confidence proxy. $M_2$ itself is legitimately $0$ at $N=1$; it is
+the division by $N-1$ that is undefined, so the guard belongs in the accessor, not the accumulator.
 
 ### 4.2 Shrinkage is derived, never stored
 

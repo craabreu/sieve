@@ -13,10 +13,14 @@
 
 set -uo pipefail
 
-# --- Only run when the bibliography or the manuscript is actually touched. ---
+# --- Only run when the bibliography or a document is actually touched. ---
 # Without this gate every unrelated commit pays the validation cost.
+#
+# Must stay in sync with the generator's document scan, which covers every
+# root-level *.md. Matching only specific filenames here would silently skip
+# validation for any new document added later.
 if ! git diff --cached --name-only --diff-filter=ACMR \
-     | grep -qE '^(references/|wllr\.md$)'; then
+     | grep -qE '^(references/|[^/]*\.md$)'; then
   exit 0
 fi
 
