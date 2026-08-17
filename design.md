@@ -22,7 +22,8 @@ evaluation protocol); those are listed as open in §9.
 | Descriptive moments only; shrinkage derived | §4 |
 | Immutable models combined by a merge monoid | §5 |
 | Bottom-up inference with early termination | §6 |
-| Vectorised fit: void-view dedupe + two-pass `bincount` | §7 |
+| Vector targets, per-dimension variance | §1, §5.2 |
+| Vectorised fit: void-view dedupe + sparse two-pass reduction | §7 |
 
 §3.6 records a design option that has been **measured but not adopted** — coarsening the neighbour
 attribute schema. Figures quoted elsewhere in this document as "measured on cosmobase" come from
@@ -37,27 +38,35 @@ level is a WL depth and $L=K$; with graded features (§3.5) the first levels ref
 attributes before any WL round begins, and $L>K$. Nothing else in this document depends on which
 kind of level $k$ refers to — that is the point of §3.5.
 
+**Targets are vectors.** $y_v\in\mathbb{R}^{d}$, with $d=1$ the scalar case rather than a special
+case — nothing branches on it. For the motivating application $d$ is the width of a σ-profile,
+typically a few tens of bins.
+
 For level $k$ and identifier $c$:
 
 $$
 C_{k,c}=\{v:h_k(v)=c\},\qquad
-N_{k,c}=|C_{k,c}|,\qquad
-\bar y_{k,c}=\frac{1}{N_{k,c}}\sum_{v\in C_{k,c}}y_v
+N_{k,c}=|C_{k,c}|\in\mathbb{N},\qquad
+\bar y_{k,c}=\frac{1}{N_{k,c}}\sum_{v\in C_{k,c}}y_v\ \in\mathbb{R}^{d}
 $$
 
-$C_{k,c}$ ranges over **labeled training nodes**. $N_{k,c}$ is that class's support — the quantity
-that governs both level selection (§6) and shrinkage weight (§4.2).
+$C_{k,c}$ ranges over **labeled training nodes**. $N_{k,c}$ is that class's support — a scalar, even
+for vector targets, since a node is present or absent as a whole. It governs both level selection
+(§6) and shrinkage weight (§4.2).
 
-$\sigma^2_{k,c}$ is the **population variance of the class** — the mean squared deviation, divisor
-$N$:
+$\sigma^2_{k,c}\in\mathbb{R}^{d}$ is the **per-dimension population variance** of the class — the mean
+squared deviation, divisor $N$, taken elementwise:
 
 $$
-\sigma^2_{k,c}=\frac{1}{N_{k,c}}\sum_{v\in C_{k,c}}\bigl(y_v-\bar y_{k,c}\bigr)^{2}
+\sigma^2_{k,c}=\frac{1}{N_{k,c}}\sum_{v\in C_{k,c}}\bigl(y_v-\bar y_{k,c}\bigr)^{\odot 2}
 $$
 
-Writing $d_v=y_v-\bar y_{k,c}$ makes the symmetry explicit: the stored triple is a count and **two
-means**, $\bigl(N,\;\bar y,\;\overline{d^2}\bigr)$. That is the consistency the layout is chosen for
-(§4.1).
+Writing $r_v=y_v-\bar y_{k,c}$ for the residual makes the symmetry explicit: the stored triple is a
+count and **two means**, $\bigl(N,\;\bar y,\;\overline{r^{\odot2}}\bigr)$. That is the consistency the
+layout is chosen for (§4.1).
+
+This stores only the diagonal of the class covariance. The full matrix is a supported future
+extension at the cost of one term in the merge and $O(d^2)$ storage — see §5.2.
 
 The quantity actually **reported** is the unbiased sample variance,
 
@@ -118,14 +127,17 @@ Two corollaries:
 ```python
 # for each depth k
 vocab[k]  : dict[bytes, int]      # WL identifier -> local class id
-count[k]  : np.ndarray[int64]     # N
-mean[k]   : np.ndarray[float64]   # ybar
-msd[k]    : np.ndarray[float64]   # sigma^2, population variance, divisor N (§1)
-parent[k] : np.ndarray[int32]     # index into depth k-1 arrays; -1 at depth 0
+count[k]  : np.ndarray[int64]     # (n_classes,)      N -- scalar even for vector targets
+mean[k]   : np.ndarray[float64]   # (n_classes, d)    ybar
+msd[k]    : np.ndarray[float64]   # (n_classes, d)    sigma^2, divisor N, per dimension (§1)
+parent[k] : np.ndarray[int32]     # (n_classes,)      index into level k-1; -1 at level 0
 ```
 
 Class ids are local to a depth and dense from $0$. `parent[k][cid]` indexes directly into the
 depth-$(k-1)$ arrays, so ancestor traversal involves no hashing at all.
+
+Only the moment arrays carry the target dimension. Keeping `count` and `parent` one-dimensional is
+what lets the merge weights stay scalar (§5.2) and the level-selection logic stay untouched by $d$.
 
 ### 3.2 Why not the alternatives
 
@@ -286,11 +298,12 @@ the two arms nearly identical *by construction*. Do not use synthetic graphs to 
 ### 4.1 A count and two means
 
 The model stores, per class, the triple $\bigl(N,\;\bar y,\;\sigma^2\bigr)$ plus `parent`, and the
-same triple globally. Nothing else. The reported variance $s^2$ is **derived on access**.
+same triple globally. Nothing else. The reported variance $s^2$ is **derived on access**. $N$ is a
+scalar; $\bar y$ and $\sigma^2$ are $d$-vectors (§1).
 
 **Why these three, and not a mixture.** The layout is chosen for dimensional consistency: $N$ is
 extensive (it counts), while $\bar y$ and $\sigma^2$ are both intensive — per-observation means, of
-$y$ and of $d^2$ respectively. A count and two means.
+$y$ and of $r^{\odot2}$ respectively. A count and two means.
 
 The tempting alternatives each break that consistency somewhere:
 
@@ -356,6 +369,12 @@ For a corpus that fits in memory as a dataframe plus an atom-indexed array, that
 chunk, or a handful of shards purely to parallelise, and the scalar recurrence never appears at all.
 It becomes relevant only when data is streamed from disk or arrives as online updates, and even then
 the right response is a smaller chunk, not a chunk of one.
+
+**What bounds the chunk.** Two pressures, not one. The obvious is the corpus itself. The less obvious
+is that the centring step of §7.3 materialises an $n_{\text{chunk}}\times d$ residual array: 59 MB at
+cosmobase scale with $d=50$, but **4 GB at $10^7$ atoms**. Since chunking is already the mechanism
+here, this needs no separate machinery — but it does mean the chunk size must be chosen against $d$,
+not against atom count alone.
 
 **Variance access.** $s^2=\dfrac{N}{N-1}\,\sigma^2$, **undefined at $N=1$** — return `None`, never
 `0.0`. A stored zero is indistinguishable from a genuinely homogeneous class and silently corrupts
@@ -429,6 +448,25 @@ It does double duty: besides combining fitted models, this is also the *accumula
 (§4.1). Reducing a chunk and merging chunks are the same operation at different granularities, so
 there is no separate streaming path to implement.
 
+**Vector targets change nothing structurally.** The weights $w_A,w_B$ stay scalar — support is a
+count of nodes, not of components — so the two moment updates are the same expressions broadcast
+across $d$, with $\delta^2$ read as the elementwise $\delta^{\odot2}$. Verified against exact
+moments: mean to $1.5\times10^{-12}$, $\sigma^2$ to $2.5\times10^{-14}$.
+
+**Upgrading to full covariance is a one-term change.** Replacing the elementwise square with an outer
+product,
+
+$$
+\Sigma = w_A\Sigma_A + w_B\Sigma_B + w_A w_B\,\delta\delta^{\!\top},
+$$
+
+is the same law-of-total-variance identity in matrix form, and nothing else in the merge, the fold,
+or the identity element moves. Verified: chunked merging reproduces the exact covariance to
+$1.2\times10^{-13}$, and its diagonal agrees with the per-dimension $\sigma^2$ to $8.9\times10^{-16}$.
+The cost is $O(d^2)$ storage per class instead of $O(d)$, which is why the diagonal is the default —
+but the option is open at any time, and that is a direct consequence of §5.2 being an identity rather
+than an ad hoc correction.
+
 Commutativity is manifest: $w_A\leftrightarrow w_B$ swaps the averaged terms, and $\delta\mapsto
 -\delta$ leaves $\delta^2$ unchanged while $w_Aw_B$ is symmetric. Associativity is not visible by
 inspection and remains a property test (§5.4).
@@ -457,21 +495,22 @@ def merge_level(A, B, remap_prev):
             vocab[h] = cid
         remap[bid] = cid
 
-    m, n_new = len(A.vocab), len(vocab)
-    count  = np.zeros(n_new, np.int64);    count[:m]  = A.count
-    mean   = np.zeros(n_new, np.float64);  mean[:m]   = A.mean
-    msd    = np.zeros(n_new, np.float64);  msd[:m]    = A.msd
-    parent = np.full(n_new, -1, np.int32); parent[:m] = A.parent
+    m, n_new, d = len(A.vocab), len(vocab), A.mean.shape[1]
+    count  = np.zeros(n_new, np.int64);       count[:m]  = A.count
+    mean   = np.zeros((n_new, d), np.float64); mean[:m]  = A.mean
+    msd    = np.zeros((n_new, d), np.float64); msd[:m]   = A.msd
+    parent = np.full(n_new, -1, np.int32);    parent[:m] = A.parent
 
     i  = remap                     # a bijection, so no duplicate scatter writes
     nA = count[i].astype(np.float64)
     nB = B.count.astype(np.float64)
     n  = nA + nB
-    wA, wB = nA / n, nB / n        # n >= 1 always: no 0/0, no guard needed
+    wA, wB = (nA / n)[:, None], (nB / n)[:, None]   # scalar weights, broadcast over d
+                                                    # n >= 1 always: no 0/0, no guard
 
     delta = B.mean - mean[i]       # must precede the mean update below
 
-    msd[i]    = wA * msd[i] + wB * B.msd + wA * wB * delta**2
+    msd[i]    = wA * msd[i] + wB * B.msd + wA * wB * delta**2   # elementwise square
     mean[i]   = wA * mean[i] + wB * B.mean
     count[i]  = n.astype(np.int64)
     parent[i] = -1 if remap_prev is None else remap_prev[B.parent]
@@ -565,7 +604,7 @@ degree 6, levels 0–5, measured 2026-08-17.
 ```text
 concatenate corpus block-diagonally, build CSR            (§7.1)
 for k = 1..L:  refine all atoms at once                   (§7.2)
-for k = 0..L:  two-pass bincount -> (N, mean, sigma^2)    (§7.3)
+for k = 0..L:  sparse two-pass -> (N, mean, sigma^2)      (§7.3)
                parent falls out of the deduped signatures
     -> an immutable shard model
 reduce shard models pairwise as a balanced tree           (§5.4)
@@ -634,54 +673,68 @@ dominates by an order of magnitude; optimising anything else is wasted effort.
 
 ### 7.3 Statistics
 
+Reduce with a **sparse class-membership operator** $P\in\{0,1\}^{n_c\times n}$, built once per level
+and reused across both passes and all $d$ dimensions:
+
 ```python
-N    = np.bincount(labels, minlength=nc)
-S    = np.bincount(labels, weights=y, minlength=nc)
-mean = np.divide(S, N, out=np.zeros(nc), where=N > 0)
-d    = y - mean[labels]                       # centre first, then reduce
-M2   = np.bincount(labels, weights=d * d, minlength=nc)
-sigma2 = np.divide(M2, N, out=np.zeros(nc), where=N > 0)
+P = sparse.csr_matrix((np.ones(n), (labels, np.arange(n))), shape=(nc, n))
+
+N      = np.bincount(labels, minlength=nc)
+S      = P @ Y                                # (nc, d)
+mean   = S / N[:, None]
+R      = Y - mean[labels]                     # centre first, then reduce
+msd    = (P @ (R * R)) / N[:, None]
 ```
 
+`np.bincount(weights=...)` is scalar-only, so it cannot carry vector targets without a loop over
+dimensions. The sparse operator handles both, and is not a compromise at $d=1$ — fair comparison,
+identical work:
+
+| $d$ | sparse $P^\top Y$ | `bincount` × $d$ |
+|---:|---:|---:|
+| 1 | **0.7 ms** | 0.8 ms |
+| 4 | 3.7 ms | **3.3 ms** |
+| 16 | **13.4 ms** | 17.0 ms |
+| 50 | **33.6 ms** | 59.0 ms |
+| 128 | **79.5 ms** | 140.1 ms |
+
+Tied at $d=1$, 1.8× faster at σ-profile widths, and one code path rather than a scalar special case.
+Building $P$ costs 1.0 ms and is amortised over both passes.
+
 This reduces one chunk. Chunks combine through §5.2 — see §4.1: chunk size is a memory decision, and
-the scalar recurrence is simply the chunk-of-one endpoint, not a different code path.
-
-| level-2 aggregation, 147k atoms → 25,382 classes | time |
-|---|---:|
-| two-pass `bincount`, whole corpus as one chunk | **1.0 ms** |
-| `reduceat` (including the sort it requires) | 11.8 ms |
-| chunk-of-one (scalar Welford loop) | 109.5 ms |
-
-The last row is the cost of choosing the smallest chunk rather than the largest: same statistics,
-110× the time.
+the scalar recurrence is simply the chunk-of-one endpoint, not a different code path. For scale, at
+$d=1$ the chunk-of-one extreme (a scalar Welford loop) costs 109.5 ms against 0.7 ms here: identical
+statistics, 150× the time.
 
 ### 7.4 Two traps
 
-**`reduceat` instead of `bincount`.** It requires the data sorted by group — an $O(n\log n)$ argsort
-`bincount` avoids — and it corrupts empty groups silently. When `starts[i] >= starts[i+1]` it returns
+**`reduceat` as the segment reducer.** It handles `axis=0` and so looks like the natural fit for
+vector targets, but it requires the data sorted by group — an $O(n\log n)$ argsort the sparse
+operator avoids — and it corrupts empty groups silently. When `starts[i] >= starts[i+1]` it returns
 `y[starts[i]]` rather than $0$:
 
 ```text
 labels [0 0 3 3]   y [10 20 30 40]      # classes 1 and 2 empty
-bincount : [30.  0.  0. 70.]
+correct  : [30.  0.  0. 70.]
 reduceat : [30. 30. 30. 70.]            <- classes 1,2 silently wrong
 ```
 
 Empty groups cannot occur while ids are interned per shard, but they appear the moment a shard is
-indexed against a merged global vocabulary — which is exactly what §5 does. Use `bincount`.
+indexed against a merged global vocabulary — which is exactly what §5 does. It is also slower than
+$P$ at every width measured (52.4 ms against 11.4 ms for the segment sum at $d=50$). No reason to
+reach for it.
 
-**Power sums instead of centring.** The one-pass form $Q/N-\bar y^2$ with $Q=\sum y^2$ is the obvious
-vectorisation and is unusable, as §4.1 argues on principle and this measures in practice. On targets
-with mean $10^6$ and spread $3$:
+**Power sums instead of centring.** The one-pass form $Q/N-\bar y^{\odot2}$ with $Q=\sum y^{\odot2}$
+is the obvious vectorisation and is unusable, as §4.1 argues on principle and this measures in
+practice. On targets with mean $10^6$ and spread $3$:
 
-| | max rel. error vs Welford | negative variances |
+| | max rel. error | negative variances |
 |---|---:|---:|
-| two-pass `bincount` | 5.4e-08 | 0 |
-| `reduceat` | 5.4e-08 | 0 |
+| two-pass, centred | 5.4e-08 | 0 |
 | power sums | **1.3e+02** | **2** |
 
-Centring costs one extra pass and one gather. The fast-looking formula and the correct formula are
-not the same formula.
+Centring costs one extra pass and one $n\times d$ temporary (§4.1). The fast-looking formula and the
+correct formula are not the same formula.
 
 ### 7.5 Input alignment is the highest-severity failure mode
 
@@ -728,7 +781,12 @@ Treat as an opt-in compaction of a finished raw-mean model, not a default.
 6. **The attribute order in §3.5**, and its granularity — one level per attribute, or grouped levels
    (e.g. aromaticity and hybridization together). The proposed chemical default is a starting point,
    not a measured one.
-7. **Whether neighbours should carry a coarser attribute schema than the centre (§3.6).** Measured on
+7. **Whether to store the full class covariance** rather than its diagonal (§5.2). The merge upgrades
+   by one term and is already verified; the cost is $O(d^2)$ per class instead of $O(d)$. Deferred
+   until there is a use for the off-diagonal structure — correlated σ-profile bins would be the
+   obvious one. Whether $\alpha$ (§4.2) should then become per-dimension is a separate question, and
+   should stay scalar without evidence.
+8. **Whether neighbours should carry a coarser attribute schema than the centre (§3.6).** Measured on
    cosmobase: coarsening buys ~0.6 levels of extra reach at identical support. What remains open is
    whether that reach is *worth* the attribute resolution it costs, which needs targets. Run the
    comparison again with real σ-profiles or partial charges and decide on MAE at the matched class.
