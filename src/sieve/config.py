@@ -51,7 +51,14 @@ class SieveConfig:
             raise ValueError("target_dim must be >= 1")
         if self.n_min < 1:
             raise ValueError("n_min must be >= 1")
-        # Freeze the mappings so the frozen dataclass is honest.
+        self._freeze_mappings()
+
+    def _freeze_mappings(self) -> None:
+        """Wrap ``attribute_codes``/``edge_codes`` in ``MappingProxyType``.
+
+        Shared by ``__post_init__`` and ``__setstate__`` so freezing is one
+        piece of logic rather than two copies that can drift apart.
+        """
         object.__setattr__(
             self,
             "attribute_codes",
@@ -71,6 +78,26 @@ class SieveConfig:
         (design.md 10.2), used internally by `cross_val_score`/`GridSearchCV`.
         """
         return self
+
+    def __getstate__(self) -> dict:
+        """Unwrap the ``MappingProxyType``s for pickling.
+
+        The stdlib ``pickle`` protocol has no support for ``MappingProxyType``
+        either (same root cause as ``__deepcopy__`` above), which otherwise
+        breaks ``multiprocessing`` -- parallel fitting across shards (design.md
+        5.1: "parallel and distributed fitting are a fold over independently
+        fitted shards") needs a config that survives the trip to a worker
+        process.
+        """
+        state = self.__dict__.copy()
+        state["attribute_codes"] = {k: dict(v) for k, v in self.attribute_codes.items()}
+        state["edge_codes"] = dict(self.edge_codes)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        for k, v in state.items():
+            object.__setattr__(self, k, v)
+        self._freeze_mappings()
 
     @property
     def n_levels(self) -> int:

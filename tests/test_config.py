@@ -1,3 +1,4 @@
+import pickle
 from dataclasses import replace
 
 import pytest
@@ -61,3 +62,15 @@ def test_empty_attribute_group_is_rejected():
         base(attribute_levels=((),))
     with pytest.raises(ValueError, match="attribute"):
         base(attribute_levels=(("element",), ()))
+
+
+def test_config_survives_a_pickle_round_trip():
+    """MappingProxyType (attribute_codes/edge_codes) has no stdlib pickle
+    support and raises by default -- this is what multiprocessing needs to
+    ship a config to a worker process for parallel fitting (design.md 5.1)."""
+    cfg = base(attribute_codes={"element": {"C": 0, "H": 1}})
+    restored = pickle.loads(pickle.dumps(cfg))
+    assert restored.schema_version == cfg.schema_version
+    assert restored.attribute_codes == cfg.attribute_codes
+    with pytest.raises(TypeError):
+        restored.attribute_codes["element"]["N"] = 2  # still frozen
