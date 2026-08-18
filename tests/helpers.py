@@ -1,14 +1,14 @@
 """Fixtures shared across the suite."""
 import numpy as np
-from wllr.batch import AtomBatch
-from wllr.config import WLLRConfig
+from sieve.batch import AtomBatch
+from sieve.config import SieveConfig
 
 def simple_config(**kw):
     d = dict(target_dim=1, attribute_levels=(("element",),),
              attribute_codes={"element": {"C": 0, "H": 1}},
              edge_codes={"SINGLE": 1, "DOUBLE": 2}, max_wl_depth=2)
     d.update(kw)
-    return WLLRConfig(**d)
+    return SieveConfig(**d)
 
 def chain_batch(n, d=1, seed=0, graphs=1):
     """`graphs` disjoint paths of n nodes each, alternating attributes."""

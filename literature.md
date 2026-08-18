@@ -1,7 +1,7 @@
-# WLLR — Literature Review and Novelty Assessment
+# Sieve — Literature Review and Novelty Assessment
 
 **Status:** reference material for the manuscript
-**Scope:** what has been published that overlaps with WLLR, and what is defensibly new
+**Scope:** what has been published that overlaps with Sieve, and what is defensibly new
 **Relationship to `design.md`:** that document specifies the method and implementation. This one makes
 no implementation claims and should not be built from. Method details quoted here for comparison may
 have evolved; `design.md` is authoritative on all of them.
@@ -12,7 +12,7 @@ have evolved; `design.md` is authoritative on all of them.
 ## 1. Search strategy
 
 A narrow search for "Weisfeiler–Lehman regression," "WL target encoding," or "WL mean regression"
-misses the relevant precedents, because WLLR combines ideas developed in partly separate literatures.
+misses the relevant precedents, because Sieve combines ideas developed in partly separate literatures.
 The search was therefore decomposed into:
 
 1. discrete rooted-environment representations;
@@ -32,7 +32,7 @@ with hierarchical fallback or smoothing?"*
 
 ## 2. Map of closest precedents
 
-| Work | Main overlap with WLLR | Main difference | Relevance |
+| Work | Main overlap with Sieve | Main difference | Relevance |
 |---|---|---|---|
 | **Kuhn et al. 2008, HOSE NMR prediction** | Nested atom environments; average of matching targets; sphere-by-sphere fallback | HOSE rather than WL; NMR-specific | Closest precedent for the exact inference rule |
 | **Katz 1987, backoff smoothing** | Most-specific context → recursive backoff to shorter context under sparse counts | Language modeling; discrete distributions, not conditional means | Canonical precedent for the backoff *principle* |
@@ -48,11 +48,11 @@ with hierarchical fallback or smoothing?"*
 
 ---
 
-## 3. WLLR as a hierarchical regressogram
+## 3. Sieve as a hierarchical regressogram
 
-At every level $k$, WL defines a partition $\Pi_k=\{C_{k,1},C_{k,2},\ldots\}$. WLLR associates each
+At every level $k$, WL defines a partition $\Pi_k=\{C_{k,1},C_{k,2},\ldots\}$. Sieve associates each
 cell with its empirical target mean, and at prediction time selects the finest supported cell on the
-query node's ancestry chain. Thus WLLR is
+query node's ancestry chain. Thus Sieve is
 
 > **a hierarchical regressogram over the nested vertex partitions induced by WL color refinement**,
 
@@ -73,7 +73,7 @@ Bremser introduced **HOSE** (Hierarchically Ordered Spherical Environment) codes
 progressively larger atom-centered chemical environments [Bremser1978HOSE]. NMRShiftDB used
 HOSE-based lookup tables for chemical-shift prediction [Steinbeck2003NMRShiftDB].
 
-Kuhn et al. describe an NMR prediction procedure extremely close to WLLR [Kuhn2008NMR]: construct a
+Kuhn et al. describe an NMR prediction procedure extremely close to Sieve [Kuhn2008NMR]: construct a
 multi-sphere HOSE code; search training data for atoms with the same environment; if matches exist,
 use the **average** of their target values; if not, reduce the number of spheres until a match is
 obtained.
@@ -97,7 +97,7 @@ statistical language modeling. Katz backoff predicts from the most specific $n$-
 sufficient count and otherwise recurses to the $(n-1)$-gram, with discounting to reserve mass for
 unseen contexts [Katz1987Backoff].
 
-WLLR's $h_L\to h_{L-1}\to\cdots$ is the same recursion with refinement level playing the role of
+Sieve's $h_L\to h_{L-1}\to\cdots$ is the same recursion with refinement level playing the role of
 context length. This matters for the write-up in two ways:
 
 1. It further weakens any claim to novelty for the backoff mechanism itself, and should be
@@ -119,9 +119,9 @@ partial-charge assignment [Lehner2023DASH]. DASH builds a tree of increasingly d
 substructures, with expansion order guided by attention values from a GNN trained for partial-charge
 prediction.
 
-Shared with WLLR: atom-centered hierarchical environments; increasingly specific local descriptions;
+Shared with Sieve: atom-centered hierarchical environments; increasingly specific local descriptions;
 interpretable structural matching; empirical property information attached to matched classes.
-Differences: DASH's hierarchy is derived from a trained GNN and is chemistry-specific; WLLR's is
+Differences: DASH's hierarchy is derived from a trained GNN and is chemistry-specific; Sieve's is
 deterministic WL refinement on arbitrary attributed graphs.
 
 ### 4.4 DASH Properties (2024): the closest general precedent
@@ -135,7 +135,7 @@ and electrophilicity/nucleophilicity-related quantities.
 DASH Properties is therefore already a model of the form *hierarchical local structural class →
 empirical atomic-property statistic*.
 
-| DASH Properties | WLLR |
+| DASH Properties | Sieve |
 |---|---|
 | hierarchy extracted from a GNN-attention model | hierarchy defined directly by WL refinement |
 | chemistry-specific atom substructures | arbitrary attributed graphs |
@@ -145,13 +145,13 @@ empirical atomic-property statistic*.
 | matching/stopping determined by DASH traversal | explicit deepest-supported-class policy |
 | ancestor backoff is not the defining rule | ancestor backoff is core behavior |
 
-**Implication.** WLLR must not be described as "generalizing HOSE lookup to arbitrary atomic
+**Implication.** Sieve must not be described as "generalizing HOSE lookup to arbitrary atomic
 properties" — DASH Properties already demonstrates transferable hierarchical lookup across multiple
-atomic properties. The defensible distinction is that WLLR uses the *canonical* nested partition
+atomic properties. The defensible distinction is that Sieve uses the *canonical* nested partition
 induced by WL refinement itself as both the regression hierarchy and the OOV hierarchy, without first
 learning a representation or constructing a domain-specific tree.
 
-**A caution about multi-property claims.** Since WLLR now carries vector targets, it does what DASH
+**A caution about multi-property claims.** Since Sieve now carries vector targets, it does what DASH
 Properties advertises — one hierarchy, many properties, no refit — by storing a vector per class
 rather than repeating a scalar fit. That capability is therefore *not* a point of distinction, and
 claiming it as one would be answered by this paper directly. The distinction is the hierarchy, not
@@ -160,7 +160,7 @@ the multiplicity of properties.
 ### 4.5 WL refinement already defines the hierarchy
 
 Kriege, Giscard, and Wilson exploit the hierarchical structure induced by WL refinement in the WL
-optimal-assignment kernel [Kriege2016WLOA]. This is the citation to use when defining WLLR's
+optimal-assignment kernel [Kriege2016WLOA]. This is the citation to use when defining Sieve's
 parent/ancestor relation, so that the backoff chain is presented as a known property of WL rather
 than a construction of this work.
 
@@ -175,7 +175,7 @@ Two consequences:
 
 1. On molecules, the level-$k$ identifier is essentially the ECFP atom-environment identifier at
    radius $k$. Any claim that WL identifiers offer a new molecular representation would be incorrect,
-   and a cheminformatics reviewer will say so immediately. The framing must be that WLLR is a new
+   and a cheminformatics reviewer will say so immediately. The framing must be that Sieve is a new
    *estimator over* a very familiar representation.
 2. It is a practical opportunity: an RDKit-backed implementation can be validated against
    `GetMorganFingerprint` atom-environment identifiers as an independent correctness check on the
@@ -214,7 +214,7 @@ atomic-property assignment.
 
 ### 4.9 Generalized WL kernels: a principled future extension
 
-Exact WLLR treats two different identifiers at the same level as unrelated. Schulz et al. identify the
+Exact Sieve treats two different identifiers at the same level as unrelated. Schulz et al. identify the
 analogous rigidity in standard WL kernels and compare neighborhood trees by graded similarity instead
 of binary equality [Schulz2022GeneralizedWL].
 
@@ -224,19 +224,19 @@ $$
 \text{exact }h_k\rightarrow\text{similar }h_k\rightarrow h_{k-1}\rightarrow\cdots
 $$
 
-This is future work, not part of the base WLLR definition.
+This is future work, not part of the base Sieve definition.
 
 ### 4.10 Node regression and WL equivalence
 
 D'Inverno et al. analyze the approximation capability of GNNs for node classification and regression
 in relation to 1-WL equivalence, showing GNNs are universal approximators in probability for functions
-satisfying 1-WL node equivalence [DInverno2024NodeRegression]. This supports interpreting WLLR as a
+satisfying 1-WL node equivalence [DInverno2024NodeRegression]. This supports interpreting Sieve as a
 model that is constant within finite-depth WL equivalence classes, and bounds what any depth-matched
-GNN baseline can do that WLLR cannot.
+GNN baseline can do that Sieve cannot.
 
 The correspondence between message passing and WL is exact in the standard sense: a $k$-layer MPNN is
 at most as discriminative as $k$ rounds of 1-WL, with equality for injective aggregators
-[Morris2019WLGoNeural]. This motivates **depth-matched** GNN baselines — comparing WLLR at level $K$
+[Morris2019WLGoNeural]. This motivates **depth-matched** GNN baselines — comparing Sieve at level $K$
 against a $K$-layer MPNN isolates the value of learned continuous interpolation over the WL partition,
 since both see exactly the same information.
 
@@ -251,7 +251,7 @@ strict anti-leakage protocol.
 ### 4.12 Uncertainty
 
 Jonas and Kuhn developed NMR prediction with quantified uncertainty [JonasKuhn2019Uncertainty]. Not
-the same estimator, but the relevant background if calibrated uncertainty is ever added to WLLR's
+the same estimator, but the relevant background if calibrated uncertainty is ever added to Sieve's
 $(k^\star,N,s^2)$ diagnostics — which are explicitly *not* calibrated intervals.
 
 ---
@@ -346,7 +346,7 @@ Micci-Barreca 2001; Agarwal et al. 2022.
 9. **Bilmes & Kirchhoff 2003** — backoff over ordered factors, and the ordering problem.
 10. **Schulz et al. 2022 / generalized WL** — basis for future similarity-based smoothing.
 
-> **WLLR should be presented as a particular use of WL's nested vertex partitions as the complete
+> **Sieve should be presented as a particular use of WL's nested vertex partitions as the complete
 > regression and OOV-backoff hierarchy, not as the invention of hierarchical environment-based
 > property lookup.**
 
@@ -404,7 +404,7 @@ Mobley et al. is registered for §9.2, where it marks an open gap rather than a 
 is not yet reflected in §2, §4, or §5.
 
 Welford 1962 and Chan, Golub & LeVeque 1983 are also registered, cited by `design.md` for the
-accumulation and merge algorithms rather than as WLLR precedents.
+accumulation and merge algorithms rather than as Sieve precedents.
 
 ---
 
@@ -442,7 +442,7 @@ closed before the evaluation plan is fixed. Item 5 is the only one that could st
 
 ### 9.1 The regressogram framing is uncited
 
-§3 calls WLLR "a hierarchical regressogram over the nested vertex partitions induced by WL colour
+§3 calls Sieve "a hierarchical regressogram over the nested vertex partitions induced by WL colour
 refinement" and §5.3 treats that as the most defensible one-line description of the method. It is also
 the only section of this document with no supporting reference.
 
@@ -467,10 +467,10 @@ The Open Force Field initiative is the right entry point, and the citation cuts 
 Mobley et al. introduced **direct chemical perception** (SMIRNOFF) explicitly as a way to *escape*
 atom types, arguing that discrete typing hierarchies are brittle, hard to extend, and force
 chemically-unjustified parameter sharing [Mobley2018SMIRNOFF]. So the same literature supplies both
-the strongest precedent for WLLR's machinery and a published argument that discrete structural-class
+the strongest precedent for Sieve's machinery and a published argument that discrete structural-class
 hierarchies are the thing to move away from.
 
-WLLR needs an answer to that argument, and it has one worth making explicitly: WL classes are not
+Sieve needs an answer to that argument, and it has one worth making explicitly: WL classes are not
 hand-authored, the hierarchy is canonical rather than curated, and backoff is a principled estimator
 under sparse support rather than a pattern-ordering heuristic. That is a stronger position than
 ignoring the objection.
@@ -484,7 +484,7 @@ Shrinkage toward the already-shrunk parent over a nested grouping structure is, 
 pooling in a nested random-effects model. This document cites Agarwal et al. (trees) and mentions
 Jelinek–Mercer interpolation in §4.2 prose without registering it as a reference.
 
-A statistics reviewer may argue that hierarchically shrunk WLLR *is* an approximate varying-intercept
+A statistics reviewer may argue that hierarchically shrunk Sieve *is* an approximate varying-intercept
 model over WL classes, and ask why a multilevel model is not fitted directly. The answer is presumably
 cost and the merge property — the closed-form shrinkage survives model merging, a fitted hierarchical
 model would not — but that answer is not currently written down anywhere.

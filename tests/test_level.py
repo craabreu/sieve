@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
-from wllr.level import FrozenLevel, fit_level, global_stats
-from wllr.refine import LevelLabels
+from sieve.level import FrozenLevel, fit_level, global_stats
+from sieve.refine import LevelLabels
 
 def lv(labels, nc=None):
     labels = np.asarray(labels, np.int64)

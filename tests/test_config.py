@@ -1,5 +1,5 @@
 import pytest
-from wllr.config import WLLRConfig, check_mergeable
+from sieve.config import SieveConfig, check_mergeable
 
 def base(**kw):
     d = dict(target_dim=1,
@@ -8,7 +8,7 @@ def base(**kw):
              edge_codes={"SINGLE": 1},
              max_wl_depth=3)
     d.update(kw)
-    return WLLRConfig(**d)
+    return SieveConfig(**d)
 
 def test_schema_version_is_stable():
     assert base().schema_version == base().schema_version

@@ -10,10 +10,10 @@ from dataclasses import replace
 
 import numpy as np
 
-from wllr.batch import AtomBatch
-from wllr.config import WLLRConfig
-from wllr.model import fit as _fit
-from wllr.predict import predict as _predict
+from sieve.batch import AtomBatch
+from sieve.config import SieveConfig
+from sieve.model import fit as _fit
+from sieve.predict import predict as _predict
 
 
 class GraphKFold:
@@ -38,8 +38,8 @@ class GraphKFold:
         return self.n_splits
 
 
-class WLLRRegressor:
-    def __init__(self, config: WLLRConfig, n_min: int | None = None,
+class SieveRegressor:
+    def __init__(self, config: SieveConfig, n_min: int | None = None,
                  alpha: float | None = None):
         self.config = config
         self.n_min = config.n_min if n_min is None else n_min
@@ -49,12 +49,12 @@ class WLLRRegressor:
     def get_params(self, deep: bool = True) -> dict:
         return {"config": self.config, "n_min": self.n_min, "alpha": self.alpha}
 
-    def set_params(self, **params) -> "WLLRRegressor":
+    def set_params(self, **params) -> "SieveRegressor":
         for k, v in params.items():
             setattr(self, k, v)
         return self
 
-    def fit(self, X: AtomBatch, y=None) -> "WLLRRegressor":
+    def fit(self, X: AtomBatch, y=None) -> "SieveRegressor":
         cfg = replace(self.config, n_min=self.n_min, alpha=self.alpha)
         batch = X if y is None else AtomBatch(**{**X.__dict__, "y": y})
         self.model_ = _fit(batch, cfg)

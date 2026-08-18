@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from wllr.batch import AtomBatch, check_alignment
-from wllr.config import WLLRConfig
+from sieve.batch import AtomBatch, check_alignment
+from sieve.config import SieveConfig
 
 
-def from_segment_store(store, target="area", *, config: WLLRConfig,
+def from_segment_store(store, target="area", *, config: SieveConfig,
                        scheme="cosmo-rs") -> tuple[AtomBatch, np.ndarray]:
     """Build a batch and a test mask from a cosmolayer segment store.
 
@@ -19,7 +19,7 @@ def from_segment_store(store, target="area", *, config: WLLRConfig,
     """
     from rdkit import Chem
 
-    from wllr.io.rdkit_adapter import from_rdkit
+    from sieve.io.rdkit_adapter import from_rdkit
 
     df = store.molecules_df
     ai = np.asarray(store.atom_indices)

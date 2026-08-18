@@ -1,5 +1,5 @@
 import numpy as np
-from wllr.dedupe import dense_rows
+from sieve.dedupe import dense_rows
 
 def test_identical_rows_share_an_id():
     m = np.array([[1, 2], [3, 4], [1, 2], [5, 6]], np.int64)

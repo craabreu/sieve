@@ -1,4 +1,4 @@
-# WLLR reference registry — DOI-bearing entries
+# Sieve reference registry — DOI-bearing entries
 #
 # Format:  <citekey>  <DOI>
 #   - one entry per line, whitespace-separated

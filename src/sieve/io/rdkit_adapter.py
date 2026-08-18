@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from wllr.batch import AtomBatch
-from wllr.config import WLLRConfig
+from sieve.batch import AtomBatch
+from sieve.config import SieveConfig
 
 _ATTRS = {
     "element": lambda a: a.GetSymbol(),
@@ -33,7 +33,7 @@ def build_codes(mols, attributes):
     return codes, edge_codes
 
 
-def from_rdkit(mols, y=None, *, config: WLLRConfig,
+def from_rdkit(mols, y=None, *, config: SieveConfig,
                atom_order=None) -> AtomBatch:
     flat = [a for g in config.attribute_levels for a in g]
     n = sum(m.GetNumAtoms() for m in mols)
@@ -69,7 +69,7 @@ def from_rdkit(mols, y=None, *, config: WLLRConfig,
                      graph_id=graph_id, y=y, elements=elements)
 
 
-def from_smiles(smiles, y=None, *, config: WLLRConfig) -> AtomBatch:
+def from_smiles(smiles, y=None, *, config: SieveConfig) -> AtomBatch:
     from rdkit import Chem
     mols = [Chem.MolFromSmiles(s) for s in smiles]
     if any(m is None for m in mols):

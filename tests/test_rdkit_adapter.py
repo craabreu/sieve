@@ -2,16 +2,16 @@ import numpy as np
 import pytest
 rdkit = pytest.importorskip("rdkit")
 from rdkit import Chem
-import wllr
-from wllr.config import WLLRConfig
-from wllr.io.rdkit_adapter import build_codes, from_smiles
+import sieve
+from sieve.config import SieveConfig
+from sieve.io.rdkit_adapter import build_codes, from_smiles
 
 SMILES = ["CCO", "c1ccccc1", "CC(=O)N", "CCl"]
 
 def cfg_for(smiles, attrs=(("element",), ("aromatic", "hybridization"))):
     flat = [a for g in attrs for a in g]
     codes, edges = build_codes([Chem.MolFromSmiles(s) for s in smiles], flat)
-    return WLLRConfig(target_dim=1, attribute_levels=attrs,
+    return SieveConfig(target_dim=1, attribute_levels=attrs,
                       attribute_codes=codes, edge_codes=edges, max_wl_depth=2)
 
 def test_batch_shapes_match_the_molecules():
@@ -41,15 +41,15 @@ def test_unseen_category_gets_the_reserved_unknown_code():
 def test_unknown_atoms_fall_back_rather_than_colliding():
     cfg = cfg_for(["CCO"])
     train = from_smiles(["CCO"], y=np.zeros((3, 1)), config=cfg)
-    m = wllr.fit(train, cfg)
-    p = wllr.predict_detailed(m, from_smiles(["CCl"], config=cfg))
+    m = sieve.fit(train, cfg)
+    p = sieve.predict_detailed(m, from_smiles(["CCl"], config=cfg))
     assert (p.matched_level == -1).any()
 
 def test_wl_labels_agree_with_morgan_atom_environments():
     """literature.md 4.6: WL identifiers on molecules ARE ECFP identifiers, so
     RDKit gives an independent check on the encoder."""
     from rdkit.Chem import rdFingerprintGenerator
-    from wllr.refine import refine
+    from sieve.refine import refine
     smis = ["CCO", "CCC", "c1ccccc1C", "CC(=O)O"]
     cfg = cfg_for(smis, attrs=(("element", "degree", "formal_charge",
                                 "num_h", "aromatic"),))
@@ -73,7 +73,7 @@ def test_alignment_guard_catches_a_shuffled_target_array():
     y = np.arange(3, dtype=float).reshape(-1, 1)
     b = from_smiles(["CCO"], y=y, config=cfg)
     assert b.elements is not None
-    from wllr.batch import check_alignment
+    from sieve.batch import check_alignment
     with pytest.raises(ValueError, match="element"):
         check_alignment(b, np.array([3]), b.elements[::-1].copy())
 

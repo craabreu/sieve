@@ -1,15 +1,15 @@
 import numpy as np
 import pytest
-from wllr.batch import AtomBatch
-from wllr.config import WLLRConfig
-from wllr.refine import refine
+from sieve.batch import AtomBatch
+from sieve.config import SieveConfig
+from sieve.refine import refine
 
 def cfg(**kw):
     d = dict(target_dim=1, attribute_levels=(("element",),),
              attribute_codes={"element": {"C": 0, "H": 1}},
              edge_codes={"SINGLE": 1, "DOUBLE": 2}, max_wl_depth=2)
     d.update(kw)
-    return WLLRConfig(**d)
+    return SieveConfig(**d)
 
 def path_graph(n, attrs=None):
     src = np.repeat(np.arange(n - 1), 2)

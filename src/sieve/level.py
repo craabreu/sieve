@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import sparse
 
-from wllr.refine import LevelLabels
+from sieve.refine import LevelLabels
 
 
 @dataclass(frozen=True)

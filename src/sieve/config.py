@@ -11,8 +11,8 @@ FORMAT_VERSION = 1
 
 
 @dataclass(frozen=True)
-class WLLRConfig:
-    """Immutable configuration for a WLLR model.
+class SieveConfig:
+    """Immutable configuration for a Sieve model.
 
     ``attribute_levels`` declares the graded refinement order below WL depth 0
     (design.md section 3.5): each tuple is one level, introducing that group of
@@ -79,7 +79,7 @@ class WLLRConfig:
         return hashlib.sha256(blob).hexdigest()
 
 
-def check_mergeable(a: WLLRConfig, b: WLLRConfig) -> None:
+def check_mergeable(a: SieveConfig, b: SieveConfig) -> None:
     """Raise unless two models describe the same classes (design.md 5.4).
 
     Loud rejection is the point: silently truncating to ``min(K_a, K_b)`` would

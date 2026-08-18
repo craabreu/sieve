@@ -21,39 +21,39 @@ def store():
 
 
 def _run(store, target):
-    import wllr
-    from wllr.io.cosmolayer_adapter import from_segment_store
-    from wllr.io.rdkit_adapter import build_codes
-    from wllr.config import WLLRConfig
+    import sieve
+    from sieve.io.cosmolayer_adapter import from_segment_store
+    from sieve.io.rdkit_adapter import build_codes
+    from sieve.config import SieveConfig
     from rdkit import Chem
 
     attrs = ("element", "hybridization", "degree", "aromatic")
     p = Chem.SmilesParserParams(); p.removeHs = False
     mols = [Chem.MolFromSmiles(s, p) for s in store.molecules_df.smiles]
     codes, edges = build_codes(mols, attrs)
-    cfg = WLLRConfig(target_dim=1, attribute_levels=(attrs,),
+    cfg = SieveConfig(target_dim=1, attribute_levels=(attrs,),
                      attribute_codes=codes, edge_codes=edges,
                      max_wl_depth=3, n_min=1)
     batch, is_test = from_segment_store(store, target=target, config=cfg)
-    from wllr.model import _sub_batch
-    model = wllr.fit(_sub_batch(batch, ~is_test), cfg)
-    pred = wllr.predict_detailed(model, _sub_batch(batch, is_test))
+    from sieve.model import _sub_batch
+    model = sieve.fit(_sub_batch(batch, ~is_test), cfg)
+    pred = sieve.predict_detailed(model, _sub_batch(batch, is_test))
     y = batch.y[is_test]
     r2 = 1 - np.mean((y - pred.value) ** 2) / y.var()
     return r2, pred
 
 
 def test_corpus_shape(store):
-    import wllr
-    from wllr.io.cosmolayer_adapter import from_segment_store
-    from wllr.io.rdkit_adapter import build_codes
-    from wllr.config import WLLRConfig
+    import sieve
+    from sieve.io.cosmolayer_adapter import from_segment_store
+    from sieve.io.rdkit_adapter import build_codes
+    from sieve.config import SieveConfig
     from rdkit import Chem
     attrs = ("element", "hybridization", "degree", "aromatic")
     p = Chem.SmilesParserParams(); p.removeHs = False
     mols = [Chem.MolFromSmiles(s, p) for s in store.molecules_df.smiles]
     codes, edges = build_codes(mols, attrs)
-    cfg = WLLRConfig(target_dim=1, attribute_levels=(attrs,),
+    cfg = SieveConfig(target_dim=1, attribute_levels=(attrs,),
                      attribute_codes=codes, edge_codes=edges, max_wl_depth=3)
     batch, is_test = from_segment_store(store, target="area", config=cfg)
     assert batch.n_atoms == 227_723
@@ -73,16 +73,16 @@ def test_class_counts_match_the_reference_run(store):
     reference to four significant figures. A tolerance replaces the exact
     match for levels 2-3 rather than reproducing brittle, version-pinned counts.
     """
-    from wllr.io.cosmolayer_adapter import from_segment_store
-    from wllr.io.rdkit_adapter import build_codes
-    from wllr.config import WLLRConfig
-    from wllr.refine import refine
+    from sieve.io.cosmolayer_adapter import from_segment_store
+    from sieve.io.rdkit_adapter import build_codes
+    from sieve.config import SieveConfig
+    from sieve.refine import refine
     from rdkit import Chem
     attrs = ("element", "hybridization", "degree", "aromatic")
     p = Chem.SmilesParserParams(); p.removeHs = False
     mols = [Chem.MolFromSmiles(s, p) for s in store.molecules_df.smiles]
     codes, edges = build_codes(mols, attrs)
-    cfg = WLLRConfig(target_dim=1, attribute_levels=(attrs,),
+    cfg = SieveConfig(target_dim=1, attribute_levels=(attrs,),
                      attribute_codes=codes, edge_codes=edges, max_wl_depth=4)
     batch, _ = from_segment_store(store, target="area", config=cfg)
     counts = [lv.signatures.shape[0] for lv in refine(batch, cfg)]
@@ -109,21 +109,21 @@ def test_atomic_charge_reaches_the_reference_r2(store):
 def test_sigma_profile_predictions_are_non_negative(store):
     """design.md 11.4: backoff and shrinkage are convex combinations of
     training rows, so non-negativity is automatic. Any clipping is a bug."""
-    import wllr
-    from wllr.io.cosmolayer_adapter import from_segment_store
-    from wllr.io.rdkit_adapter import build_codes
-    from wllr.config import WLLRConfig
-    from wllr.model import _sub_batch
+    import sieve
+    from sieve.io.cosmolayer_adapter import from_segment_store
+    from sieve.io.rdkit_adapter import build_codes
+    from sieve.config import SieveConfig
+    from sieve.model import _sub_batch
     from rdkit import Chem
     attrs = ("element", "hybridization", "degree", "aromatic")
     p = Chem.SmilesParserParams(); p.removeHs = False
     mols = [Chem.MolFromSmiles(s, p) for s in store.molecules_df.smiles]
     codes, edges = build_codes(mols, attrs)
-    cfg = WLLRConfig(target_dim=51, attribute_levels=(attrs,),
+    cfg = SieveConfig(target_dim=51, attribute_levels=(attrs,),
                      attribute_codes=codes, edge_codes=edges,
                      max_wl_depth=3, alpha=2.0)
     batch, is_test = from_segment_store(store, target="sigma_profile", config=cfg)
-    model = wllr.fit(_sub_batch(batch, ~is_test), cfg)
-    v = wllr.predict(model, _sub_batch(batch, is_test))
+    model = sieve.fit(_sub_batch(batch, ~is_test), cfg)
+    v = sieve.predict(model, _sub_batch(batch, is_test))
     assert v.shape[1] == 51
     assert v.min() >= 0.0

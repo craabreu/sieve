@@ -1,6 +1,6 @@
-# WLLR — Weisfeiler–Lehman Lookup Regression
+# Sieve
 
-WLLR is a node-level regressor for labelled graphs (molecules, in practice)
+Sieve is a node-level regressor for labelled graphs (molecules, in practice)
 that generalises the classical regressogram to a *nested hierarchy* of
 partitions: it refines each node's environment through graded attribute
 levels and rounds of Weisfeiler–Lehman colour refinement, fits mean and
@@ -22,22 +22,22 @@ pip install -e ".[chem]"      # + RDKit, for the molecular adapter
 ```python
 import numpy as np
 from rdkit import Chem
-import wllr
-from wllr.config import WLLRConfig
-from wllr.io.rdkit_adapter import build_codes, from_smiles
+import sieve
+from sieve.config import SieveConfig
+from sieve.io.rdkit_adapter import build_codes, from_smiles
 
 smiles = ["CCO", "CCC", "c1ccccc1", "CC(=O)O"]
 y = np.array([[1.2], [0.9], [2.3], [1.7]])   # one label per atom's molecule here
 
 mols = [Chem.MolFromSmiles(s) for s in smiles]
 codes, edges = build_codes(mols, ["element", "degree", "aromatic"])
-cfg = WLLRConfig(target_dim=1, attribute_levels=(("element", "degree", "aromatic"),),
+cfg = SieveConfig(target_dim=1, attribute_levels=(("element", "degree", "aromatic"),),
                  attribute_codes=codes, edge_codes=edges, max_wl_depth=2, n_min=1)
 
 batch = from_smiles(smiles, y=np.repeat(y, [m.GetNumAtoms() for m in mols], axis=0),
                     config=cfg)
-model = wllr.fit(batch, cfg)
-pred = wllr.predict_detailed(model, batch)
+model = sieve.fit(batch, cfg)
+pred = sieve.predict_detailed(model, batch)
 print(pred.value, pred.matched_level)
 ```
 
@@ -47,8 +47,8 @@ A fitted model is immutable; combining shards, streaming in chunks, and
 parallel fitting are all the same operation:
 
 ```python
-shards = [wllr.fit(b, cfg) for b in batches]
-model = sum(shards, wllr.WLLRModel.empty(cfg))   # or a.merge(b) pairwise
+shards = [sieve.fit(b, cfg) for b in batches]
+model = sum(shards, sieve.SieveModel.empty(cfg))   # or a.merge(b) pairwise
 ```
 
 `config.chunk_size` uses exactly this path internally — chunking is a memory
@@ -69,6 +69,6 @@ These are deliberate omissions, not oversights:
 
 ## Further reading
 
-`design.md` is the authoritative specification for what WLLR computes and
+`design.md` is the authoritative specification for what Sieve computes and
 why. `literature.md` places it among prior work (target encoding,
 regressograms, WL kernels, COSMO-RS group contributions).

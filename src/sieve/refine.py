@@ -5,9 +5,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wllr.batch import AtomBatch
-from wllr.config import WLLRConfig
-from wllr.dedupe import dense_rows
+from sieve.batch import AtomBatch
+from sieve.config import SieveConfig
+from sieve.dedupe import dense_rows
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class LevelLabels:
         return int(self.signatures.shape[0])
 
 
-def refine(batch: AtomBatch, config: WLLRConfig) -> list[LevelLabels]:
+def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
     """Build the full refinement chain for a corpus.
 
     One array operation per level over the whole block-diagonal corpus -- there

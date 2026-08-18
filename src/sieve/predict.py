@@ -5,10 +5,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from wllr.batch import AtomBatch
-from wllr.merge import _lookup_rows as _lookup
-from wllr.merge import _translate
-from wllr.refine import refine
+from sieve.batch import AtomBatch
+from sieve.merge import _lookup_rows as _lookup
+from sieve.merge import _translate
+from sieve.refine import refine
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,7 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
         alive = hit                                   # prefix property (2.2)
 
     if cfg.alpha is not None:
-        from wllr.shrinkage import shrunk_means
+        from sieve.shrinkage import shrunk_means
         raw = value.copy()
         weight = np.zeros(n)
         shrunk = shrunk_means(model)

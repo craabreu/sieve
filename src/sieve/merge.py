@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from wllr.config import WLLRConfig, check_mergeable
-from wllr.dedupe import dense_rows
-from wllr.level import FrozenLevel
+from sieve.config import SieveConfig, check_mergeable
+from sieve.dedupe import dense_rows
+from sieve.level import FrozenLevel
 
 
 def _translate(sig: np.ndarray, remap_prev: np.ndarray | None,
@@ -145,10 +145,10 @@ def merge_level(a: FrozenLevel, b: FrozenLevel, remap_prev: np.ndarray | None,
 
 def merge_models(a, b):
     """Merge two fitted models (design.md 5)."""
-    from wllr.model import WLLRModel
+    from sieve.model import SieveModel
 
     check_mergeable(a.config, b.config)
-    cfg: WLLRConfig = a.config
+    cfg: SieveConfig = a.config
     n_attr_levels = len(cfg.attribute_levels)
 
     levels, remap = [], None
@@ -160,26 +160,26 @@ def merge_models(a, b):
     nA, nB = float(a.global_count), float(b.global_count)
     n = nA + nB
     if n == 0:
-        return WLLRModel(cfg, tuple(levels), 0, a.global_mean, a.global_msd)
+        return SieveModel(cfg, tuple(levels), 0, a.global_mean, a.global_msd)
     wA, wB = nA / n, nB / n
     delta = b.global_mean - a.global_mean
     g_msd = wA * a.global_msd + wB * b.global_msd + wA * wB * delta * delta
     g_mean = wA * a.global_mean + wB * b.global_mean
-    return WLLRModel(cfg, tuple(levels), int(n), g_mean, g_msd)
+    return SieveModel(cfg, tuple(levels), int(n), g_mean, g_msd)
 
 
-def fold(models, config: WLLRConfig):
+def fold(models, config: SieveConfig):
     """Combine shards as a balanced tree (design.md 5.4).
 
     Each merge costs O(|A| + |B|), so a sequential reduce over N shards is
     O(N^2 s) -- the accumulator grows and is re-copied every step. Pairwise
     reduction is O(N s log N).
     """
-    from wllr.model import WLLRModel
+    from sieve.model import SieveModel
 
     items = list(models)
     if not items:
-        return WLLRModel.empty(config)
+        return SieveModel.empty(config)
     while len(items) > 1:
         items = [merge_models(items[i], items[i + 1]) if i + 1 < len(items)
                  else items[i] for i in range(0, len(items), 2)]

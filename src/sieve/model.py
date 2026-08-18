@@ -5,14 +5,14 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from wllr.batch import AtomBatch
-from wllr.config import WLLRConfig
-from wllr.level import FrozenLevel, fit_level, global_stats
-from wllr.refine import refine
+from sieve.batch import AtomBatch
+from sieve.config import SieveConfig
+from sieve.level import FrozenLevel, fit_level, global_stats
+from sieve.refine import refine
 
 
 @dataclass(frozen=True)
-class WLLRModel:
+class SieveModel:
     """An immutable, exactly sized fitted model (design.md 5.1).
 
     There is no mutable accumulator and no ``partial_fit``: incremental
@@ -20,14 +20,14 @@ class WLLRModel:
     over independently fitted shards.
     """
 
-    config: WLLRConfig
+    config: SieveConfig
     levels: tuple[FrozenLevel, ...]
     global_count: int
     global_mean: np.ndarray
     global_msd: np.ndarray
 
     @classmethod
-    def empty(cls, config: WLLRConfig) -> "WLLRModel":
+    def empty(cls, config: SieveConfig) -> "SieveModel":
         """The identity of the merge monoid (design.md 5.4)."""
         d = config.target_dim
         levels = tuple(
@@ -36,7 +36,7 @@ class WLLRModel:
             for _ in range(config.n_levels))
         return cls(config, levels, 0, np.zeros(d), np.zeros(d))
 
-    def with_params(self, **kw) -> "WLLRModel":
+    def with_params(self, **kw) -> "SieveModel":
         """A new model sharing the same arrays, with inference params changed.
 
         ``n_min`` and ``alpha`` are read at prediction time, so sweeping them
@@ -47,13 +47,13 @@ class WLLRModel:
             raise ValueError(f"with_params only changes inference params, got {bad}")
         return replace(self, config=replace(self.config, **kw))
 
-    def merge(self, other: "WLLRModel") -> "WLLRModel":
+    def merge(self, other: "SieveModel") -> "SieveModel":
         """Combine two models. Named `merge` because `a + b` reads as ensembling."""
-        from wllr.merge import merge_models
+        from sieve.merge import merge_models
         return merge_models(self, other)
 
     def __add__(self, other):
-        """Ergonomic alias so `sum(models, WLLRModel.empty(cfg))` works."""
+        """Ergonomic alias so `sum(models, SieveModel.empty(cfg))` works."""
         if other == 0:
             return self
         return self.merge(other)
@@ -61,15 +61,15 @@ class WLLRModel:
     __radd__ = __add__
 
     def predict(self, batch: AtomBatch) -> np.ndarray:
-        from wllr.predict import predict as _predict
+        from sieve.predict import predict as _predict
         return _predict(self, batch)
 
     def predict_detailed(self, batch: AtomBatch):
-        from wllr.predict import predict_detailed as _predict_detailed
+        from sieve.predict import predict_detailed as _predict_detailed
         return _predict_detailed(self, batch)
 
     def predict_loo(self, batch: AtomBatch):
-        from wllr.predict import predict_loo as _predict_loo
+        from sieve.predict import predict_loo as _predict_loo
         return _predict_loo(self, batch)
 
     def save(self, path) -> None:
@@ -80,7 +80,7 @@ class WLLRModel:
         """
         import json
 
-        from wllr.config import FORMAT_VERSION
+        from sieve.config import FORMAT_VERSION
 
         cfg = self.config
         blob = {
@@ -110,11 +110,11 @@ class WLLRModel:
         np.savez(path, **arrays)
 
     @classmethod
-    def load(cls, path) -> "WLLRModel":
+    def load(cls, path) -> "SieveModel":
         import json
 
-        from wllr.config import FORMAT_VERSION, WLLRConfig
-        from wllr.level import FrozenLevel
+        from sieve.config import FORMAT_VERSION, SieveConfig
+        from sieve.level import FrozenLevel
 
         data = np.load(path, allow_pickle=False)
         blob = json.loads(bytes(data["config"]).decode())
@@ -122,7 +122,7 @@ class WLLRModel:
             raise ValueError(
                 f"unsupported format_version {blob['format_version']}; "
                 f"this build reads {FORMAT_VERSION}. Refusing to guess.")
-        cfg = WLLRConfig(
+        cfg = SieveConfig(
             target_dim=blob["target_dim"],
             attribute_levels=tuple(tuple(g) for g in blob["attribute_levels"]),
             attribute_codes=blob["attribute_codes"],
@@ -144,7 +144,7 @@ class WLLRModel:
         return cls(cfg, levels, int(g[0]), g[1:1 + d], g[1 + d:1 + 2 * d])
 
 
-def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
+def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
     """Fit a model to one corpus.
 
     When ``config.chunk_size`` is set the batch is fitted in pieces and folded,
@@ -159,7 +159,7 @@ def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
             f"{batch.y.shape[1]} columns")
 
     if config.chunk_size is not None and config.chunk_size < batch.n_atoms:
-        from wllr.merge import fold
+        from sieve.merge import fold
         graphs = np.unique(batch.graph_id)
         n_parts = max(1, -(-batch.n_atoms // config.chunk_size))
         shards = []
@@ -172,7 +172,7 @@ def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
     levels_lbl = refine(batch, config)
     levels = tuple(fit_level(lv, batch.y) for lv in levels_lbl)
     n, mean, msd = global_stats(batch.y)
-    return WLLRModel(config, levels, n, mean, msd)
+    return SieveModel(config, levels, n, mean, msd)
 
 
 def _sub_batch(batch: AtomBatch, mask: np.ndarray) -> AtomBatch:

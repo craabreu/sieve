@@ -1,4 +1,4 @@
-# WLLR — Core Data Structure and Estimator Design
+# Sieve — Core Data Structure and Estimator Design
 
 **Status:** working design note, actively edited
 **Date:** 2026-08-17
@@ -11,7 +11,7 @@ review and novelty assessment and makes no implementation claims.
 
 ## 0. What this document covers
 
-Everything below concerns how a fitted WLLR model is **represented, built, combined, and queried**.
+Everything below concerns how a fitted Sieve model is **represented, built, combined, and queried**.
 It does not attempt to settle the method's statistical questions (choice of $K$, shrinkage strength,
 evaluation protocol); those are listed as open in §13.
 
@@ -841,16 +841,16 @@ aspiration — see the round-trip requirement in §10.4.
 A fitted model is immutable (§5.1), so the core does not use the fit-mutates-self convention:
 
 ```python
-model = wllr.fit(batch, config)              # -> WLLRModel, immutable
+model = sieve.fit(batch, config)             # -> SieveModel, immutable
 values = model.predict(batch)                # -> (n_atoms, d)
 detail = model.predict_detailed(batch)       # -> Predictions (§12)
 merged = model_a.merge(model_b)              # or model_a + model_b
-model.save(path);  WLLRModel.load(path)
+model.save(path);  SieveModel.load(path)
 ```
 
 ```python
 @dataclass(frozen=True)
-class WLLRConfig:
+class SieveConfig:
     target_dim: int
     attribute_levels: tuple[tuple[str, ...], ...]   # graded order, §3.5
     max_wl_depth: int
@@ -949,8 +949,8 @@ loses it cannot be validated correctly no matter what the splitter does.
 ### 11.2 Adapters
 
 ```python
-wllr.io.from_rdkit(mols, y=None, *, config)      -> AtomBatch
-wllr.io.from_smiles(smiles, y=None, *, config)   -> AtomBatch
+sieve.io.from_rdkit(mols, y=None, *, config)      -> AtomBatch
+sieve.io.from_smiles(smiles, y=None, *, config)   -> AtomBatch
 ```
 
 The adapter owns attribute encoding: it maps each configured attribute name to a dense integer code

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from wllr.batch import AtomBatch, check_alignment
+from sieve.batch import AtomBatch, check_alignment
 
 def tri():
     """Triangle 0-1-2 plus an isolated node 3, as two graphs."""

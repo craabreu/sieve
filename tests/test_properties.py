@@ -1,7 +1,7 @@
 import numpy as np
-import wllr
-from wllr.batch import AtomBatch
-from wllr.refine import refine
+import sieve
+from sieve.batch import AtomBatch
+from sieve.refine import refine
 from tests.helpers import simple_config
 
 def _cycles(sizes):
@@ -25,7 +25,7 @@ def test_two_wl_indistinguishable_graphs_do_collide():
     """Accepted limit, not a bug: C6 and 2xC3 are 1-WL indistinguishable.
 
     Every node in both is degree-2 with degree-2 neighbours at every depth, so
-    WLLR must assign them one class. Pinning this stops a future contributor
+    Sieve must assign them one class. Pinning this stops a future contributor
     from 'fixing' the expressiveness bound.
     """
     cfg = simple_config(max_wl_depth=4)

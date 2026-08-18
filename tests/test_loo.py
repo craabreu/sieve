@@ -1,14 +1,14 @@
 import numpy as np
-import wllr
+import sieve
 from tests.helpers import chain_batch, simple_config
 
 def test_class_of_two_returns_the_other_member():
     """design.md 10.4: the sharpest statement of what LOO means."""
     cfg = simple_config(max_wl_depth=1)
     b = chain_batch(10, graphs=2, seed=5)
-    m = wllr.fit(b, cfg)
-    p = wllr.predict_loo(m, b)
-    from wllr.refine import refine
+    m = sieve.fit(b, cfg)
+    p = sieve.predict_loo(m, b)
+    from sieve.refine import refine
     labels = refine(b, cfg)[-1].labels
     for c in np.unique(labels):
         members = np.flatnonzero(labels == c)
@@ -26,8 +26,8 @@ def test_singleton_classes_back_off_instead_of_dividing_by_zero():
     each matched atom, not the raw support count)."""
     cfg = simple_config(max_wl_depth=4)
     b = chain_batch(25, graphs=1)
-    m = wllr.fit(b, cfg)
-    p = wllr.predict_loo(m, b)
+    m = sieve.fit(b, cfg)
+    p = sieve.predict_loo(m, b)
     assert np.all(np.isfinite(p.value))
     for k in range(cfg.n_levels):
         at_k = p.matched_level == k
@@ -38,14 +38,14 @@ def test_loo_is_strictly_worse_than_in_sample():
     """The point of the method: in-sample scores are meaningless at n_min=1."""
     cfg = simple_config(max_wl_depth=3)
     b = chain_batch(30, graphs=4, seed=2)
-    m = wllr.fit(b, cfg)
-    ins = np.mean((wllr.predict(m, b) - b.y) ** 2)
-    loo = np.mean((wllr.predict_loo(m, b).value - b.y) ** 2)
+    m = sieve.fit(b, cfg)
+    ins = np.mean((sieve.predict(m, b) - b.y) ** 2)
+    loo = np.mean((sieve.predict_loo(m, b).value - b.y) ** 2)
     assert loo > ins
 
 def test_loo_requires_targets():
     import pytest
     b = chain_batch(6)
-    m = wllr.fit(b, simple_config())
+    m = sieve.fit(b, simple_config())
     with pytest.raises(ValueError, match="targets"):
-        wllr.predict_loo(m, type(b)(**{**b.__dict__, "y": None}))
+        sieve.predict_loo(m, type(b)(**{**b.__dict__, "y": None}))
