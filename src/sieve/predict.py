@@ -25,7 +25,11 @@ class Predictions:
     matched_level: np.ndarray  # (n,) k*, -1 for global fallback
     class_id: np.ndarray  # (n,) id at the matched level, -1 if none
     support: np.ndarray  # (n,) N at the matched class (eff_n if LOO)
-    variance: np.ndarray  # (n, d) s^2, NaN where support == 1
+    # (n, d) s^2, NaN where support == 1. Always the model's stored class
+    # variance (design.md 10.3's LOO formula covers only the mean); under
+    # predict_loo this is *not* adjusted for the held-out node's own label,
+    # unlike `value` and `support`.
+    variance: np.ndarray
     threshold_bound: np.ndarray  # (n,) stopped by n_min rather than by OOV
     raw_value: np.ndarray | None = None
     shrinkage_weight: np.ndarray | None = None
@@ -55,8 +59,9 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
     for k in range(cfg.n_levels):
         lvl = model.levels[k]
         q = query[k]
-        sig = _translate(q.signatures, remap, cfg.n_bond, is_wl=k >= n_attr)
-        found = _lookup(sig, lvl.signatures)  # per query class
+        is_wl = k >= n_attr
+        sig = _translate(q.signatures, remap, cfg.n_bond, is_wl=is_wl)
+        found = _lookup(sig, lvl.signatures, is_wl)  # per query class
         remap = found
         if not alive.any():
             break  # graph-level stop (6.2)
@@ -99,12 +104,28 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
 
         raw = value.copy()
         weight = np.zeros(n)
+        # shrunk_means(model) is the model's own class-indexed shrunk means,
+        # unaware of any query. Reusing shrunk[k][class_id] directly here
+        # would be correct for `predict` but wrong for `predict_loo`: it
+        # shrinks the class mean *before* the node's own label is removed,
+        # silently reintroducing exactly the leakage §10.3 exists to avoid.
+        # Recomputing shrinkage from `raw`/`support` -- the per-node value
+        # this loop already derived from `est`/`eff_n` at the matched level,
+        # LOO-adjusted when `loo_y` is set -- combined with the *parent's*
+        # shrunk estimate reduces to the identical formula (and identical
+        # values) for `predict`, while getting `predict_loo` right too.
         shrunk = shrunk_means(model)
         for k in range(cfg.n_levels):
             sel = matched == k
             if sel.any():
-                value[sel] = shrunk[k][class_id[sel]]
                 nn = support[sel].astype(np.float64)
+                if k == 0:
+                    parent_est = np.broadcast_to(model.global_mean, (sel.sum(), d))
+                else:
+                    parent_est = shrunk[k - 1][model.levels[k].parent[class_id[sel]]]
+                value[sel] = (nn[:, None] * raw[sel] + cfg.alpha * parent_est) / (
+                    nn[:, None] + cfg.alpha
+                )
                 weight[sel] = nn / (nn + cfg.alpha)
         return Predictions(
             value,

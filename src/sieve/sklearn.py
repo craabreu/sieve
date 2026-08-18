@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+from sklearn.base import BaseEstimator, RegressorMixin
 
 from sieve.batch import AtomBatch
 from sieve.config import SieveConfig
@@ -39,7 +40,17 @@ class GraphKFold:
         return self.n_splits
 
 
-class SieveRegressor:
+class SieveRegressor(BaseEstimator, RegressorMixin):
+    """Inherits from sklearn's base classes purely for tag machinery.
+
+    Modern scikit-learn (>=1.6) resolves estimator tags via
+    ``__sklearn_tags__``, which only ``BaseEstimator`` provides -- without
+    it, ``cross_val_score``/``GridSearchCV`` fail before ever calling `fit`.
+    ``get_params``/``set_params`` stay explicit below rather than relying on
+    ``BaseEstimator``'s signature introspection, since `n_min`/`alpha`
+    resolve from `config` at construction time.
+    """
+
     def __init__(
         self, config: SieveConfig, n_min: int | None = None, alpha: float | None = None
     ):
@@ -67,6 +78,9 @@ class SieveRegressor:
             raise RuntimeError("call fit before predict")
         return _predict(self.model_, X)
 
-    def score(self, X: AtomBatch, y: np.ndarray) -> float:
-        pred = self.predict(X)
-        return float(1 - np.mean((y - pred) ** 2) / np.var(y))
+    # `score` is inherited from RegressorMixin: sklearn.metrics.r2_score
+    # with the default multioutput="uniform_average", i.e. one R^2 per
+    # target column, then averaged. A hand-rolled `1 - mse/np.var(y)` pools
+    # every column's variance into one number instead, so a target column
+    # with a much larger scale would dominate the score regardless of how
+    # well the other columns were predicted.

@@ -14,6 +14,8 @@ from sieve.config import SieveConfig, check_mergeable
 from sieve.dedupe import dense_rows
 from sieve.level import FrozenLevel
 
+_OOV_NEIGHBOUR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
+
 
 def _translate(
     sig: np.ndarray, remap_prev: np.ndarray | None, n_bond: int, is_wl: bool
@@ -23,6 +25,14 @@ def _translate(
     A signature row is written in terms of the *previous level's local ids*, so
     B's row [3, 7, 12] and A's row [3, 7, 12] generally denote different
     classes. Without this step the merge silently unions unrelated classes.
+
+    ``remap_prev`` can contain -1 here (predict.py's lookup leaves an unmatched
+    query class as -1; merge.py's own remaps never do). A neighbour with an
+    OOV previous-level class must make the row unmatchable, not accidentally
+    plausible: ``-1 * n_bond + bond`` lands on the real pad sentinel -1 itself
+    whenever ``bond == n_bond - 1``, so an OOV neighbour reached by the
+    top bond code was indistinguishable from a node with one fewer neighbour
+    -- a false match at exactly the classes it should confidently miss.
     """
     if remap_prev is None:  # level 0: attribute codes are already global
         return sig
@@ -32,15 +42,42 @@ def _translate(
         pad = sig[:, 1:]
         filled = pad >= 0
         lab, bond = np.divmod(np.where(filled, pad, 0), n_bond)
-        new = remap_prev[lab] * n_bond + bond
-        out[:, 1:] = np.where(filled, new, -1)
+        remapped_lab = remap_prev[lab]
+        oov = filled & (remapped_lab < 0)
+        new = remapped_lab * n_bond + bond
+        out[:, 1:] = np.where(oov, _OOV_NEIGHBOUR, np.where(filled, new, -1))
         # Remapping changes the sort order, so the multiset must be
         # re-canonicalised or equal multisets stop comparing equal.
         out[:, 1:] = np.sort(out[:, 1:], axis=1)
     return out
 
 
-def _lookup_rows(sig: np.ndarray, table: np.ndarray) -> np.ndarray:
+def _widen(sig: np.ndarray, width: int, is_wl: bool) -> np.ndarray:
+    """Pad a signature block out to `width` columns, keeping it comparable.
+
+    Column 0 is a parent id for every level except attribute level 0. For WL
+    levels the remaining columns are a *sorted* multiset, padded with -1 at
+    the low end because a node's pad count is fixed and -1 sorts first
+    (design.md 7.2) -- but that pad count is the *batch's* max degree, so two
+    batches fitted separately generally have different widths for the same
+    level. Right-padding a narrower row (the old behaviour) shifts its real
+    values off the columns the wider row's real values occupy, so equal
+    classes stop comparing equal. Left-padding instead keeps every row's real
+    values right-aligned, which is what -1-first sorting already assumes.
+    """
+    if sig.shape[1] == width:
+        return np.ascontiguousarray(sig)
+    out = np.full((sig.shape[0], width), -1, np.int64)
+    if is_wl and sig.shape[1] > 1:
+        out[:, 0] = sig[:, 0]
+        pad = width - sig.shape[1]
+        out[:, 1 + pad :] = sig[:, 1:]
+    else:
+        out[:, : sig.shape[1]] = sig
+    return out
+
+
+def _lookup_rows(sig: np.ndarray, table: np.ndarray, is_wl: bool) -> np.ndarray:
     """Row-wise membership: index of each `sig` row in `table`, or -1.
 
     Shared with ``predict.py``'s lookup -- same problem (find a signature row
@@ -49,15 +86,7 @@ def _lookup_rows(sig: np.ndarray, table: np.ndarray) -> np.ndarray:
     if table.shape[0] == 0 or sig.shape[0] == 0:
         return np.full(sig.shape[0], -1, np.int64)
     width = max(sig.shape[1], table.shape[1])
-
-    def widen(m):
-        if m.shape[1] == width:
-            return np.ascontiguousarray(m)
-        out = np.full((m.shape[0], width), -1, np.int64)
-        out[:, : m.shape[1]] = m
-        return out
-
-    s, t = widen(sig), widen(table)
+    s, t = _widen(sig, width, is_wl), _widen(table, width, is_wl)
     dt = np.dtype((np.void, s.dtype.itemsize * width))
     sv = s.view(dt).ravel()
     tv = t.view(dt).ravel()
@@ -91,18 +120,11 @@ def merge_level(
     d = a.mean.shape[1] if a.n_classes else b.mean.shape[1]
     width = max(a.signatures.shape[1], b.signatures.shape[1], 1)
 
-    def widen(sig):
-        if sig.shape[1] == width:
-            return sig
-        out = np.full((sig.shape[0], width), -1, np.int64)
-        out[:, : sig.shape[1]] = sig
-        return out
-
-    a_sig = widen(a.signatures)
-    b_sig = widen(_translate(b.signatures, remap_prev, n_bond, is_wl))
+    a_sig = _widen(a.signatures, width, is_wl)
+    b_sig = _widen(_translate(b.signatures, remap_prev, n_bond, is_wl), width, is_wl)
     m = a.n_classes
 
-    found = _lookup_rows(b_sig, a_sig)  # -1 where B's row is new to A
+    found = _lookup_rows(b_sig, a_sig, is_wl)  # -1 where B's row is new to A
     new_mask = found < 0
     if np.any(new_mask):
         new_local, new_uniq = dense_rows(b_sig[new_mask])
@@ -145,11 +167,11 @@ def merge_level(
         else remap_prev[b.parent].astype(np.int32)
     )
     # For classes in both models the parent must already agree (design.md 2.1).
+    # A real `raise`, not `assert`: this is a structural invariant the merge
+    # relies on, and `assert` is compiled away under `python -O`.
     both = count[i] > nB
-    if np.any(both):
-        assert np.array_equal(parent[i][both], b_parent[both]), (
-            "parent disagreement: the nesting invariant is broken"
-        )
+    if np.any(both) and not np.array_equal(parent[i][both], b_parent[both]):
+        raise AssertionError("parent disagreement: the nesting invariant is broken")
     parent[i] = np.where(nA > 0, parent[i], b_parent)
     return FrozenLevel(uniq, count, mean, msd, parent), remap
 

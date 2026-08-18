@@ -52,3 +52,12 @@ def test_n_levels_counts_attribute_levels_plus_wl_depths():
 def test_neighbour_schema_is_not_implemented():
     with pytest.raises(NotImplementedError):
         base(neighbour_schema=("element",))
+
+
+def test_empty_attribute_group_is_rejected():
+    """A zero-width group makes refine()'s dedupe degrade silently (design.md
+    3.5) rather than raising anywhere near the actual mistake."""
+    with pytest.raises(ValueError, match="attribute"):
+        base(attribute_levels=((),))
+    with pytest.raises(ValueError, match="attribute"):
+        base(attribute_levels=(("element",), ()))

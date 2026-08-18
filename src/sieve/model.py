@@ -190,9 +190,7 @@ def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
         shards = []
         for part in np.array_split(graphs, n_parts):
             mask = np.isin(batch.graph_id, part)
-            shards.append(
-                fit(_sub_batch(batch, mask), replace(config, chunk_size=None))
-            )
+            shards.append(fit(batch[mask], replace(config, chunk_size=None)))
         return fold(shards, config)
 
     levels_lbl = refine(batch, config)
@@ -202,17 +200,9 @@ def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
 
 
 def _sub_batch(batch: AtomBatch, mask: np.ndarray) -> AtomBatch:
-    """Atoms where `mask` is True, with edges reindexed onto the subset."""
-    idx = np.flatnonzero(mask)
-    remap = np.full(batch.n_atoms, -1, np.int64)
-    remap[idx] = np.arange(idx.size)
-    keep = mask[batch.edge_src] & mask[batch.edge_dst]
-    return AtomBatch(
-        node_attrs=batch.node_attrs[idx],
-        edge_src=remap[batch.edge_src[keep]],
-        edge_dst=remap[batch.edge_dst[keep]],
-        edge_attr=batch.edge_attr[keep],
-        graph_id=batch.graph_id[idx],
-        y=None if batch.y is None else batch.y[idx],
-        elements=None if batch.elements is None else batch.elements[idx],
-    )
+    """Atoms where `mask` is True, with edges reindexed onto the subset.
+
+    Kept as a thin alias for ``AtomBatch.__getitem__`` (design.md 10.2): the
+    two must not drift into separate implementations of the same reindexing.
+    """
+    return batch[mask]

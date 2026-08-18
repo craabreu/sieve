@@ -49,6 +49,24 @@ def test_loo_is_strictly_worse_than_in_sample():
     assert loo > ins
 
 
+def test_loo_is_strictly_worse_than_in_sample_under_shrinkage():
+    """design.md 10.3: LOO exists to catch leakage. With alpha set, shrinkage
+    must not reintroduce the held-out node's own label by shrinking the
+    model's raw (non-LOO) class mean instead of the LOO-adjusted one."""
+    cfg = simple_config(max_wl_depth=3, alpha=1.0)
+    b = chain_batch(30, graphs=4, seed=2)
+    m = sieve.fit(b, cfg)
+    ins = np.mean((sieve.predict(m, b) - b.y) ** 2)
+    loo = sieve.predict_loo(m, b)
+    assert np.mean((loo.value - b.y) ** 2) > ins
+    # raw_value is always the LOO estimate; under LOO, value (shrunk) and
+    # raw_value must agree on which N was actually used to weight it.
+    assert loo.shrinkage_weight is not None
+    matched = loo.matched_level >= 0
+    n = loo.support[matched].astype(float)
+    np.testing.assert_allclose(loo.shrinkage_weight[matched], n / (n + cfg.alpha))
+
+
 def test_loo_requires_targets():
     import pytest
 

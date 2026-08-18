@@ -41,6 +41,12 @@ class SieveConfig:
             )
         if not self.attribute_levels:
             raise ValueError("at least one attribute level is required")
+        if any(not group for group in self.attribute_levels):
+            # A zero-width group makes refine()'s dense_rows() degrade
+            # silently (an (n, 0) signature dedupes to zero classes instead
+            # of one, breaking every array downstream) instead of raising
+            # anywhere near the actual mistake.
+            raise ValueError("each attribute level must declare >= 1 attribute")
         if self.target_dim < 1:
             raise ValueError("target_dim must be >= 1")
         if self.n_min < 1:
@@ -54,6 +60,17 @@ class SieveConfig:
             ),
         )
         object.__setattr__(self, "edge_codes", MappingProxyType(dict(self.edge_codes)))
+
+    def __deepcopy__(self, memo: dict) -> SieveConfig:
+        """Immutable, so a deep copy is never observably different from self.
+
+        `copy.deepcopy` has no built-in support for `MappingProxyType`
+        (`attribute_codes`/`edge_codes` are frozen into one in
+        `__post_init__`) and raises on it -- which otherwise breaks anything
+        that deep-copies a config, including scikit-learn's `clone()`
+        (design.md 10.2), used internally by `cross_val_score`/`GridSearchCV`.
+        """
+        return self
 
     @property
     def n_levels(self) -> int:

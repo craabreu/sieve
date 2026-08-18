@@ -39,6 +39,17 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
     n = batch.n_atoms
     levels: list[LevelLabels] = []
 
+    declared = sum(len(group) for group in config.attribute_levels)
+    if batch.node_attrs.shape[1] != declared:
+        # A narrower node_attrs silently slices past its own end instead of
+        # raising, so the tail attribute groups get treated as declared but
+        # never actually read -- a config/adapter mismatch that would
+        # otherwise surface only as unexplained inaccuracy.
+        raise ValueError(
+            f"config.attribute_levels declares {declared} attribute columns "
+            f"but batch.node_attrs has {batch.node_attrs.shape[1]}"
+        )
+
     # --- attribute levels (design.md 3.5) --------------------------------
     # Level j introduces attribute group j on top of level j-1. Each level is
     # built from the previous plus strictly more information, which is the only
@@ -63,6 +74,16 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
     # --- WL rounds (design.md 7.2) ---------------------------------------
     csr = batch.csr()
     n_bond = config.n_bond
+    if config.max_wl_depth and csr.attr.size:
+        # `pair = prev[dst] * n_bond + attr` assumes 0 <= attr < n_bond. A
+        # code outside that range collides with a *different* (label, bond)
+        # pair instead of raising, silently conflating two distinct classes.
+        bad = (csr.attr < 0) | (csr.attr >= n_bond)
+        if bad.any():
+            raise ValueError(
+                f"edge_attr contains code {int(csr.attr[bad][0])}, outside "
+                f"[0, {n_bond}) implied by config.edge_codes"
+            )
     for _ in range(config.max_wl_depth):
         prev = levels[-1].labels
         # Encode (neighbour label, bond) as one integer so a row of neighbours
