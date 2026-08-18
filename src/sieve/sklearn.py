@@ -78,13 +78,9 @@ class SieveRegressor(BaseEstimator, RegressorMixin):
             raise RuntimeError("call fit before predict")
         return _predict(self.model_, X)
 
-    def score(
-        self, X: AtomBatch, y: np.ndarray, sample_weight: np.ndarray | None = None
-    ) -> float:
-        # `sample_weight` is part of RegressorMixin.score's signature
-        # (Liskov substitution -- GridSearchCV may call it positionally
-        # through the base class); not yet supported by this estimator.
-        if sample_weight is not None:
-            raise NotImplementedError("sample_weight is not supported")
-        pred = self.predict(X)
-        return float(1 - np.mean((y - pred) ** 2) / np.var(y))
+    # `score` is inherited from RegressorMixin: sklearn.metrics.r2_score
+    # with the default multioutput="uniform_average", i.e. one R^2 per
+    # target column, then averaged. A hand-rolled `1 - mse/np.var(y)` pools
+    # every column's variance into one number instead, so a target column
+    # with a much larger scale would dominate the score regardless of how
+    # well the other columns were predicted.

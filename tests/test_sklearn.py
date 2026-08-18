@@ -39,6 +39,23 @@ def test_score_is_r2():
     assert r.score(b, b.y) <= 1.0
 
 
+def test_score_averages_r2_per_output_not_pooled_variance():
+    """score() must not let one target column's scale dominate another's
+    (design.md 10.2 asks for scikit-learn-standard behaviour, and
+    RegressorMixin.score's r2_score(multioutput="uniform_average") is
+    exactly that)."""
+    from sklearn.metrics import r2_score
+
+    cfg = simple_config(target_dim=2)
+    b = chain_batch(20, d=2, graphs=4, seed=7)
+    y = b.y.copy()
+    y[:, 1] *= 1000.0  # wildly different scale on the second output
+    b = type(b)(**{**b.__dict__, "y": y})
+    r = SieveRegressor(cfg).fit(b, y)
+    pred = r.predict(b)
+    np.testing.assert_allclose(r.score(b, y), r2_score(y, pred))
+
+
 def test_cross_val_score_actually_works():
     """design.md 10.2: the whole point of this module is that GridSearchCV
     and friends work. sklearn's cross-validation indexes X and y with the
