@@ -25,7 +25,11 @@ class Predictions:
     matched_level: np.ndarray  # (n,) k*, -1 for global fallback
     class_id: np.ndarray  # (n,) id at the matched level, -1 if none
     support: np.ndarray  # (n,) N at the matched class (eff_n if LOO)
-    variance: np.ndarray  # (n, d) s^2, NaN where support == 1
+    # (n, d) s^2, NaN where support == 1. Always the model's stored class
+    # variance (design.md 10.3's LOO formula covers only the mean); under
+    # predict_loo this is *not* adjusted for the held-out node's own label,
+    # unlike `value` and `support`.
+    variance: np.ndarray
     threshold_bound: np.ndarray  # (n,) stopped by n_min rather than by OOV
     raw_value: np.ndarray | None = None
     shrinkage_weight: np.ndarray | None = None
