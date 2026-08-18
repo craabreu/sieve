@@ -1,5 +1,7 @@
 # COSMO segment stores
-stores/.venv/
+stores/
+.venv/
+.venv311/
 __pycache__/
 *.egg-info/
 .pytest_cache/
