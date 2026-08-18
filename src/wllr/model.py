@@ -72,6 +72,77 @@ class WLLRModel:
         from wllr.predict import predict_loo as _predict_loo
         return _predict_loo(self, batch)
 
+    def save(self, path) -> None:
+        """Write a single .npz (design.md 9.1).
+
+        Shrunk estimates are deliberately absent: they are derived, and storing
+        them would let alpha drift out of sync with the values it produced.
+        """
+        import json
+
+        from wllr.config import FORMAT_VERSION
+
+        cfg = self.config
+        blob = {
+            "format_version": FORMAT_VERSION,
+            "schema_version": cfg.schema_version,
+            "target_dim": cfg.target_dim,
+            "attribute_levels": [list(g) for g in cfg.attribute_levels],
+            "attribute_codes": {k: dict(v) for k, v in cfg.attribute_codes.items()},
+            "edge_codes": dict(cfg.edge_codes),
+            "max_wl_depth": cfg.max_wl_depth,
+            "neighbour_schema": cfg.neighbour_schema,
+            "n_min": cfg.n_min,
+            "alpha": cfg.alpha,
+            "chunk_size": cfg.chunk_size,
+        }
+        arrays = {
+            "config": np.frombuffer(json.dumps(blob).encode(), np.uint8),
+            "global": np.concatenate([[float(self.global_count)],
+                                      self.global_mean, self.global_msd]),
+        }
+        for k, lvl in enumerate(self.levels):
+            arrays[f"level_{k}_vocab"] = lvl.signatures
+            arrays[f"level_{k}_count"] = lvl.count
+            arrays[f"level_{k}_mean"] = lvl.mean
+            arrays[f"level_{k}_msd"] = lvl.msd
+            arrays[f"level_{k}_parent"] = lvl.parent
+        np.savez(path, **arrays)
+
+    @classmethod
+    def load(cls, path) -> "WLLRModel":
+        import json
+
+        from wllr.config import FORMAT_VERSION, WLLRConfig
+        from wllr.level import FrozenLevel
+
+        data = np.load(path, allow_pickle=False)
+        blob = json.loads(bytes(data["config"]).decode())
+        if blob["format_version"] != FORMAT_VERSION:
+            raise ValueError(
+                f"unsupported format_version {blob['format_version']}; "
+                f"this build reads {FORMAT_VERSION}. Refusing to guess.")
+        cfg = WLLRConfig(
+            target_dim=blob["target_dim"],
+            attribute_levels=tuple(tuple(g) for g in blob["attribute_levels"]),
+            attribute_codes=blob["attribute_codes"],
+            edge_codes=blob["edge_codes"],
+            max_wl_depth=blob["max_wl_depth"],
+            neighbour_schema=(None if blob["neighbour_schema"] is None
+                              else tuple(blob["neighbour_schema"])),
+            n_min=blob["n_min"], alpha=blob["alpha"],
+            chunk_size=blob["chunk_size"])
+        if cfg.schema_version != blob["schema_version"]:
+            raise ValueError("schema_version does not match the stored config")
+        d = cfg.target_dim
+        g = data["global"]
+        levels = tuple(
+            FrozenLevel(data[f"level_{k}_vocab"], data[f"level_{k}_count"],
+                        data[f"level_{k}_mean"], data[f"level_{k}_msd"],
+                        data[f"level_{k}_parent"])
+            for k in range(cfg.n_levels))
+        return cls(cfg, levels, int(g[0]), g[1:1 + d], g[1 + d:1 + 2 * d])
+
 
 def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
     """Fit a model to one corpus.
