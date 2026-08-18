@@ -20,5 +20,5 @@ def dense_rows(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     # numpy returns (unique, index, inverse) in a FIXED order, whatever order
     # the keywords are passed in. Binding these wrongly is silent: the ids stay
     # plausible and `unique_rows[labels] == mat` quietly stops holding.
-    uniq, idx, inv = np.unique(v, return_index=True, return_inverse=True)
+    _uniq, idx, inv = np.unique(v, return_index=True, return_inverse=True)
     return inv.ravel().astype(np.int64), m[idx]

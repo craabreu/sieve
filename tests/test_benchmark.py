@@ -50,6 +50,7 @@ def _run(store, target):
 
     model = sieve.fit(_sub_batch(batch, ~is_test), cfg)
     pred = sieve.predict_detailed(model, _sub_batch(batch, is_test))
+    assert batch.y is not None
     y = batch.y[is_test]
     r2 = 1 - np.mean((y - pred.value) ** 2) / y.var()
     return r2, pred
@@ -120,7 +121,7 @@ def test_class_counts_match_the_reference_run(store):
         and counts[1] == expected[1]
         and counts[4] == expected[4]
     )
-    for got, want in zip(counts, expected):
+    for got, want in zip(counts, expected, strict=True):
         assert abs(got - want) <= 10, f"{counts} vs {expected}"
 
 

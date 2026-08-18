@@ -10,7 +10,7 @@ def test_alpha_zero_reproduces_raw_means():
     cfg = simple_config(alpha=0.0)
     b = chain_batch(15, graphs=3)
     m = sieve.fit(b, cfg)
-    for lvl, sh in zip(m.levels, shrunk_means(m)):
+    for lvl, sh in zip(m.levels, shrunk_means(m), strict=True):
         np.testing.assert_allclose(sh[lvl.count > 0], lvl.mean[lvl.count > 0])
 
 

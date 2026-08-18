@@ -1,22 +1,16 @@
 import numpy as np
 import pytest
 
+pytest.importorskip("rdkit")
+
+from rdkit import Chem
+from rdkit.Chem import rdFingerprintGenerator
+
 import sieve
 from sieve.batch import check_alignment
 from sieve.config import SieveConfig
 from sieve.io.rdkit_adapter import build_codes, from_smiles
 from sieve.refine import refine
-
-try:
-    from rdkit import Chem
-    from rdkit.Chem import rdFingerprintGenerator
-except ImportError:
-    Chem = None
-
-pytestmark = pytest.mark.skipif(
-    Chem is None or rdFingerprintGenerator is None, reason="rdkit is not installed"
-)
-
 
 SMILES = ["CCO", "c1ccccc1", "CC(=O)N", "CCl"]
 
@@ -43,7 +37,7 @@ def test_batch_shapes_match_the_molecules():
 
 def test_edges_are_symmetric():
     b = from_smiles(SMILES, config=cfg_for(SMILES))
-    fwd = {(int(a), int(c)) for a, c in zip(b.edge_src, b.edge_dst)}
+    fwd = {(int(a), int(c)) for a, c in zip(b.edge_src, b.edge_dst, strict=True)}
     assert all((c, a) in fwd for a, c in fwd)
 
 
@@ -101,5 +95,5 @@ def test_alignment_guard_catches_a_shuffled_target_array():
 
 
 def _same_partition(a, b):
-    pairs = {(int(x), int(y)) for x, y in zip(a, b)}
+    pairs = {(int(x), int(y)) for x, y in zip(a, b, strict=True)}
     return len(pairs) == len(set(a.tolist())) == len(set(b.tolist()))

@@ -55,7 +55,10 @@ class AtomBatch:
         if e:
             # Undirected graphs must carry both directions; the CSR construction
             # assumes it, and a one-way corpus silently halves every neighbourhood.
-            fwd = {(int(a), int(b)) for a, b in zip(self.edge_src, self.edge_dst)}
+            fwd = {
+                (int(a), int(b))
+                for a, b in zip(self.edge_src, self.edge_dst, strict=True)
+            }
             if any((b, a) not in fwd for a, b in fwd):
                 raise ValueError("edges must be stored in both directions")
 
@@ -83,7 +86,7 @@ class AtomBatch:
             src=src,
             dst=self.edge_dst[order],
             attr=self.edge_attr[order],
-            max_deg=int(deg.max()) if n else 0,
+            max_deg=int(np.max(deg)) if n else 0,
         )
 
 

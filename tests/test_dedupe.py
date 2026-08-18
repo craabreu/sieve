@@ -13,7 +13,7 @@ def test_identical_rows_share_an_id():
 
 def test_labels_are_dense_from_zero():
     m = np.array([[9, 9], [4, 4], [9, 9], [1, 1]], np.int64)
-    labels, uniq = dense_rows(m)
+    labels, _uniq = dense_rows(m)
     assert sorted(set(labels.tolist())) == [0, 1, 2]
     assert labels.dtype == np.int64
 
@@ -43,7 +43,7 @@ def test_matches_a_dict_based_reference():
 
 def _same_partition(a, b):
     return (
-        len({(int(x), int(y)) for x, y in zip(a, b)})
+        len({(int(x), int(y)) for x, y in zip(a, b, strict=True)})
         == len(set(a.tolist()))
         == len(set(b.tolist()))
     )

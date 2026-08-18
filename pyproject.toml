@@ -6,7 +6,7 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 
 [project.optional-dependencies]
 chem = ["rdkit>=2023.3"]
-dev = ["pytest>=7.4"]
+dev = ["pytest>=7.4", "ruff>=0.16", "ty==0.0.72"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -17,3 +17,21 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+include = ["src/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
+ignore = ["E402"]
+
+[tool.ty.analysis]
+allowed-unresolved-imports = ["cosmolayer", "cosmolayer.**"]
+
+[[tool.ty.overrides]]
+include = ["src/sieve/model.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"

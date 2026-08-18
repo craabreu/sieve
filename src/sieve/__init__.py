@@ -7,10 +7,10 @@ from sieve.predict import Predictions, predict, predict_detailed, predict_loo
 
 __all__ = [
     "AtomBatch",
+    "Predictions",
     "SieveConfig",
     "SieveModel",
     "fit",
-    "Predictions",
     "predict",
     "predict_detailed",
     "predict_loo",

@@ -51,12 +51,12 @@ class SieveRegressor:
     def get_params(self, deep: bool = True) -> dict:
         return {"config": self.config, "n_min": self.n_min, "alpha": self.alpha}
 
-    def set_params(self, **params) -> "SieveRegressor":
+    def set_params(self, **params) -> SieveRegressor:
         for k, v in params.items():
             setattr(self, k, v)
         return self
 
-    def fit(self, X: AtomBatch, y=None) -> "SieveRegressor":
+    def fit(self, X: AtomBatch, y=None) -> SieveRegressor:
         cfg = replace(self.config, n_min=self.n_min, alpha=self.alpha)
         batch = X if y is None else AtomBatch(**{**X.__dict__, "y": y})
         self.model_ = _fit(batch, cfg)

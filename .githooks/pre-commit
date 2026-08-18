@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
-# pre-commit — validate the reference registry before allowing a commit
+# pre-commit — ruff/ty on staged Python, then the reference registry
 # ============================================================================
-#
-# Runs references/generate_bibtex.sh --check against the STAGED content, so a
-# commit cannot introduce an unresolvable DOI, a duplicate citekey, an
-# unverified manual entry, or a citation in wllr.md with no registered source.
 #
 # Install (once per clone):   git config core.hooksPath .githooks
 # Bypass (deliberately):      git commit --no-verify
@@ -13,7 +9,33 @@
 
 set -uo pipefail
 
-# --- Only run when the bibliography or a document is actually touched. ---
+repo=$(git rev-parse --show-toplevel) || exit 1
+
+# --- ruff/ty, only when a staged file is Python. ---------------------------
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.py$'; then
+  ruff="$repo/.venv/bin/ruff"; command -v ruff >/dev/null 2>&1 && ruff=ruff
+  ty="$repo/.venv/bin/ty"; command -v ty >/dev/null 2>&1 && ty=ty
+
+  if [[ -x "$ruff" ]] || command -v "$ruff" >/dev/null 2>&1; then
+    "$ruff" check "$repo/src" "$repo/tests" && "$ruff" format --check "$repo/src" "$repo/tests"
+    status=$?
+    if [[ $status -ne 0 ]]; then
+      echo "pre-commit: ruff failed — commit aborted." >&2
+      exit $status
+    fi
+  fi
+
+  if [[ -x "$ty" ]] || command -v "$ty" >/dev/null 2>&1; then
+    (cd "$repo" && "$ty" check)
+    status=$?
+    if [[ $status -ne 0 ]]; then
+      echo "pre-commit: ty failed — commit aborted." >&2
+      exit $status
+    fi
+  fi
+fi
+
+# --- Only run the bibliography check when it or a document is touched. ---
 # Without this gate every unrelated commit pays the validation cost.
 #
 # Must stay in sync with the generator's document scan, which covers every
@@ -23,8 +45,6 @@ if ! git diff --cached --name-only --diff-filter=ACMR \
      | grep -qE '^(references/|[^/]*\.md$|drafts/.*\.md$)'; then
   exit 0
 fi
-
-repo=$(git rev-parse --show-toplevel) || exit 1
 
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT

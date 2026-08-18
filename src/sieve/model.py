@@ -28,7 +28,7 @@ class SieveModel:
     global_msd: np.ndarray
 
     @classmethod
-    def empty(cls, config: SieveConfig) -> "SieveModel":
+    def empty(cls, config: SieveConfig) -> SieveModel:
         """The identity of the merge monoid (design.md 5.4)."""
         d = config.target_dim
         levels = tuple(
@@ -43,7 +43,7 @@ class SieveModel:
         )
         return cls(config, levels, 0, np.zeros(d), np.zeros(d))
 
-    def with_params(self, **kw) -> "SieveModel":
+    def with_params(self, **kw) -> SieveModel:
         """A new model sharing the same arrays, with inference params changed.
 
         ``n_min`` and ``alpha`` are read at prediction time, so sweeping them
@@ -54,7 +54,7 @@ class SieveModel:
             raise ValueError(f"with_params only changes inference params, got {bad}")
         return replace(self, config=replace(self.config, **kw))
 
-    def merge(self, other: "SieveModel") -> "SieveModel":
+    def merge(self, other: SieveModel) -> SieveModel:
         """Combine two models. Named `merge` because `a + b` reads as ensembling."""
         from sieve.merge import merge_models
 
@@ -122,7 +122,7 @@ class SieveModel:
         np.savez(path, **arrays)
 
     @classmethod
-    def load(cls, path) -> "SieveModel":
+    def load(cls, path) -> SieveModel:
         import json
 
         from sieve.config import FORMAT_VERSION, SieveConfig

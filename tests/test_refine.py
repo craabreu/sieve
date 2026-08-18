@@ -1,20 +1,22 @@
+from dataclasses import replace
+
 import numpy as np
 
 from sieve.batch import AtomBatch
 from sieve.config import SieveConfig
 from sieve.refine import refine
 
+_BASE_CONFIG = SieveConfig(
+    target_dim=1,
+    attribute_levels=(("element",),),
+    attribute_codes={"element": {"C": 0, "H": 1}},
+    edge_codes={"SINGLE": 1, "DOUBLE": 2},
+    max_wl_depth=2,
+)
+
 
 def cfg(**kw):
-    d = dict(
-        target_dim=1,
-        attribute_levels=(("element",),),
-        attribute_codes={"element": {"C": 0, "H": 1}},
-        edge_codes={"SINGLE": 1, "DOUBLE": 2},
-        max_wl_depth=2,
-    )
-    d.update(kw)
-    return SieveConfig(**d)
+    return replace(_BASE_CONFIG, **kw)
 
 
 def path_graph(n, attrs=None):
@@ -117,5 +119,5 @@ def test_graded_attribute_levels_refine_progressively():
 
 
 def _same_partition(a, b):
-    pairs = {(int(x), int(y)) for x, y in zip(a, b)}
+    pairs = {(int(x), int(y)) for x, y in zip(a, b, strict=True)}
     return len(pairs) == len(set(a.tolist())) == len(set(b.tolist()))

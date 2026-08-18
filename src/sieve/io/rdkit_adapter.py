@@ -83,6 +83,6 @@ def from_smiles(smiles, y=None, *, config: SieveConfig) -> AtomBatch:
 
     mols = [Chem.MolFromSmiles(s) for s in smiles]
     if any(m is None for m in mols):
-        bad = [s for s, m in zip(smiles, mols) if m is None]
+        bad = [s for s, m in zip(smiles, mols, strict=True) if m is None]
         raise ValueError(f"unparseable SMILES: {bad[:3]}")
     return from_rdkit(mols, y, config=config)

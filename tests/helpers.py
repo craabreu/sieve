@@ -1,21 +1,23 @@
 """Fixtures shared across the suite."""
 
+from dataclasses import replace
+
 import numpy as np
 
 from sieve.batch import AtomBatch
 from sieve.config import SieveConfig
 
+_BASE_CONFIG = SieveConfig(
+    target_dim=1,
+    attribute_levels=(("element",),),
+    attribute_codes={"element": {"C": 0, "H": 1}},
+    edge_codes={"SINGLE": 1, "DOUBLE": 2},
+    max_wl_depth=2,
+)
+
 
 def simple_config(**kw):
-    d = dict(
-        target_dim=1,
-        attribute_levels=(("element",),),
-        attribute_codes={"element": {"C": 0, "H": 1}},
-        edge_codes={"SINGLE": 1, "DOUBLE": 2},
-        max_wl_depth=2,
-    )
-    d.update(kw)
-    return SieveConfig(**d)
+    return replace(_BASE_CONFIG, **kw)
 
 
 def chain_batch(n, d=1, seed=0, graphs=1):

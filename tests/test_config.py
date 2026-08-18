@@ -1,18 +1,20 @@
+from dataclasses import replace
+
 import pytest
 
 from sieve.config import SieveConfig, check_mergeable
 
+_BASE_CONFIG = SieveConfig(
+    target_dim=1,
+    attribute_levels=(("element",),),
+    attribute_codes={"element": {"C": 0, "H": 1}},
+    edge_codes={"SINGLE": 1},
+    max_wl_depth=3,
+)
+
 
 def base(**kw):
-    d = dict(
-        target_dim=1,
-        attribute_levels=(("element",),),
-        attribute_codes={"element": {"C": 0, "H": 1}},
-        edge_codes={"SINGLE": 1},
-        max_wl_depth=3,
-    )
-    d.update(kw)
-    return SieveConfig(**d)
+    return replace(_BASE_CONFIG, **kw)
 
 
 def test_schema_version_is_stable():

@@ -121,7 +121,7 @@ def _assert_same_statistics(a, b):
     assert len(a.levels) == len(b.levels)
     assert a.global_count == b.global_count
     np.testing.assert_allclose(a.global_mean, b.global_mean, rtol=1e-12)
-    for x, y in zip(a.levels, b.levels):
+    for x, y in zip(a.levels, b.levels, strict=True):
         assert x.n_classes == y.n_classes
         ox = np.lexsort((x.msd[:, 0], x.mean[:, 0], x.count))
         oy = np.lexsort((y.msd[:, 0], y.mean[:, 0], y.count))

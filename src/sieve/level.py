@@ -53,7 +53,7 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     """
     labels = level.labels
     nc = level.n_classes
-    n, d = y.shape
+    n, _d = y.shape
 
     # Built once, reused across both passes and all d dimensions. bincount is
     # scalar-only and would need a loop over dimensions.
