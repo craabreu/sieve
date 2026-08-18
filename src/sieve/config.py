@@ -41,6 +41,12 @@ class SieveConfig:
             )
         if not self.attribute_levels:
             raise ValueError("at least one attribute level is required")
+        if any(not group for group in self.attribute_levels):
+            # A zero-width group makes refine()'s dense_rows() degrade
+            # silently (an (n, 0) signature dedupes to zero classes instead
+            # of one, breaking every array downstream) instead of raising
+            # anywhere near the actual mistake.
+            raise ValueError("each attribute level must declare >= 1 attribute")
         if self.target_dim < 1:
             raise ValueError("target_dim must be >= 1")
         if self.n_min < 1:
