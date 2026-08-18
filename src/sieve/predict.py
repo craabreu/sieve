@@ -55,8 +55,9 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
     for k in range(cfg.n_levels):
         lvl = model.levels[k]
         q = query[k]
-        sig = _translate(q.signatures, remap, cfg.n_bond, is_wl=k >= n_attr)
-        found = _lookup(sig, lvl.signatures)  # per query class
+        is_wl = k >= n_attr
+        sig = _translate(q.signatures, remap, cfg.n_bond, is_wl=is_wl)
+        found = _lookup(sig, lvl.signatures, is_wl)  # per query class
         remap = found
         if not alive.any():
             break  # graph-level stop (6.2)

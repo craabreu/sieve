@@ -1,7 +1,7 @@
 import numpy as np
 
 import sieve
-from tests.helpers import chain_batch, simple_config, split_batch
+from tests.helpers import chain_batch, simple_config, split_batch, star_batch
 
 
 def test_training_atoms_recover_their_class_mean():
@@ -87,6 +87,44 @@ def test_vector_targets_predict_elementwise():
     b = chain_batch(12, d=3)
     m = sieve.fit(b, cfg)
     assert sieve.predict(m, b).shape == (12, 3)
+
+
+def _single_edge_batch(seed):
+    from sieve.batch import AtomBatch
+
+    rng = np.random.default_rng(seed)
+    return AtomBatch(
+        node_attrs=np.zeros((2, 1), np.int64),
+        edge_src=np.array([0, 1], np.int64),
+        edge_dst=np.array([1, 0], np.int64),
+        edge_attr=np.ones(2, np.int64),
+        graph_id=np.zeros(2, np.int64),
+        y=rng.normal(size=(2, 1)),
+    )
+
+
+def test_query_max_degree_below_training_max_degree_still_matches():
+    """A query batch with a smaller max degree than the training corpus must
+    still reach the deepest WL level it structurally matches, not fall back
+    to a shallower level just because its own padding is narrower."""
+    cfg = simple_config(max_wl_depth=1)
+    train = star_batch(4, graphs=1)
+    m = sieve.fit(train, cfg)
+    # A lone edge -- max degree 1, well below the star's max degree 4 -- but
+    # both leaf nodes are structurally identical to leaves already in train.
+    query = _single_edge_batch(seed=2)
+    p = sieve.predict_detailed(m, query)
+    assert np.all(p.matched_level == cfg.n_levels - 1)
+
+
+def test_query_max_degree_above_training_max_degree_still_matches():
+    cfg = simple_config(max_wl_depth=1)
+    train = _single_edge_batch(seed=2)
+    m = sieve.fit(train, cfg)
+    query = star_batch(4, graphs=1)
+    p = sieve.predict_detailed(m, query)
+    leaves = np.arange(query.n_atoms) != 0  # exclude the star's centre
+    assert np.all(p.matched_level[leaves] == cfg.n_levels - 1)
 
 
 def test_global_fallback_iff_level_zero_unsupported():

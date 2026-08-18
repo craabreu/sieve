@@ -3,7 +3,7 @@ import pytest
 
 import sieve
 from sieve.merge import fold
-from tests.helpers import chain_batch, simple_config, split_batch
+from tests.helpers import chain_batch, simple_config, split_batch, star_batch
 
 
 def preds(model, batch):
@@ -106,6 +106,43 @@ def test_fold_matches_sequential_merge():
     for p in parts[1:]:
         seq = seq.merge(p)
     _assert_same_statistics(fold(parts, cfg), seq)
+
+
+def test_merge_across_differing_max_degree_shards():
+    """A shard's WL signature width tracks *its own* max degree (design.md
+    7.2); merging shards with different max degrees must not misalign the
+    padding columns and silently split classes that fitting the union keeps
+    together."""
+    from sieve.batch import AtomBatch
+
+    cfg = simple_config()
+    star = star_batch(4, graphs=2)  # max degree 4
+    chain = chain_batch(3, graphs=2, seed=1)  # max degree 2
+    chain = AtomBatch(
+        node_attrs=chain.node_attrs,
+        edge_src=chain.edge_src + star.n_atoms,
+        edge_dst=chain.edge_dst + star.n_atoms,
+        edge_attr=chain.edge_attr,
+        graph_id=chain.graph_id + 2,
+        y=chain.y,
+    )
+    whole = AtomBatch(
+        node_attrs=np.concatenate([star.node_attrs, chain.node_attrs]),
+        edge_src=np.concatenate([star.edge_src, chain.edge_src]),
+        edge_dst=np.concatenate([star.edge_dst, chain.edge_dst]),
+        edge_attr=np.concatenate([star.edge_attr, chain.edge_attr]),
+        graph_id=np.concatenate([star.graph_id, chain.graph_id]),
+        y=np.concatenate([star.y, chain.y]),
+    )
+
+    a = sieve.fit(split_batch(whole, whole.graph_id < 2), cfg)  # max degree 4
+    c = sieve.fit(split_batch(whole, whole.graph_id >= 2), cfg)  # max degree 2
+    merged = a.merge(c)
+    fitted_whole = sieve.fit(whole, cfg)
+    _assert_same_statistics(merged, fitted_whole)
+    # Aggregate stats can coincidentally match under a wrong partition; the
+    # actual per-node predictions are what a silent misalignment corrupts.
+    np.testing.assert_allclose(preds(merged, whole), preds(fitted_whole, whole))
 
 
 def test_chunked_fit_equals_single_chunk_fit():
