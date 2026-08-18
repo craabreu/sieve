@@ -3,8 +3,9 @@
 **Status:** working design note, actively edited
 **Date:** 2026-08-17
 **Scope:** decisions reached in discussion, with the reasoning that produced them
-**Relationship to `wllr.md`:** `wllr.md` is brainstorming output and is treated as a source of
-ideas only. This document records what is actually settled. Where the two disagree, this one wins.
+**Relationship to other documents:** `drafts/wllr.md` is superseded brainstorming output, treated as
+a source of ideas only; where the two disagree, this one wins. `literature.md` holds the literature
+review and novelty assessment and makes no implementation claims.
 
 ---
 
@@ -24,6 +25,7 @@ evaluation protocol); those are listed as open in §13.
 | Bottom-up inference with early termination | §6 |
 | Vector targets, per-dimension variance | §1, §5.2 |
 | Vectorised fit: void-view dedupe + sparse two-pass reduction | §7 |
+| Shared target grid; unnormalised areas; closure over non-negative vectors | §11.4 |
 
 §3.6 records a design option that has been **measured but not adopted** — coarsening the neighbour
 attribute schema. Figures quoted elsewhere in this document as "measured on cosmobase" come from
@@ -972,6 +974,48 @@ that presents purely as unexplained inaccuracy.
 and any canonicalisation round-trip reorders, so the guard must run after whatever preprocessing the
 pipeline applies, not before.
 
+### 11.4 The target contract
+
+`y` is `(n_atoms, d)`. The core requires only that **component $j$ means the same thing in every
+row** — $d$ is fixed across the corpus and the components are aligned. Everything below follows from
+that, and the adapter, not the core, is responsible for establishing it.
+
+For the σ-profile application the contract is specific:
+
+- the σ grid is **fixed and shared by every molecule** — same bin edges, same $d$, same order;
+- values are **areas**, in the profile's native area units;
+- they are **not normalised** — no division by total area, no conversion to a probability density.
+
+Two consequences are worth stating, because they are what make the estimator well behaved here rather
+than merely well typed.
+
+**A shared grid is what makes componentwise averaging meaningful.** Component $j$ of a class mean is
+the mean of $N$ quantities that denote the same thing, so §7.3's elementwise reduction is a statement
+about a physical quantity rather than about array positions. Were grids to differ per molecule, the
+elementwise mean would be meaningless, and resampling onto a common grid would be required *upstream*
+of `AtomBatch`. The core will not detect a violation: mismatched grids produce plausible numbers and
+no error, which puts this in the same hazard class as §11.3's misalignment.
+
+**The estimator is closed over non-negative vectors.** Areas are $\ge 0$; backoff returns one stored
+class mean, and shrinkage (§4.2) returns a convex combination of a class mean and its already-shrunk
+parent. Every prediction is therefore a convex combination of training rows, so:
+
+- predictions are non-negative automatically — no clipping, no constrained solve, no post-hoc
+  correction, and any clipping that does appear in the code is evidence of a bug elsewhere;
+- each component lies within the range of the training values for its class chain, so a prediction
+  cannot exceed the largest observed area in any bin;
+- the predicted total area, being a linear functional of the profile, is the same convex combination
+  of the training totals and so is likewise bounded by them.
+
+The last point is a bound, not a constraint: atoms are predicted independently, so summing predicted
+per-atom profiles gives an estimate of the molecular surface area, not a guaranteed match to it. If a
+hard per-molecule total is ever required it must be imposed downstream by rescaling, which preserves
+non-negativity (a positive scale factor) but voids the convex-combination bounds above.
+
+**Targets must not be centred or standardised.** Subtracting a per-component mean would destroy both
+the non-negativity closure and the additivity of areas, and would buy nothing: the estimator is a
+conditional mean, which is equivariant under such a shift anyway.
+
 ---
 
 ## 12. Prediction metadata
@@ -1035,7 +1079,9 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    cosmobase: coarsening buys ~0.6 levels of extra reach at identical support. What remains open is
    whether that reach is *worth* the attribute resolution it costs, which needs targets. Run the
    comparison again with real σ-profiles or partial charges and decide on MAE at the matched class.
-   Implement as a configurable neighbour schema — an ablation flag, not an architecture.
+   Implement as a configurable neighbour schema — an ablation flag, not an architecture. This
+   comparison is part of the planned ablation suite rather than a design decision to be made in
+   advance; the entry stays open until that suite runs.
 
 ---
 
