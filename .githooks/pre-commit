@@ -26,7 +26,7 @@ if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.py$'; then
   fi
 
   if [[ -x "$ty" ]] || command -v "$ty" >/dev/null 2>&1; then
-    (cd "$repo" && "$ty" check)
+    (cd "$repo" && VIRTUAL_ENV="$repo/.venv" "$ty" check "$repo/src" "$repo/tests")
     status=$?
     if [[ $status -ne 0 ]]; then
       echo "pre-commit: ty failed — commit aborted." >&2
