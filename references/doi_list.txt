@@ -43,3 +43,6 @@ DInverno2024NodeRegression      10.1007/s00500-024-09676-1
 # --- Hierarchical substructure hierarchies (DASH) ---
 Lehner2023DASH                  10.1021/acs.jcim.3c00800
 Lehner2024DASHProperties        10.1063/5.0218154
+
+# --- Force-field atom typing (cited as an open gap, not yet a surveyed precedent) ---
+Mobley2018SMIRNOFF              10.1021/acs.jctc.8b00640

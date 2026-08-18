@@ -310,6 +310,9 @@ Avoid:
 
 The distinctive contribution is the *hierarchy the machinery is applied to*, not the machinery.
 
+This statement should not be considered settled until the gaps in §9.1–§9.3 are closed: each of them
+is a literature that could bear on it, and none has been searched.
+
 ---
 
 ## 6. Recommended related-work structure
@@ -395,6 +398,11 @@ DOI, or if any document cites a key that is not registered. See `references/READ
 
 **[Lehner2024DASHProperties]** Lehner, M. T.; Katzberger, P.; Maeder, N.; Landrum, G. A.; Riniker, S. *DASH Properties: Estimating Atomic and Molecular Properties from a Dynamic Attention-Based Substructure Hierarchy.* **The Journal of Chemical Physics** **161**(7), 074103 (2024). DOI: `10.1063/5.0218154`
 
+**[Mobley2018SMIRNOFF]** Mobley, D. L.; Bannan, C. C.; Rizzi, A.; Bayly, C. I.; Chodera, J. D.; Lim, V. T.; Lim, N. M.; Beauchamp, K. A.; Slochower, D. R.; Shirts, M. R.; Gilson, M. K.; Eastman, P. K. *Escaping Atom Types in Force Fields Using Direct Chemical Perception.* **Journal of Chemical Theory and Computation** **14**(11), 6076–6092 (2018). DOI: `10.1021/acs.jctc.8b00640`
+
+Mobley et al. is registered for §9.2, where it marks an open gap rather than a surveyed precedent; it
+is not yet reflected in §2, §4, or §5.
+
 Welford 1962 and Chan, Golub & LeVeque 1983 are also registered, cited by `design.md` for the
 accumulation and merge algorithms rather than as WLLR precedents.
 
@@ -419,3 +427,91 @@ accumulation and merge algorithms rather than as WLLR precedents.
 | Rogers & Hahn 2010 (+ Morgan 1965) | ECFP atom-environment identifiers *are* 1-WL on molecules. Its absence was the most exposed gap: a cheminformatics reviewer would raise it immediately. Also enables an independent encoder validation against RDKit |
 | Morris et al. 2019 | The standard citation for the MPNN↔1-WL correspondence underpinning the depth-matched baseline argument |
 | Bilmes & Kirchhoff 2003 | Precedent for backoff over an ordered set of factors, and for the ordering problem it creates |
+
+---
+
+## 9. Gaps to close before the manuscript
+
+The review above is sufficient to *build* from: it fixes what cannot be claimed and names the
+baselines the design must support. It is **not** yet sufficient to write a related-work section from.
+The following are identified gaps, not survey results — with the single exception noted, no search has
+been run against them and no claim is made here about what the prior art contains.
+
+Items 1–3 bear on the novelty claim and should be closed before §5.3 is committed to. Item 4 should be
+closed before the evaluation plan is fixed. Item 5 is the only one that could still touch `design.md`.
+
+### 9.1 The regressogram framing is uncited
+
+§3 calls WLLR "a hierarchical regressogram over the nested vertex partitions induced by WL colour
+refinement" and §5.3 treats that as the most defensible one-line description of the method. It is also
+the only section of this document with no supporting reference.
+
+Partitioning (histogram) regression estimators have a developed theory — consistency, convergence
+rates, the bias–variance behaviour of cell size. Claiming the framing invites the question of which of
+those results transfer, given that WL cells are data-independent and do *not* shrink geometrically
+with sample size the way the classical analysis assumes. Backoff makes the effective partition
+data-dependent, which is a further departure.
+
+**Needed:** the standard references for partitioning/histogram regression and their consistency
+conditions, plus a paragraph stating honestly which apply to WL cells and which do not.
+
+### 9.2 Force-field atom typing is missing, and it is the oldest chemistry precedent
+
+SMARTS-based atom typing in classical force fields is an ordered list of structural patterns, first
+match wins, with progressively less specific patterns as fallback, and empirically fitted parameters
+attached to each type. That is specificity-ordered structural lookup with backoff, in production
+decades before HOSE. §4.8 covers mean-per-class assignment but not this tradition. A force-field
+reviewer would raise it the way a cheminformatics reviewer raises ECFP.
+
+The Open Force Field initiative is the right entry point, and the citation cuts both ways.
+Mobley et al. introduced **direct chemical perception** (SMIRNOFF) explicitly as a way to *escape*
+atom types, arguing that discrete typing hierarchies are brittle, hard to extend, and force
+chemically-unjustified parameter sharing [Mobley2018SMIRNOFF]. So the same literature supplies both
+the strongest precedent for WLLR's machinery and a published argument that discrete structural-class
+hierarchies are the thing to move away from.
+
+WLLR needs an answer to that argument, and it has one worth making explicitly: WL classes are not
+hand-authored, the hierarchy is canonical rather than curated, and backoff is a principled estimator
+under sparse support rather than a pattern-ordering heuristic. That is a stronger position than
+ignoring the objection.
+
+**Needed:** a search of the atom-typing and typing-free force-field literature; a decision on whether
+this becomes its own related-work subsection (§6.3 is the natural home).
+
+### 9.3 Multilevel models and partial pooling
+
+Shrinkage toward the already-shrunk parent over a nested grouping structure is, statistically, partial
+pooling in a nested random-effects model. This document cites Agarwal et al. (trees) and mentions
+Jelinek–Mercer interpolation in §4.2 prose without registering it as a reference.
+
+A statistics reviewer may argue that hierarchically shrunk WLLR *is* an approximate varying-intercept
+model over WL classes, and ask why a multilevel model is not fitted directly. The answer is presumably
+cost and the merge property — the closed-form shrinkage survives model merging, a fitted hierarchical
+model would not — but that answer is not currently written down anywhere.
+
+**Needed:** the multilevel-model and empirical-Bayes references; Jelinek–Mercer registered; a stated
+reason for the closed-form estimator over a fitted one.
+
+### 9.4 No σ-profile prediction literature
+
+The intended application has zero references in this document. Existing group-contribution and
+machine-learned σ-profile predictors are the application baselines, and they determine what counts as
+a competitive result.
+
+**Needed:** this search must precede fixing the evaluation plan, not follow it.
+
+### 9.5 Vector targets are treated as d independent scalars
+
+`design.md` stores a per-class mean vector and per-component MSD, so a σ-profile is handled as d
+unrelated numbers that happen to share a hierarchy. On a fixed grid a σ-profile is closer to a
+function — or, being non-negative, to an unnormalised density — than to a vector of independent
+outputs.
+
+Elementwise means and elementwise shrinkage remain defensible: the grid is shared across all
+molecules, which is what makes componentwise averaging meaningful, and since both backoff and
+shrinkage return convex combinations the estimator is closed over non-negative vectors. But
+"why not a distributional loss, or a barycentre under a transport metric" is a question that deserves
+a prepared answer rather than an improvised one.
+
+**Needed:** enough of the functional/multi-output regression literature to justify the elementwise
+choice. This is the only gap that could still change `design.md`, so it should be resolved early.
