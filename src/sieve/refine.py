@@ -63,6 +63,16 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
     # --- WL rounds (design.md 7.2) ---------------------------------------
     csr = batch.csr()
     n_bond = config.n_bond
+    if config.max_wl_depth and csr.attr.size:
+        # `pair = prev[dst] * n_bond + attr` assumes 0 <= attr < n_bond. A
+        # code outside that range collides with a *different* (label, bond)
+        # pair instead of raising, silently conflating two distinct classes.
+        bad = (csr.attr < 0) | (csr.attr >= n_bond)
+        if bad.any():
+            raise ValueError(
+                f"edge_attr contains code {int(csr.attr[bad][0])}, outside "
+                f"[0, {n_bond}) implied by config.edge_codes"
+            )
     for _ in range(config.max_wl_depth):
         prev = levels[-1].labels
         # Encode (neighbour label, bond) as one integer so a row of neighbours

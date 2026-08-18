@@ -105,6 +105,18 @@ def test_isolated_nodes_refine_without_error():
     assert len(set(levels[-1].labels.tolist())) == 1
 
 
+def test_edge_attr_outside_the_bond_alphabet_is_rejected():
+    """`pair = prev[dst] * n_bond + attr` assumes attr in [0, n_bond); a code
+    outside that range silently collides with a different (label, bond) pair
+    instead of raising (design.md 7.2's n_bond convention)."""
+    import pytest
+
+    b = path_graph(3)  # cfg()'s edge_codes give n_bond = 3
+    bad = AtomBatch(**{**b.__dict__, "edge_attr": np.full(4, 7, np.int64)})
+    with pytest.raises(ValueError, match="edge_attr"):
+        refine(bad, cfg())
+
+
 def test_graded_attribute_levels_refine_progressively():
     """design.md 3.5: each attribute level adds information to the last."""
     c = cfg(
