@@ -6,3 +6,4 @@ pdfs/
 
 # Resolver response cache (keyed by DOI)
 .cache/
+.venv311/
