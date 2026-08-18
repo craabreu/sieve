@@ -1,22 +1,24 @@
 # Weisfeiler–Lehman Lookup Regression (WLLR)
 
-## Method definition, implementation specification, and literature assessment
+## Superseded draft — method definition and implementation notes
 
 > ## ⚠ SUPERSEDED — DO NOT IMPLEMENT FROM THIS FILE
 >
-> This is brainstorming output from another LLM, retained for its literature review
-> (§15–§20) and novelty assessment, which remain the best manuscript material available.
+> This is brainstorming output from another LLM, retained only as a record of where the
+> method started.
 >
 > **The implementation specification is `design.md`.** This document contradicts it in
 > several places — the rejected `(depth, hash)` layout, scalar-only targets, a Welford
 > instruction that no longer applies, and a test list written against the old design.
 > Where the two disagree, `design.md` is correct.
+>
+> **The literature review and novelty assessment are `literature.md`.** They were moved
+> out of this file so there is exactly one copy to maintain. Nothing bibliographic
+> remains here.
 
-**Status:** consolidated working document
+**Status:** superseded draft, retained for provenance
 **Date:** 2026-08-17
 **Supersedes:** `wllr_implementation_spec.md`, `wllr_extended_literature_search.md`
-**Audience:** developers and coding agents implementing the library; authors drafting the manuscript
-**Reference status:** every reference in Part IV has been resolved against its DOI (or publisher record where no DOI exists) — see §21
 
 ---
 
@@ -26,11 +28,12 @@
 |---|---|
 | I (§1–§6) | Problem statement, WL environment construction, estimator, backoff, regularization |
 | II (§7–§14) | Object model, APIs, validation rules, tests, performance, GNN relationship |
-| III (§15–§20) | Literature, precedents, novelty boundary, related-work structure |
-| IV (§21) | Certified references and BibTeX |
-| V (§22) | Review notes and open decisions carried over from consolidation |
+| III (§15) | Review notes and open decisions carried over from consolidation |
 
-Passages marked **▸ Review note** were added or changed during consolidation and record a substantive technical judgment rather than a restatement of the original drafts. §22 lists them in one place.
+Literature, precedents, novelty boundary, related-work structure, and the certified
+references were moved to `literature.md`.
+
+Passages marked **▸ Review note** were added or changed during consolidation and record a substantive technical judgment rather than a restatement of the original drafts. §15 lists them in one place.
 
 ---
 
@@ -182,7 +185,7 @@ $$
 \bar y_{k,c}=\arg\min_a\sum_{v\in C_{k,c}}(y_v-a)^2,
 $$
 
-so at fixed depth the estimator is the squared-error-optimal piecewise-constant predictor over WL equivalence classes. Across depths it is best described as a **hierarchical regressogram over the nested vertex partitions induced by WL color refinement** (§17).
+so at fixed depth the estimator is the squared-error-optimal piecewise-constant predictor over WL equivalence classes. Across depths it is best described as a **hierarchical regressogram over the nested vertex partitions induced by WL color refinement** (`literature.md` §3).
 
 **Variance convention.** $s^2_{k,c}$ is the unbiased sample variance with $\mathrm{ddof}=1$ and is **undefined for $N_{k,c}=1$**. Store `None` in that case rather than `0.0`; a stored `0.0` is indistinguishable from a genuinely homogeneous class and silently corrupts any downstream diagnostic that treats variance as a confidence proxy.
 
@@ -377,7 +380,7 @@ node_features(graph, node)
 edge_features(graph, u, v)
 ```
 
-For a chemistry-focused first implementation an RDKit adapter is the most practical, but core statistics and backoff logic must remain graph-library agnostic. (Note that with a standard atom-invariant schema the RDKit path reproduces Morgan/ECFP atom-environment identifiers almost exactly — see §18.6.)
+For a chemistry-focused first implementation an RDKit adapter is the most practical, but core statistics and backoff logic must remain graph-library agnostic. (Note that with a standard atom-invariant schema the RDKit path reproduces Morgan/ECFP atom-environment identifiers almost exactly — see `literature.md` §4.6.)
 
 ---
 
@@ -537,289 +540,15 @@ WLLR differs in that:
 - every prediction exposes its own support statistics;
 - no continuous representation or learned mapping is required.
 
-This motivates **depth-matched** GNN baselines: comparing WLLR at depth $K$ against a $K$-layer MPNN isolates the value of learned continuous interpolation over the WL partition, since both see exactly the same information. A WLLR result close to a depth-matched MPNN is the informative outcome; a large gap localizes the benefit to interpolation across, rather than within, WL classes — which is precisely the "graded similarity" direction of §18.8.
+This motivates **depth-matched** GNN baselines: comparing WLLR at depth $K$ against a $K$-layer MPNN isolates the value of learned continuous interpolation over the WL partition, since both see exactly the same information. A WLLR result close to a depth-matched MPNN is the informative outcome; a large gap localizes the benefit to interpolation across, rather than within, WL classes — which is precisely the "graded similarity" direction discussed in `literature.md` §4.9.
 
 ---
 
-# Part III — Literature and novelty
+# Part III — Review record
 
-# 15. Search strategy
+# 15. Review notes, changes, and open decisions
 
-A narrow search for "Weisfeiler–Lehman regression," "WL target encoding," or "WL mean regression" misses the relevant precedents, because WLLR combines ideas developed in partly separate literatures. The search was therefore decomposed into:
-
-1. discrete rooted-environment representations;
-2. hierarchical graph partitions;
-3. empirical target averaging within structural classes;
-4. lookup-based property prediction;
-5. recursive fallback to less-specific environments;
-6. hierarchical shrinkage of low-support estimates;
-7. chemistry-specific atom-property tables;
-8. WL methods that relax exact equality into graded similarity.
-
-The question was broadened from *"has someone published WL regression?"* to *"has prior work used nested local structural classes, attached empirical target statistics to those classes, and predicted with hierarchical fallback or smoothing?"*
-
----
-
-# 16. Map of closest precedents
-
-| Work | Main overlap with WLLR | Main difference | Relevance |
-|---|---|---|---|
-| **Kuhn et al. 2008, HOSE NMR prediction** | Nested atom environments; average of matching targets; sphere-by-sphere fallback | HOSE rather than WL; NMR-specific | Closest precedent for the exact inference rule |
-| **Katz 1987, backoff smoothing** | Most-specific context → recursive backoff to shorter context under sparse counts | Language modeling; discrete distributions, not conditional means | Canonical precedent for the backoff *principle* |
-| **Lehner et al. 2023, DASH** | Hierarchical atom-centered substructures; property distributions at hierarchy nodes | Hierarchy derived from GNN attention; chemistry-specific | Very close architectural precedent |
-| **Lehner et al. 2024, DASH Properties** | Hierarchical structural classes populated with atomic target values; no refit per property | DASH hierarchy and medians rather than WL classes and means | Closest general atomic-property precedent |
-| **Kriege, Giscard & Wilson 2016, WL-OA** | Successive WL refinements induce a hierarchy of vertex classes | No target regression | Key theoretical precedent for WL ancestry |
-| **Rogers & Hahn 2010, ECFP** | Iterative atom-environment identifiers at increasing radius | Fingerprint features for downstream models, not a lookup estimator | WL identifiers on molecules ≈ ECFP atom-environment identifiers |
-| **Dalke, Hert & Kramer 2018, mmpdb** | Radius-specific environments; empirical property-change statistics per environment | Transformation/property-change setting, not node regression | Strong data-structure analogy |
-| **Kammeraad et al. 2020** | Graph-derived atom types mapped to average partial charges | Shallow manual classes; no hierarchy or fallback | Direct mean-per-structural-class precedent |
-| **Agarwal et al. 2022, Hierarchical Shrinkage** | Specific predictions shrunk toward ancestor sample means by support | Decision-tree hierarchy rather than WL | Direct precedent for the regularized variant |
-| **Schulz et al. 2022, generalized WL kernel** | Graded similarity between neighborhood trees instead of strict WL equality | Kernel similarity, not regression | Relevant future extension |
-
----
-
-# 17. WLLR as a hierarchical regressogram
-
-At every depth $k$, WL defines a partition $\Pi_k=\{C_{k,1},C_{k,2},\ldots\}$. WLLR associates each cell with $\hat\mu_{k,c}$, and at prediction time selects the finest supported cell on the query node's ancestry chain. Thus WLLR is
-
-> **a hierarchical regressogram over the nested vertex partitions induced by WL color refinement**,
-
-which is a more precise framing than "a dictionary of hashes" and connects the method to the nonparametric-regression literature rather than only to cheminformatics lookup tables. Kriege et al. supply the formal statement that WL refinement furnishes the hierarchy [Kriege2016WLOA].
-
----
-
-# 18. Precedent detail
-
-## 18.1 HOSE codes: the closest inference rule
-
-Bremser introduced **HOSE** (Hierarchically Ordered Spherical Environment) codes to encode progressively larger atom-centered chemical environments [Bremser1978HOSE]. NMRShiftDB used HOSE-based lookup tables for chemical-shift prediction [Steinbeck2003NMRShiftDB].
-
-Kuhn et al. describe an NMR prediction procedure extremely close to WLLR [Kuhn2008NMR]: construct a multi-sphere HOSE code; search training data for atoms with the same environment; if matches exist, use the **average** of their target values; if not, reduce the number of spheres until a match is obtained.
-
-Conceptually,
-
-$$
-\text{specific environment}\rightarrow\text{mean of matching labels}\rightarrow\text{lower-radius fallback},
-$$
-
-which parallels $h_K\rightarrow h_{K-1}\rightarrow\cdots\rightarrow h_0\rightarrow\mu_{\mathrm{global}}$.
-
-The following must therefore **not** be claimed as independently novel: nested local atom environments; lookup of matching structural environments; averaging matched target values; recursive fallback to smaller environments.
-
-## 18.2 Backoff smoothing
-
-**▸ Review note (added; absent from both drafts).** The backoff rule is not merely HOSE-specific practice — it is the standard sparse-data device from statistical language modeling. Katz backoff predicts from the most specific $n$-gram context with sufficient count and otherwise recurses to the $(n-1)$-gram, with discounting to reserve mass for unseen contexts [Katz1987Backoff].
-
-WLLR's $h_K\to h_{K-1}\to\cdots$ is the same recursion with WL depth playing the role of context length. This matters for the write-up in two ways:
-
-1. It further weakens any claim to novelty for the backoff mechanism itself, and should be acknowledged rather than discovered by a reviewer.
-2. It supplies the *correct diagnosis* of the §5.3 concern: the language-modeling literature established decades ago that most-specific-match on raw counts is unstable and requires either a count threshold (Katz's cutoff) or interpolation (Jelinek–Mercer, which is structurally what §6's shrinkage is). Framing §5.3 and §6 as the WL analogues of established smoothing practice is stronger than presenting them as ad hoc regularization.
-
-## 18.3 DASH (2023)
-
-Lehner et al. introduced the **Dynamic Attention-Based Substructure Hierarchy** for atomic partial-charge assignment [Lehner2023DASH]. DASH builds a tree of increasingly detailed atom-centered substructures, with expansion order guided by attention values from a GNN trained for partial-charge prediction.
-
-Shared with WLLR: atom-centered hierarchical environments; increasingly specific local descriptions; interpretable structural matching; empirical property information attached to matched classes. Differences: DASH's hierarchy is derived from a trained GNN and is chemistry-specific; WLLR's is deterministic WL refinement on arbitrary attributed graphs.
-
-## 18.4 DASH Properties (2024): the closest general precedent
-
-The follow-up reuses an existing DASH tree and populates its nodes with additional atomic properties, computing the **median and variance** of each property at each hierarchy node [Lehner2024DASHProperties]. The authors explicitly note that this requires no new fit per property. The same hierarchy serves alternative partial-charge models, atomic dispersion, atomic polarizability, and electrophilicity/nucleophilicity-related quantities.
-
-DASH Properties is therefore already a model of the form *hierarchical local structural class → empirical atomic-property statistic*.
-
-| DASH Properties | WLLR |
-|---|---|
-| hierarchy extracted from a GNN-attention model | hierarchy defined directly by WL refinement |
-| chemistry-specific atom substructures | arbitrary attributed graphs |
-| variable substructure expansion order | canonical refinement rounds |
-| median reported as class property | conditional mean under squared-error loss |
-| learned representation needed to build the tree | no learned representation |
-| matching/stopping determined by DASH traversal | explicit deepest-supported-class policy |
-| ancestor backoff is not the defining rule | ancestor backoff is core behavior |
-
-**Implication.** WLLR must not be described as "generalizing HOSE lookup to arbitrary atomic properties" — DASH Properties already demonstrates transferable hierarchical lookup across multiple atomic properties. The defensible distinction is that WLLR uses the *canonical* nested partition induced by WL refinement itself as both the regression hierarchy and the OOV hierarchy, without first learning a representation or constructing a domain-specific tree.
-
-## 18.5 WL refinement already defines the hierarchy
-
-Kriege, Giscard, and Wilson exploit the hierarchical structure induced by WL refinement in the WL optimal-assignment kernel [Kriege2016WLOA]. This is the citation to use when defining WLLR's parent/ancestor relation (§3.3), so that the backoff chain is presented as a known property of WL rather than a construction of this work.
-
-## 18.6 ECFP / Morgan identifiers
-
-**▸ Review note (added; absent from both drafts).** Extended-connectivity fingerprints assign each atom an identifier that is iteratively updated from its own identifier and those of its neighbors, at increasing radius [Rogers2010ECFP], following Morgan's connectivity-relaxation algorithm [Morgan1965]. This *is* 1-WL applied to molecular graphs with a specific atom-invariant schema.
-
-Two consequences:
-
-1. On molecules, $h_k(v)$ is essentially the ECFP atom-environment identifier at radius $k$. Any claim that WL identifiers offer a new molecular representation would be incorrect, and a cheminformatics reviewer will say so immediately. The framing must be that WLLR is a new *estimator over* a very familiar representation.
-2. It is a practical opportunity: an RDKit-backed implementation can be validated against `GetMorganFingerprint` atom-environment identifiers as an independent correctness check on the encoder (§9).
-
-## 18.7 mmpdb: radius-specific environment statistics
-
-Dalke, Hert, and Kramer's `mmpdb` defines **rule environments** at multiple fingerprint radii: one environment per radius, larger radii giving greater specificity, with property-change statistics stored per rule/environment/property combination [Dalke2018MMPDB].
-
-$$
-\text{environment}_r\rightarrow\{\Delta y_1,\ldots,\Delta y_n\}\rightarrow\text{empirical statistics}.
-$$
-
-This is not node regression — the target is a property *change* associated with a transformation — but it is a strong precedent for the data structure $D_k[\text{environment}]=\{N,\text{mean},\text{variance},\ldots\}$ and for the specificity/support tradeoff that §5.3 addresses.
-
-## 18.8 Mean property assignment over graph-derived atom classes
-
-Kammeraad et al. aggregated atoms with equivalent graphical connectivity, averaged their partial charges, and reused the means for atoms of the corresponding graph-derived type [Kammeraad2020Representations]:
-
-$$
-c(v)\mapsto\frac{1}{|C_c|}\sum_{u\in C_c}q_u .
-$$
-
-No WL refinement, hierarchy, or fallback — but a direct precedent for mean-per-structural-class atomic-property assignment.
-
-## 18.9 Generalized WL kernels: a principled future extension
-
-Exact WLLR treats two different identifiers at the same depth as unrelated. Schulz et al. identify the analogous rigidity in standard WL kernels and compare neighborhood trees by graded similarity instead of binary equality [Schulz2022GeneralizedWL].
-
-Current backoff is vertical, $h_k\rightarrow h_{k-1}$. A future model could also smooth horizontally,
-
-$$
-\text{exact }h_k\rightarrow\text{similar }h_k\rightarrow h_{k-1}\rightarrow\cdots,
-$$
-
-This is future work, not part of the base WLLR definition.
-
-## 18.10 Node regression and WL equivalence
-
-D'Inverno et al. analyze the approximation capability of GNNs for node classification and regression in relation to 1-WL equivalence, showing GNNs are universal approximators in probability for functions satisfying 1-WL node equivalence [DInverno2024NodeRegression]. This supports interpreting WLLR as a model that is constant within finite-depth WL equivalence classes, and bounds what any depth-matched GNN baseline can do that WLLR cannot.
-
-## 18.11 Target/mean encoding
-
-Once a WL identifier is treated as a categorical variable, mapping each observed class to its target average is target (mean) encoding. Micci-Barreca discussed target-dependent encoding for high-cardinality categorical variables and its regularization [MicciBarreca2001HighCardinality]. This literature motivates the shrinkage of §6, the leave-one-out requirement of §10.3, and the strict anti-leakage protocol of §11.
-
-## 18.12 Uncertainty
-
-Jonas and Kuhn developed NMR prediction with quantified uncertainty [JonasKuhn2019Uncertainty]. Not the same estimator, but the relevant background if calibrated uncertainty is added to WLLR's $(k^\star,N,s)$ diagnostics.
-
----
-
-# 19. Novelty boundary
-
-## 19.1 Strongly established components
-
-Prior work supports each of these individually:
-
-- nested local chemical environments — HOSE, DASH;
-- WL identifiers as molecular atom-environment descriptors — ECFP/Morgan;
-- empirical property statistics attached to structural classes — HOSE, DASH Properties, mmpdb, atom-type averaging;
-- hierarchical atom-property tables — DASH / DASH Properties;
-- radius-specific environment statistics — HOSE, mmpdb;
-- recursive fallback to less specific contexts — HOSE, Katz backoff;
-- nested WL vertex partitions — WL refinement, WL-OA;
-- ancestor-based statistical shrinkage — Hierarchical Shrinkage, mean encoding;
-- relaxed similarity between nonidentical WL environments — generalized WL kernels.
-
-## 19.2 Combination that still appears distinctive
-
-$$
-\boxed{
-\begin{array}{c}
-\text{canonical finite-depth 1-WL vertex partitions}\\
-+\\
-\text{empirical node-target conditional means}\\
-+\\
-\text{deepest-supported-class prediction}\\
-+\\
-\text{deterministic recursive backoff through WL ancestors}
-\end{array}
-}
-$$
-
-used as a **domain-agnostic node-regression model**.
-
-## 19.3 Recommended novelty statement
-
-> **To our knowledge, prior work has not directly used the nested vertex partitions induced by finite-depth 1-WL refinement as a domain-agnostic nonparametric node-regression model, assigning each observed WL class an empirical conditional target statistic and performing deterministic ancestor backoff through WL refinement levels for unsupported classes.**
-
-Avoid: *"We introduce hierarchical structural lookup regression"* (overstates novelty given HOSE and DASH); *"We are the first to use structural classes for atomic-property prediction"* (contradicted by several chemistry precedents); and any claim that the WL identifiers themselves are a new representation (contradicted by ECFP).
-
-**▸ Review note (implementation consequence).** The implementation must not encode assumptions premised on lookup, averaging, or radius fallback being individually novel. WLLR should remain a configurable, general graph method rather than being tied to one molecular property. The distinctive contribution is the *hierarchy the machinery is applied to*, not the machinery.
-
----
-
-# 20. Recommended related-work structure
-
-**20.1 WL representations and nested partitions** — Shervashidze et al. 2011; Kriege, Giscard & Wilson 2016; Morris et al. 2019; D'Inverno et al. 2024; Schulz et al. 2022.
-
-**20.2 Hierarchical atom-environment lookup** — Bremser 1978; Morgan 1965 and Rogers & Hahn 2010 (identifier construction); NMRShiftDB 2003; Kuhn et al. 2008; DASH 2023; DASH Properties 2024.
-
-**20.3 Environment-conditioned empirical property statistics** — Kammeraad et al. 2020; mmpdb 2018; target/mean-encoding literature.
-
-**20.4 Hierarchical statistical smoothing and backoff** — Katz 1987; Micci-Barreca 2001; Agarwal et al. 2022.
-
-**Relevance ranking.**
-
-1. **Kuhn et al. 2008 / HOSE** — closest precedent for exact-match averaging plus recursive radius fallback.
-2. **Lehner et al. 2024 / DASH Properties** — closest precedent for a hierarchical local-environment classifier populated with arbitrary atomic-property statistics.
-3. **Kriege et al. 2016 / WL-OA** — strongest formal precedent that WL refinement supplies a hierarchy.
-4. **Agarwal et al. 2022 / Hierarchical Shrinkage** — closest statistical precedent for the regularized variant.
-5. **Katz 1987** — canonical precedent for the backoff principle and its sparse-count failure modes.
-6. **Rogers & Hahn 2010 / ECFP** — establishes that WL identifiers on molecules are a familiar representation.
-7. **Dalke et al. 2018 / mmpdb** — radius-specific environment/property statistics.
-8. **Kammeraad et al. 2020** — mean atomic properties over graph-derived structural classes.
-9. **Schulz et al. 2022 / generalized WL** — basis for future similarity-based smoothing.
-
-> **WLLR should be presented as a particular use of WL's nested vertex partitions as the complete regression and OOV-backoff hierarchy, not as the invention of hierarchical environment-based property lookup.**
-
----
-
-# Part IV — References
-
-# 21. Certified references
-
-18 references: 15 resolved through `doi2bib.sh` against `dx.doi.org`, and three with no registered DOI (Shervashidze, Kriege, Agarwal) verified against the publisher's own record — JMLR and PMLR metadata tags and the NeurIPS proceedings page respectively. Corrections applied during certification are listed in §22.3.
-
-**This list is not the source of truth.** The bibliography is generated: DOI-bearing entries live in `references/doi_list.txt` as `citekey → DOI` pairs, DOI-less entries in `references/manual.bib`, and `references/generate_bibtex.sh` builds `references/references.bib` from both. The generator refuses to emit output if any DOI fails to resolve, if a returned record does not match the requested DOI, or if this document cites a key that is not registered. Run it after any change to the reference list; see `references/README.md`.
-
-**[Bremser1978HOSE]** Bremser, W. *HOSE — A Novel Substructure Code.* **Analytica Chimica Acta** **103**(4), 355–365 (1978). DOI: `10.1016/S0003-2670(01)83100-7`
-
-**[Morgan1965]** Morgan, H. L. *The Generation of a Unique Machine Description for Chemical Structures — A Technique Developed at Chemical Abstracts Service.* **Journal of Chemical Documentation** **5**(2), 107–113 (1965). DOI: `10.1021/c160017a018`
-
-**[Katz1987Backoff]** Katz, S. M. *Estimation of Probabilities from Sparse Data for the Language Model Component of a Speech Recognizer.* **IEEE Transactions on Acoustics, Speech, and Signal Processing** **35**(3), 400–401 (1987). DOI: `10.1109/TASSP.1987.1165125`
-
-**[MicciBarreca2001HighCardinality]** Micci-Barreca, D. *A Preprocessing Scheme for High-Cardinality Categorical Attributes in Classification and Prediction Problems.* **ACM SIGKDD Explorations Newsletter** **3**(1), 27–32 (2001). DOI: `10.1145/507533.507538`
-
-**[Steinbeck2003NMRShiftDB]** Steinbeck, C.; Krause, S.; Kuhn, S. *NMRShiftDB — Constructing a Free Chemical Information System with Open-Source Components.* **Journal of Chemical Information and Computer Sciences** **43**(6), 1733–1739 (2003). DOI: `10.1021/ci0341363`
-
-**[Kuhn2008NMR]** Kuhn, S.; Egert, B.; Neumann, S.; Steinbeck, C. *Building Blocks for Automated Elucidation of Metabolites: Machine Learning Methods for NMR Prediction.* **BMC Bioinformatics** **9**, 400 (2008). DOI: `10.1186/1471-2105-9-400`
-
-**[Rogers2010ECFP]** Rogers, D.; Hahn, M. *Extended-Connectivity Fingerprints.* **Journal of Chemical Information and Modeling** **50**(5), 742–754 (2010). DOI: `10.1021/ci100050t`
-
-**[Shervashidze2011WL]** Shervashidze, N.; Schweitzer, P.; van Leeuwen, E. J.; Mehlhorn, K.; Borgwardt, K. M. *Weisfeiler–Lehman Graph Kernels.* **Journal of Machine Learning Research** **12**, 2539–2561 (2011). No DOI; https://www.jmlr.org/papers/v12/shervashidze11a.html
-
-**[Kriege2016WLOA]** Kriege, N. M.; Giscard, P.-L.; Wilson, R. C. *On Valid Optimal Assignment Kernels and Applications to Graph Classification.* **Advances in Neural Information Processing Systems 29** (2016). No DOI; NeurIPS proceedings record; preprint arXiv:1606.01141
-
-**[Dalke2018MMPDB]** Dalke, A.; Hert, J.; Kramer, C. *mmpdb: An Open-Source Matched Molecular Pair Platform for Large Multiproperty Data Sets.* **Journal of Chemical Information and Modeling** **58**(5), 902–910 (2018). DOI: `10.1021/acs.jcim.8b00173`
-
-**[Morris2019WLGoNeural]** Morris, C.; Ritzert, M.; Fey, M.; Hamilton, W. L.; Lenssen, J. E.; Rattan, G.; Grohe, M. *Weisfeiler and Leman Go Neural: Higher-Order Graph Neural Networks.* **Proceedings of the AAAI Conference on Artificial Intelligence** **33**(01), 4602–4609 (2019). DOI: `10.1609/aaai.v33i01.33014602`
-
-**[JonasKuhn2019Uncertainty]** Jonas, E.; Kuhn, S. *Rapid Prediction of NMR Spectral Properties with Quantified Uncertainty.* **Journal of Cheminformatics** **11**, 50 (2019). DOI: `10.1186/s13321-019-0374-3`
-
-**[Kammeraad2020Representations]** Kammeraad, J. A.; Goetz, J.; Walker, E. A.; Tewari, A.; Zimmerman, P. M. *What Does the Machine Learn? Knowledge Representations of Chemical Reactivity.* **Journal of Chemical Information and Modeling** **60**(3), 1290–1301 (2020). DOI: `10.1021/acs.jcim.9b00721`
-
-**[Agarwal2022HierarchicalShrinkage]** Agarwal, A.; Tan, Y. S.; Ronen, O.; Singh, C.; Yu, B. *Hierarchical Shrinkage: Improving the Accuracy and Interpretability of Tree-Based Models.* **Proceedings of the 39th International Conference on Machine Learning**, PMLR **162**, 111–135 (2022). No DOI; https://proceedings.mlr.press/v162/agarwal22b.html; preprint arXiv:2202.00858
-
-**[Schulz2022GeneralizedWL]** Schulz, T. H.; Horváth, T.; Welke, P.; Wrobel, S. *A Generalized Weisfeiler–Lehman Graph Kernel.* **Machine Learning** **111**(7), 2601–2629 (2022). DOI: `10.1007/s10994-022-06131-w`
-
-**[Lehner2023DASH]** Lehner, M. T.; Katzberger, P.; Maeder, N.; Schiebroek, C. C. G.; Teetz, J.; Landrum, G. A.; Riniker, S. *DASH: Dynamic Attention-Based Substructure Hierarchy for Partial Charge Assignment.* **Journal of Chemical Information and Modeling** **63**(19), 6014–6028 (2023). DOI: `10.1021/acs.jcim.3c00800`
-
-**[DInverno2024NodeRegression]** D'Inverno, G. A.; Bianchini, M.; Sampoli, M. L.; Scarselli, F. *On the Approximation Capability of GNNs in Node Classification/Regression Tasks.* **Soft Computing** **28**(13–14), 8527–8547 (2024). DOI: `10.1007/s00500-024-09676-1`; preprint arXiv:2106.08992
-
-**[Lehner2024DASHProperties]** Lehner, M. T.; Katzberger, P.; Maeder, N.; Landrum, G. A.; Riniker, S. *DASH Properties: Estimating Atomic and Molecular Properties from a Dynamic Attention-Based Substructure Hierarchy.* **The Journal of Chemical Physics** **161**(7), 074103 (2024). DOI: `10.1063/5.0218154`
-
-BibTeX for all of the above is generated into `references/references.bib` — a build artifact, not a tracked file. Do not hand-edit it.
-
----
-
-# Part V — Review record
-
-# 22. Review notes, changes, and open decisions
-
-## 22.1 Substantive method changes made during consolidation
+## 15.1 Substantive method changes made during consolidation
 
 | # | Section | Change | Rationale |
 |---|---|---|---|
@@ -834,30 +563,11 @@ BibTeX for all of the above is generated into `references/references.bib` — a 
 | 9 | §8 | Added `support_threshold_binding` to metadata | Otherwise a threshold-limited match is indistinguishable from OOV |
 | 10 | §12 | Restructured tests: added isomorphism invariance, the 1-WL negative control, nesting, shrinkage limits, and the leakage guard; corrected the multi-level fallback construction | Coverage gaps plus one test that specified an unreachable state |
 
-## 22.2 Literature additions
-
-| Reference | Why added |
-|---|---|
-| Katz 1987 | The backoff rule's canonical precedent, and the correct framing for §5.3/§6 as smoothing rather than ad hoc regularization. Absent from both drafts |
-| Rogers & Hahn 2010 (+ Morgan 1965) | ECFP atom-environment identifiers *are* 1-WL on molecules. Its absence was the most exposed gap: a cheminformatics reviewer would raise it immediately. Also enables an independent encoder validation against RDKit |
-| Morris et al. 2019 | The standard citation for the MPNN↔1-WL correspondence underpinning §14's depth-matched baseline argument |
-
-## 22.3 Reference corrections applied
-
-| Reference | Correction |
-|---|---|
-| D'Inverno et al. | No longer preprint-only — published as **Soft Computing 28(13–14), 8527–8547 (2024)**, DOI `10.1007/s00500-024-09676-1`. Both drafts cited only arXiv:2106.08992 |
-| Dalke et al. | Second author is **Jérôme** Hert, not "Jérémy" as in the draft BibTeX |
-| Agarwal et al. | Published PMLR title ends "tree-based **models**", not "methods" (the arXiv preprint uses "methods") |
-| Bremser; Micci-Barreca; Steinbeck; Lehner 2023/2024; Schulz; Rogers | Issue numbers added from the Crossref records |
-| Kuhn et al. 2008 | Confirmed as article number 400 with no page range — correct as drafted |
-| Shervashidze; Kriege; Agarwal | Confirmed to have no registered DOI; verified against JMLR, NeurIPS, and PMLR records, with arXiv preprint IDs recorded where available |
-
-## 22.4 Open decisions for the author
+## 15.2 Open decisions for the author
 
 1. **Default $n_{\min}$.** §5.3 argues against $n_{\min}=1$ as the library default but does not pick a value; this should be set empirically on the first dataset, not by fiat.
 2. **Raw vs shrunk as the headline model.** The review's position is that the shrunk variant should be the headline and the raw variant the ablation, since raw deepest-match is the configuration most likely to be criticized. Both drafts treat shrinkage as an optional extension.
-3. **Whether to claim the regressogram framing (§17) in the abstract.** It is the most defensible one-line description, but it invites direct comparison to the nonparametric-regression literature, which the current evaluation plan does not yet address.
+3. **Whether to claim the regressogram framing (`literature.md` §3) in the abstract.** It is the most defensible one-line description, but it invites direct comparison to the nonparametric-regression literature, which the current evaluation plan does not yet address.
 4. **Repository layout.** The proposed structure remains:
 
 ```text
