@@ -19,7 +19,7 @@ pip install -e ".[dev]"       # core + pytest
 pip install -e ".[chem]"      # + RDKit, for the molecular adapter
 ```
 
-## A fifteen-line worked example
+## A worked example
 
 ```python
 import numpy as np
@@ -34,19 +34,19 @@ y = np.array([[1.2], [0.9], [2.3], [1.7]])   # one label per atom's molecule her
 mols = [Chem.MolFromSmiles(s) for s in smiles]
 codes, edges = build_codes(mols, ["element", "degree", "aromatic"])
 cfg = SieveConfig(
-    target_dim=1, 
+    target_dim=1,
     attribute_levels=(("element", "degree", "aromatic"),),
-    attribute_codes=codes, 
-    edge_codes=edges, 
-    max_wl_depth=2, 
-    n_min=1
+    attribute_codes=codes,
+    edge_codes=edges,
+    max_wl_depth=2,
+    n_min=1,
 )
 batch = from_smiles(
     smiles, y=np.repeat(y, [m.GetNumAtoms() for m in mols], axis=0), config=cfg
 )
 model = sieve.fit(batch, cfg)
 pred = sieve.predict_detailed(model, batch)
-print(pred.value, pred.matched_level)  # prints (1.7, 1)
+print(pred.value, pred.matched_level)
 ```
 
 ## The merge monoid
