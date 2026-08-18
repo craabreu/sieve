@@ -14,6 +14,8 @@ from sieve.config import SieveConfig, check_mergeable
 from sieve.dedupe import dense_rows
 from sieve.level import FrozenLevel
 
+_OOV_NEIGHBOUR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
+
 
 def _translate(
     sig: np.ndarray, remap_prev: np.ndarray | None, n_bond: int, is_wl: bool
@@ -23,6 +25,14 @@ def _translate(
     A signature row is written in terms of the *previous level's local ids*, so
     B's row [3, 7, 12] and A's row [3, 7, 12] generally denote different
     classes. Without this step the merge silently unions unrelated classes.
+
+    ``remap_prev`` can contain -1 here (predict.py's lookup leaves an unmatched
+    query class as -1; merge.py's own remaps never do). A neighbour with an
+    OOV previous-level class must make the row unmatchable, not accidentally
+    plausible: ``-1 * n_bond + bond`` lands on the real pad sentinel -1 itself
+    whenever ``bond == n_bond - 1``, so an OOV neighbour reached by the
+    top bond code was indistinguishable from a node with one fewer neighbour
+    -- a false match at exactly the classes it should confidently miss.
     """
     if remap_prev is None:  # level 0: attribute codes are already global
         return sig
@@ -32,8 +42,10 @@ def _translate(
         pad = sig[:, 1:]
         filled = pad >= 0
         lab, bond = np.divmod(np.where(filled, pad, 0), n_bond)
-        new = remap_prev[lab] * n_bond + bond
-        out[:, 1:] = np.where(filled, new, -1)
+        remapped_lab = remap_prev[lab]
+        oov = filled & (remapped_lab < 0)
+        new = remapped_lab * n_bond + bond
+        out[:, 1:] = np.where(oov, _OOV_NEIGHBOUR, np.where(filled, new, -1))
         # Remapping changes the sort order, so the multiset must be
         # re-canonicalised or equal multisets stop comparing equal.
         out[:, 1:] = np.sort(out[:, 1:], axis=1)

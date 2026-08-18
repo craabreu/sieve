@@ -127,6 +127,46 @@ def test_query_max_degree_above_training_max_degree_still_matches():
     assert np.all(p.matched_level[leaves] == cfg.n_levels - 1)
 
 
+def test_oov_neighbour_does_not_falsely_match_a_lower_degree_class():
+    """A neighbour whose own class is OOV to the model must make the query
+    node unmatchable at that level, not accidentally collide with the -1 pad
+    sentinel used for a genuinely absent neighbour. With a single bond type
+    (n_bond=2) the sole real bond code is n_bond-1, so an OOV neighbour's
+    encoded pair (-1 * n_bond + bond) lands exactly on -1 unless guarded."""
+    from sieve.batch import AtomBatch
+    from sieve.config import SieveConfig
+
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes={"element": {"C": 0, "H": 1}},
+        edge_codes={"SINGLE": 1},
+        max_wl_depth=1,
+        n_min=1,
+    )
+    # Training: two isolated C atoms -- the model's only WL-level class is
+    # "C, no neighbours".
+    train = AtomBatch(
+        node_attrs=np.zeros((2, 1), np.int64),
+        edge_src=np.array([], np.int64),
+        edge_dst=np.array([], np.int64),
+        edge_attr=np.array([], np.int64),
+        graph_id=np.array([0, 1], np.int64),
+        y=np.array([[1.0], [2.0]]),
+    )
+    model = sieve.fit(train, cfg)
+    # Query: C bonded to H. H's own class is OOV; C's is not.
+    query = AtomBatch(
+        node_attrs=np.array([[0], [1]], np.int64),
+        edge_src=np.array([0, 1], np.int64),
+        edge_dst=np.array([1, 0], np.int64),
+        edge_attr=np.ones(2, np.int64),
+        graph_id=np.zeros(2, np.int64),
+    )
+    p = sieve.predict_detailed(model, query)
+    assert p.matched_level[0] == 0  # must back off, not falsely match level 1
+
+
 def test_global_fallback_iff_level_zero_unsupported():
     cfg = simple_config()
     b = chain_batch(8)
