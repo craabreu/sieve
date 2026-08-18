@@ -100,12 +100,28 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
 
         raw = value.copy()
         weight = np.zeros(n)
+        # shrunk_means(model) is the model's own class-indexed shrunk means,
+        # unaware of any query. Reusing shrunk[k][class_id] directly here
+        # would be correct for `predict` but wrong for `predict_loo`: it
+        # shrinks the class mean *before* the node's own label is removed,
+        # silently reintroducing exactly the leakage §10.3 exists to avoid.
+        # Recomputing shrinkage from `raw`/`support` -- the per-node value
+        # this loop already derived from `est`/`eff_n` at the matched level,
+        # LOO-adjusted when `loo_y` is set -- combined with the *parent's*
+        # shrunk estimate reduces to the identical formula (and identical
+        # values) for `predict`, while getting `predict_loo` right too.
         shrunk = shrunk_means(model)
         for k in range(cfg.n_levels):
             sel = matched == k
             if sel.any():
-                value[sel] = shrunk[k][class_id[sel]]
                 nn = support[sel].astype(np.float64)
+                if k == 0:
+                    parent_est = np.broadcast_to(model.global_mean, (sel.sum(), d))
+                else:
+                    parent_est = shrunk[k - 1][model.levels[k].parent[class_id[sel]]]
+                value[sel] = (nn[:, None] * raw[sel] + cfg.alpha * parent_est) / (
+                    nn[:, None] + cfg.alpha
+                )
                 weight[sel] = nn / (nn + cfg.alpha)
         return Predictions(
             value,
