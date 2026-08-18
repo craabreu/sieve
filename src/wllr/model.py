@@ -47,6 +47,19 @@ class WLLRModel:
             raise ValueError(f"with_params only changes inference params, got {bad}")
         return replace(self, config=replace(self.config, **kw))
 
+    def merge(self, other: "WLLRModel") -> "WLLRModel":
+        """Combine two models. Named `merge` because `a + b` reads as ensembling."""
+        from wllr.merge import merge_models
+        return merge_models(self, other)
+
+    def __add__(self, other):
+        """Ergonomic alias so `sum(models, WLLRModel.empty(cfg))` works."""
+        if other == 0:
+            return self
+        return self.merge(other)
+
+    __radd__ = __add__
+
 
 def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
     """Fit a model to one corpus.
