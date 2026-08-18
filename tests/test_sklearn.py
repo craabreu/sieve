@@ -41,7 +41,7 @@ def test_score_is_r2():
 
 def test_score_averages_r2_per_output_not_pooled_variance():
     """score() must not let one target column's scale dominate another's
-    (design.md 10.2 asks for scikit-learn-standard behaviour, and
+    (design.md 10.2 asks for scikit-learn-standard behavior, and
     RegressorMixin.score's r2_score(multioutput="uniform_average") is
     exactly that)."""
     from sklearn.metrics import r2_score

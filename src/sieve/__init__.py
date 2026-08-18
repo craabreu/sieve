@@ -1,4 +1,4 @@
-"""Sieve: node-level regression over nested Weisfeiler-Lehman colour classes."""
+"""Sieve: node-level regression over nested Weisfeiler-Lehman color classes."""
 
 from sieve.batch import AtomBatch
 from sieve.config import SieveConfig

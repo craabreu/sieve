@@ -86,12 +86,12 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
             )
     for _ in range(config.max_wl_depth):
         prev = levels[-1].labels
-        # Encode (neighbour label, bond) as one integer so a row of neighbours
+        # Encode (neighbor label, bond) as one integer so a row of neighbors
         # is a plain integer vector.
         pair = prev[csr.dst] * n_bond + csr.attr
         pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
         pad[csr.src, csr.slot] = pair
-        # Sorting canonicalises the multiset; -1 pads sort first, and because a
+        # Sorting canonicalizes the multiset; -1 pads sort first, and because a
         # node's pad count is fixed, degree stays encoded.
         pad.sort(axis=1)
         sig = np.concatenate([prev[:, None], pad], axis=1)

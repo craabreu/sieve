@@ -16,7 +16,7 @@ def from_segment_store(
     ``sigma_profile`` targets are converted to **area** units. The store's
     native ``SigmaProfileTable.profiles`` are area *fractions* summing to 1,
     with the scale held separately in ``.areas``; design.md 11.4 requires
-    unnormalised areas, which is ``profiles * areas[:, None]``. Getting this
+    unnormalized areas, which is ``profiles * areas[:, None]``. Getting this
     wrong produces plausible numbers and no error.
     """
     from rdkit import Chem

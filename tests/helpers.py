@@ -43,7 +43,7 @@ def chain_batch(n, d=1, seed=0, graphs=1):
 
 
 def star_batch(n_leaves, d=1, seed=0, graphs=1):
-    """`graphs` disjoint stars of one centre and `n_leaves` leaves each.
+    """`graphs` disjoint stars of one center and `n_leaves` leaves each.
 
     Unlike ``chain_batch`` (max degree 2 for every graph regardless of size),
     a star's max degree is ``n_leaves`` -- used to exercise batches whose max

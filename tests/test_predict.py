@@ -123,15 +123,15 @@ def test_query_max_degree_above_training_max_degree_still_matches():
     m = sieve.fit(train, cfg)
     query = star_batch(4, graphs=1)
     p = sieve.predict_detailed(m, query)
-    leaves = np.arange(query.n_atoms) != 0  # exclude the star's centre
+    leaves = np.arange(query.n_atoms) != 0  # exclude the star's center
     assert np.all(p.matched_level[leaves] == cfg.n_levels - 1)
 
 
-def test_oov_neighbour_does_not_falsely_match_a_lower_degree_class():
-    """A neighbour whose own class is OOV to the model must make the query
+def test_oov_neighbor_does_not_falsely_match_a_lower_degree_class():
+    """A neighbor whose own class is OOV to the model must make the query
     node unmatchable at that level, not accidentally collide with the -1 pad
-    sentinel used for a genuinely absent neighbour. With a single bond type
-    (n_bond=2) the sole real bond code is n_bond-1, so an OOV neighbour's
+    sentinel used for a genuinely absent neighbor. With a single bond type
+    (n_bond=2) the sole real bond code is n_bond-1, so an OOV neighbor's
     encoded pair (-1 * n_bond + bond) lands exactly on -1 unless guarded."""
     from sieve.batch import AtomBatch
     from sieve.config import SieveConfig
@@ -145,7 +145,7 @@ def test_oov_neighbour_does_not_falsely_match_a_lower_degree_class():
         n_min=1,
     )
     # Training: two isolated C atoms -- the model's only WL-level class is
-    # "C, no neighbours".
+    # "C, no neighbors".
     train = AtomBatch(
         node_attrs=np.zeros((2, 1), np.int64),
         edge_src=np.array([], np.int64),

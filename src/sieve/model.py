@@ -102,7 +102,7 @@ class SieveModel:
             "attribute_codes": {k: dict(v) for k, v in cfg.attribute_codes.items()},
             "edge_codes": dict(cfg.edge_codes),
             "max_wl_depth": cfg.max_wl_depth,
-            "neighbour_schema": cfg.neighbour_schema,
+            "neighbor_schema": cfg.neighbor_schema,
             "n_min": cfg.n_min,
             "alpha": cfg.alpha,
             "chunk_size": cfg.chunk_size,
@@ -141,10 +141,10 @@ class SieveModel:
             attribute_codes=blob["attribute_codes"],
             edge_codes=blob["edge_codes"],
             max_wl_depth=blob["max_wl_depth"],
-            neighbour_schema=(
+            neighbor_schema=(
                 None
-                if blob["neighbour_schema"] is None
-                else tuple(blob["neighbour_schema"])
+                if blob["neighbor_schema"] is None
+                else tuple(blob["neighbor_schema"])
             ),
             n_min=blob["n_min"],
             alpha=blob["alpha"],

@@ -47,7 +47,7 @@ class FrozenLevel:
 def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     """Reduce one chunk to per-class statistics with a sparse membership operator.
 
-    Two passes, centring before reducing. Never ``sum(y**2)/N - mean**2``: on
+    Two passes, centering before reducing. Never ``sum(y**2)/N - mean**2``: on
     targets with mean 1e6 and spread 3 that form errs by 1.3e+02 relative and
     produces negative variances, against 5.4e-08 for this one.
     """
@@ -62,7 +62,7 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     count = np.bincount(labels, minlength=nc).astype(np.int64)
     safe = np.maximum(count, 1)[:, None].astype(np.float64)
     mean = (P @ y) / safe
-    resid = y - mean[labels]  # centre first, then reduce
+    resid = y - mean[labels]  # center first, then reduce
     msd = (P @ (resid * resid)) / safe
     # Classes with no members must be exactly zero, not whatever the reduction
     # happened to leave there.

@@ -14,7 +14,7 @@ from sieve.config import SieveConfig, check_mergeable
 from sieve.dedupe import dense_rows
 from sieve.level import FrozenLevel
 
-_OOV_NEIGHBOUR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
+_OOV_NEIGHBOR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
 
 
 def _translate(
@@ -27,11 +27,11 @@ def _translate(
     classes. Without this step the merge silently unions unrelated classes.
 
     ``remap_prev`` can contain -1 here (predict.py's lookup leaves an unmatched
-    query class as -1; merge.py's own remaps never do). A neighbour with an
+    query class as -1; merge.py's own remaps never do). A neighbor with an
     OOV previous-level class must make the row unmatchable, not accidentally
     plausible: ``-1 * n_bond + bond`` lands on the real pad sentinel -1 itself
-    whenever ``bond == n_bond - 1``, so an OOV neighbour reached by the
-    top bond code was indistinguishable from a node with one fewer neighbour
+    whenever ``bond == n_bond - 1``, so an OOV neighbor reached by the
+    top bond code was indistinguishable from a node with one fewer neighbor
     -- a false match at exactly the classes it should confidently miss.
     """
     if remap_prev is None:  # level 0: attribute codes are already global
@@ -45,9 +45,9 @@ def _translate(
         remapped_lab = remap_prev[lab]
         oov = filled & (remapped_lab < 0)
         new = remapped_lab * n_bond + bond
-        out[:, 1:] = np.where(oov, _OOV_NEIGHBOUR, np.where(filled, new, -1))
+        out[:, 1:] = np.where(oov, _OOV_NEIGHBOR, np.where(filled, new, -1))
         # Remapping changes the sort order, so the multiset must be
-        # re-canonicalised or equal multisets stop comparing equal.
+        # re-canonicalized or equal multisets stop comparing equal.
         out[:, 1:] = np.sort(out[:, 1:], axis=1)
     return out
 
@@ -60,7 +60,7 @@ def _widen(sig: np.ndarray, width: int, is_wl: bool) -> np.ndarray:
     the low end because a node's pad count is fixed and -1 sorts first
     (design.md 7.2) -- but that pad count is the *batch's* max degree, so two
     batches fitted separately generally have different widths for the same
-    level. Right-padding a narrower row (the old behaviour) shifts its real
+    level. Right-padding a narrower row (the old behavior) shifts its real
     values off the columns the wider row's real values occupy, so equal
     classes stop comparing equal. Left-padding instead keeps every row's real
     values right-aligned, which is what -1-first sorting already assumes.

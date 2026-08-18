@@ -49,9 +49,9 @@ def test_n_levels_counts_attribute_levels_plus_wl_depths():
     assert cfg.n_levels == 5
 
 
-def test_neighbour_schema_is_not_implemented():
+def test_neighbor_schema_is_not_implemented():
     with pytest.raises(NotImplementedError):
-        base(neighbour_schema=("element",))
+        base(neighbor_schema=("element",))
 
 
 def test_empty_attribute_group_is_rejected():

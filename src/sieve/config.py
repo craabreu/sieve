@@ -29,15 +29,15 @@ class SieveConfig:
     attribute_codes: Mapping[str, Mapping[str, int]]
     edge_codes: Mapping[str, int]
     max_wl_depth: int
-    neighbour_schema: tuple[str, ...] | None = None
+    neighbor_schema: tuple[str, ...] | None = None
     n_min: int = 1
     alpha: float | None = None
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
-        if self.neighbour_schema is not None:
+        if self.neighbor_schema is not None:
             raise NotImplementedError(
-                "neighbour_schema is evaluated but not adopted; see design.md 3.6"
+                "neighbor_schema is evaluated but not adopted; see design.md 3.6"
             )
         if not self.attribute_levels:
             raise ValueError("at least one attribute level is required")
@@ -98,7 +98,7 @@ class SieveConfig:
             },
             "edge_codes": dict(sorted(self.edge_codes.items())),
             "max_wl_depth": self.max_wl_depth,
-            "neighbour_schema": self.neighbour_schema,
+            "neighbor_schema": self.neighbor_schema,
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()

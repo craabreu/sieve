@@ -54,7 +54,7 @@ class AtomBatch:
             raise ValueError(f"y must have {n} rows, got {self.y.shape[0]}")
         if e:
             # Undirected graphs must carry both directions; the CSR construction
-            # assumes it, and a one-way corpus silently halves every neighbourhood.
+            # assumes it, and a one-way corpus silently halves every neighborhood.
             fwd = {
                 (int(a), int(b))
                 for a, b in zip(self.edge_src, self.edge_dst, strict=True)

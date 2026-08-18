@@ -807,7 +807,7 @@ file and let $\alpha$ drift out of sync with the values it produced.
   "target_dim": 50,
   "attribute_levels": [["element"], ["aromatic","hybridization"], ["formal_charge"]],
   "edge_attributes": ["bond_type"],
-  "neighbour_schema": null,
+  "neighbor_schema": null,
   "max_wl_depth": 3,
   "n_levels": 6,
   "n_min": 5,
@@ -857,7 +857,7 @@ class SieveConfig:
     attribute_levels: tuple[tuple[str, ...], ...]   # graded order, §3.5
     max_wl_depth: int
     edge_attributes: tuple[str, ...] = ("bond_type",)
-    neighbour_schema: tuple[str, ...] | None = None # §3.6; None = same as centre
+    neighbor_schema: tuple[str, ...] | None = None # §3.6; None = same as centre
     n_min: int = 1
     alpha: float | None = None                      # None = raw means, §4.2
     chunk_size: int | None = None                   # §4.1; None = whole corpus

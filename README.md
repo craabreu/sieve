@@ -5,7 +5,7 @@
 Sieve is a node-level regressor for labelled graphs (molecules, in practice)
 that generalises the classical regressogram to a *nested hierarchy* of
 partitions: it refines each node's environment through graded attribute
-levels and rounds of Weisfeiler–Lehman colour refinement, fits mean and
+levels and rounds of Weisfeiler–Lehman color refinement, fits mean and
 variance per class at every level, and predicts by looking up the deepest
 class that both matches a query node and has enough training support,
 backing off to shallower — and ultimately global — statistics otherwise. See
@@ -68,7 +68,7 @@ These are deliberate omissions, not oversights:
 
 - **Vocabulary pruning** (design.md §8) — the spec calls it opt-in, not a
   default; nothing here needs it yet.
-- **The neighbour schema** (design.md §3.6) — the spec says it was
+- **The neighbor schema** (design.md §3.6) — the spec says it was
   evaluated, not adopted. The config field exists and raises
   `NotImplementedError` if set, so a future implementer has to make the
   decision deliberately rather than by accident.

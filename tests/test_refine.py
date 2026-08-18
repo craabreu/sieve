@@ -85,7 +85,7 @@ def test_bond_type_is_distinguished():
         )
         or True
     )
-    # the centre atom sees {SINGLE,SINGLE} vs {DOUBLE,SINGLE}: classes must differ
+    # the center atom sees {SINGLE,SINGLE} vs {DOUBLE,SINGLE}: classes must differ
     assert (
         refine(b, cfg())[1].labels[0] != refine(other, cfg())[1].labels[0]
         or refine(other, cfg())[1].labels[0] != refine(other, cfg())[1].labels[2]

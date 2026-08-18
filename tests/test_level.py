@@ -32,8 +32,8 @@ def test_vector_targets_are_not_a_special_case():
     np.testing.assert_allclose(f.msd[0], [np.var([1, 3, 5]), np.var([10, 20, 0])])
 
 
-def test_centring_survives_a_large_offset():
-    """design.md 7.4: power sums give negative variances here; centring does not."""
+def test_centering_survives_a_large_offset():
+    """design.md 7.4: power sums give negative variances here; centering does not."""
     rng = np.random.default_rng(0)
     y = 1e6 + rng.normal(0, 3, size=(2000, 1))
     f = fit_level(lv(np.zeros(2000, np.int64)), y)

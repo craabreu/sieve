@@ -29,7 +29,7 @@ def _cycles(sizes):
 def test_two_wl_indistinguishable_graphs_do_collide():
     """Accepted limit, not a bug: C6 and 2xC3 are 1-WL indistinguishable.
 
-    Every node in both is degree-2 with degree-2 neighbours at every depth, so
+    Every node in both is degree-2 with degree-2 neighbors at every depth, so
     Sieve must assign them one class. Pinning this stops a future contributor
     from 'fixing' the expressiveness bound.
     """
