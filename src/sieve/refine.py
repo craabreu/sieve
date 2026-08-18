@@ -39,6 +39,17 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
     n = batch.n_atoms
     levels: list[LevelLabels] = []
 
+    declared = sum(len(group) for group in config.attribute_levels)
+    if batch.node_attrs.shape[1] != declared:
+        # A narrower node_attrs silently slices past its own end instead of
+        # raising, so the tail attribute groups get treated as declared but
+        # never actually read -- a config/adapter mismatch that would
+        # otherwise surface only as unexplained inaccuracy.
+        raise ValueError(
+            f"config.attribute_levels declares {declared} attribute columns "
+            f"but batch.node_attrs has {batch.node_attrs.shape[1]}"
+        )
+
     # --- attribute levels (design.md 3.5) --------------------------------
     # Level j introduces attribute group j on top of level j-1. Each level is
     # built from the previous plus strictly more information, which is the only

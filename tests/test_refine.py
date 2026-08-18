@@ -117,6 +117,18 @@ def test_edge_attr_outside_the_bond_alphabet_is_rejected():
         refine(bad, cfg())
 
 
+def test_node_attrs_width_mismatch_is_rejected():
+    """A node_attrs narrower than config.attribute_levels declares silently
+    slices past its own end instead of raising -- the tail attribute groups
+    end up simply never read (design.md 3.5)."""
+    import pytest
+
+    c = cfg(attribute_levels=(("element", "aromatic"),))  # declares 2 columns
+    b = path_graph(3)  # node_attrs has 1 column
+    with pytest.raises(ValueError, match="attribute_levels"):
+        refine(b, c)
+
+
 def test_graded_attribute_levels_refine_progressively():
     """design.md 3.5: each attribute level adds information to the last."""
     c = cfg(
