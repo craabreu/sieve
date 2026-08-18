@@ -167,11 +167,11 @@ def merge_level(
         else remap_prev[b.parent].astype(np.int32)
     )
     # For classes in both models the parent must already agree (design.md 2.1).
+    # A real `raise`, not `assert`: this is a structural invariant the merge
+    # relies on, and `assert` is compiled away under `python -O`.
     both = count[i] > nB
-    if np.any(both):
-        assert np.array_equal(parent[i][both], b_parent[both]), (
-            "parent disagreement: the nesting invariant is broken"
-        )
+    if np.any(both) and not np.array_equal(parent[i][both], b_parent[both]):
+        raise AssertionError("parent disagreement: the nesting invariant is broken")
     parent[i] = np.where(nA > 0, parent[i], b_parent)
     return FrozenLevel(uniq, count, mean, msd, parent), remap
 
