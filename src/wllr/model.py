@@ -60,6 +60,14 @@ class WLLRModel:
 
     __radd__ = __add__
 
+    def predict(self, batch: AtomBatch) -> np.ndarray:
+        from wllr.predict import predict as _predict
+        return _predict(self, batch)
+
+    def predict_detailed(self, batch: AtomBatch):
+        from wllr.predict import predict_detailed as _predict_detailed
+        return _predict_detailed(self, batch)
+
 
 def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
     """Fit a model to one corpus.
