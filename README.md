@@ -1,5 +1,7 @@
 # Sieve
 
+**S**upport-gated **I**nference over **E**nriched **V**ertex **E**nvironments.
+
 Sieve is a node-level regressor for labelled graphs (molecules, in practice)
 that generalises the classical regressogram to a *nested hierarchy* of
 partitions: it refines each node's environment through graded attribute
