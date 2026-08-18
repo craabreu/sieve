@@ -37,3 +37,34 @@ def test_score_is_r2():
     b = chain_batch(20, graphs=4)
     r = SieveRegressor(cfg).fit(b, b.y)
     assert r.score(b, b.y) <= 1.0
+
+
+def test_cross_val_score_actually_works():
+    """design.md 10.2: the whole point of this module is that GridSearchCV
+    and friends work. sklearn's cross-validation indexes X and y with the
+    fold's index arrays itself (X[train], y[train]) rather than calling
+    r.fit(batch, batch.y) directly, so this exercises AtomBatch's own
+    array-like protocol (`.shape`, `__len__`, `__getitem__`), not just the
+    estimator interface."""
+    from sklearn.model_selection import cross_val_score
+
+    cfg = simple_config()
+    b = chain_batch(10, graphs=12, seed=1)
+    r = SieveRegressor(cfg)
+    scores = cross_val_score(r, b, b.y, cv=GraphKFold(n_splits=3, random_state=1))
+    assert scores.shape == (3,)
+    assert np.all(np.isfinite(scores))
+
+
+def test_grid_search_cv_sweeps_n_min_and_alpha():
+    from sklearn.model_selection import GridSearchCV
+
+    cfg = simple_config(max_wl_depth=2)
+    b = chain_batch(12, graphs=10, seed=2)
+    search = GridSearchCV(
+        SieveRegressor(cfg),
+        param_grid={"n_min": [1, 2], "alpha": [None, 1.0]},
+        cv=GraphKFold(n_splits=3, random_state=2),
+    )
+    search.fit(b, b.y)
+    assert search.best_params_["n_min"] in (1, 2)

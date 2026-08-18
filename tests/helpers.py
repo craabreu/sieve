@@ -71,15 +71,4 @@ def star_batch(n_leaves, d=1, seed=0, graphs=1):
 
 def split_batch(batch, mask):
     """Take the sub-batch of atoms where `mask` is True, reindexing edges."""
-    idx = np.flatnonzero(mask)
-    remap = np.full(batch.n_atoms, -1, np.int64)
-    remap[idx] = np.arange(idx.size)
-    keep = mask[batch.edge_src] & mask[batch.edge_dst]
-    return AtomBatch(
-        node_attrs=batch.node_attrs[idx],
-        edge_src=remap[batch.edge_src[keep]],
-        edge_dst=remap[batch.edge_dst[keep]],
-        edge_attr=batch.edge_attr[keep],
-        graph_id=batch.graph_id[idx],
-        y=None if batch.y is None else batch.y[idx],
-    )
+    return batch[mask]

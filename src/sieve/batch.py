@@ -70,6 +70,56 @@ class AtomBatch:
     def n_edges(self) -> int:
         return int(self.edge_src.shape[0])
 
+    @property
+    def shape(self) -> tuple[int]:
+        """One "row" per atom (design.md 10.2).
+
+        Exists so scikit-learn's ``_safe_indexing``/``_num_samples`` treat an
+        ``AtomBatch`` as array-like instead of falling back to indexing it one
+        element at a time -- without this, ``GraphKFold`` cannot actually be
+        used with ``cross_val_score``/``GridSearchCV`` despite that being the
+        whole point of this module.
+        """
+        return (self.n_atoms,)
+
+    def __len__(self) -> int:
+        return self.n_atoms
+
+    def __getitem__(self, key) -> AtomBatch:
+        """Select a sub-batch by boolean mask or integer index array.
+
+        Edges are kept only when both endpoints are selected; a selection
+        that cuts a graph in half silently drops its cut edges rather than
+        reindexing across a boundary that no longer exists. Callers (e.g.
+        ``GraphKFold``) are responsible for selecting whole graphs.
+
+        scikit-learn's array indexing calls ``X[key, ...]`` (design.md 10.2):
+        for a 1-D array that's the same as ``X[key]``, but the literal key
+        received here is the tuple ``(key, Ellipsis)``, which needs
+        unwrapping before it reaches `np.asarray`.
+        """
+        if isinstance(key, tuple):
+            key = key[0]
+        mask = np.zeros(self.n_atoms, bool)
+        idx = np.asarray(key)
+        if idx.dtype == bool:
+            mask[:] = idx
+        else:
+            mask[idx] = True
+        sel = np.flatnonzero(mask)
+        remap = np.full(self.n_atoms, -1, np.int64)
+        remap[sel] = np.arange(sel.size)
+        keep = mask[self.edge_src] & mask[self.edge_dst]
+        return AtomBatch(
+            node_attrs=self.node_attrs[sel],
+            edge_src=remap[self.edge_src[keep]],
+            edge_dst=remap[self.edge_dst[keep]],
+            edge_attr=self.edge_attr[keep],
+            graph_id=self.graph_id[sel],
+            y=None if self.y is None else self.y[sel],
+            elements=None if self.elements is None else self.elements[sel],
+        )
+
     def csr(self) -> CSRLayout:
         n = self.n_atoms
         order = np.argsort(self.edge_src, kind="stable")

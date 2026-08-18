@@ -55,6 +55,17 @@ class SieveConfig:
         )
         object.__setattr__(self, "edge_codes", MappingProxyType(dict(self.edge_codes)))
 
+    def __deepcopy__(self, memo: dict) -> SieveConfig:
+        """Immutable, so a deep copy is never observably different from self.
+
+        `copy.deepcopy` has no built-in support for `MappingProxyType`
+        (`attribute_codes`/`edge_codes` are frozen into one in
+        `__post_init__`) and raises on it -- which otherwise breaks anything
+        that deep-copies a config, including scikit-learn's `clone()`
+        (design.md 10.2), used internally by `cross_val_score`/`GridSearchCV`.
+        """
+        return self
+
     @property
     def n_levels(self) -> int:
         """Total refinement levels: attribute levels, then WL depths."""

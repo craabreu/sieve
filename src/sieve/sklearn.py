@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+from sklearn.base import BaseEstimator, RegressorMixin
 
 from sieve.batch import AtomBatch
 from sieve.config import SieveConfig
@@ -39,7 +40,17 @@ class GraphKFold:
         return self.n_splits
 
 
-class SieveRegressor:
+class SieveRegressor(BaseEstimator, RegressorMixin):
+    """Inherits from sklearn's base classes purely for tag machinery.
+
+    Modern scikit-learn (>=1.6) resolves estimator tags via
+    ``__sklearn_tags__``, which only ``BaseEstimator`` provides -- without
+    it, ``cross_val_score``/``GridSearchCV`` fail before ever calling `fit`.
+    ``get_params``/``set_params`` stay explicit below rather than relying on
+    ``BaseEstimator``'s signature introspection, since `n_min`/`alpha`
+    resolve from `config` at construction time.
+    """
+
     def __init__(
         self, config: SieveConfig, n_min: int | None = None, alpha: float | None = None
     ):
@@ -67,6 +78,13 @@ class SieveRegressor:
             raise RuntimeError("call fit before predict")
         return _predict(self.model_, X)
 
-    def score(self, X: AtomBatch, y: np.ndarray) -> float:
+    def score(
+        self, X: AtomBatch, y: np.ndarray, sample_weight: np.ndarray | None = None
+    ) -> float:
+        # `sample_weight` is part of RegressorMixin.score's signature
+        # (Liskov substitution -- GridSearchCV may call it positionally
+        # through the base class); not yet supported by this estimator.
+        if sample_weight is not None:
+            raise NotImplementedError("sample_weight is not supported")
         pred = self.predict(X)
         return float(1 - np.mean((y - pred) ** 2) / np.var(y))
