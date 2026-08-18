@@ -1,5 +1,8 @@
 # Generated artifact — rebuild with ./generate_bibtex.sh
 references.bib
 
+# PDFs downloaded from the web
+pdfs/
+
 # Resolver response cache (keyed by DOI)
 .cache/
