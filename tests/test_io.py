@@ -7,7 +7,6 @@ from tests.helpers import chain_batch, simple_config
 
 def test_round_trip_reproduces_predictions_bit_exactly(tmp_path):
     """design.md 9.3: not an aspiration, a testable property."""
-    cfg = simple_config(max_wl_depth=3, alpha=1.5)
     b = chain_batch(20, graphs=3, d=4)
     m = sieve.fit(b, simple_config(max_wl_depth=3, alpha=1.5, target_dim=4))
     p = tmp_path / "m.npz"

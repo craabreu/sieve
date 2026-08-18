@@ -42,7 +42,7 @@ def test_changing_targets_leaves_class_ids_unchanged():
 
 def test_empty_model_has_no_classes():
     m = sieve.SieveModel.empty(simple_config())
-    assert all(l.n_classes == 0 for l in m.levels)
+    assert all(lvl.n_classes == 0 for lvl in m.levels)
     assert m.global_count == 0
 
 

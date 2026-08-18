@@ -1,12 +1,22 @@
 import numpy as np
 import pytest
 
-rdkit = pytest.importorskip("rdkit")
-from rdkit import Chem
-
 import sieve
+from sieve.batch import check_alignment
 from sieve.config import SieveConfig
 from sieve.io.rdkit_adapter import build_codes, from_smiles
+from sieve.refine import refine
+
+try:
+    from rdkit import Chem
+    from rdkit.Chem import rdFingerprintGenerator
+except ImportError:
+    Chem = None
+
+pytestmark = pytest.mark.skipif(
+    Chem is None or rdFingerprintGenerator is None, reason="rdkit is not installed"
+)
+
 
 SMILES = ["CCO", "c1ccccc1", "CC(=O)N", "CCl"]
 
@@ -62,17 +72,12 @@ def test_unknown_atoms_fall_back_rather_than_colliding():
 def test_wl_labels_agree_with_morgan_atom_environments():
     """literature.md 4.6: WL identifiers on molecules ARE ECFP identifiers, so
     RDKit gives an independent check on the encoder."""
-    from rdkit.Chem import rdFingerprintGenerator
-
-    from sieve.refine import refine
-
     smis = ["CCO", "CCC", "c1ccccc1C", "CC(=O)O"]
     cfg = cfg_for(
         smis, attrs=(("element", "degree", "formal_charge", "num_h", "aromatic"),)
     )
     b = from_smiles(smis, config=cfg)
     ours = refine(b, cfg)[len(cfg.attribute_levels)].labels  # WL round 1
-
     gen = rdFingerprintGenerator.GetMorganGenerator(radius=1, includeChirality=False)
     theirs, off = [], 0
     for s in smis:
@@ -91,8 +96,6 @@ def test_alignment_guard_catches_a_shuffled_target_array():
     y = np.arange(3, dtype=float).reshape(-1, 1)
     b = from_smiles(["CCO"], y=y, config=cfg)
     assert b.elements is not None
-    from sieve.batch import check_alignment
-
     with pytest.raises(ValueError, match="element"):
         check_alignment(b, np.array([3]), b.elements[::-1].copy())
 
