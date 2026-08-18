@@ -68,6 +68,10 @@ class WLLRModel:
         from wllr.predict import predict_detailed as _predict_detailed
         return _predict_detailed(self, batch)
 
+    def predict_loo(self, batch: AtomBatch):
+        from wllr.predict import predict_loo as _predict_loo
+        return _predict_loo(self, batch)
+
 
 def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
     """Fit a model to one corpus.
