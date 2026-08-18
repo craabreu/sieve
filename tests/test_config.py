@@ -1,37 +1,51 @@
 import pytest
+
 from sieve.config import SieveConfig, check_mergeable
 
+
 def base(**kw):
-    d = dict(target_dim=1,
-             attribute_levels=(("element",),),
-             attribute_codes={"element": {"C": 0, "H": 1}},
-             edge_codes={"SINGLE": 1},
-             max_wl_depth=3)
+    d = dict(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes={"element": {"C": 0, "H": 1}},
+        edge_codes={"SINGLE": 1},
+        max_wl_depth=3,
+    )
     d.update(kw)
     return SieveConfig(**d)
 
+
 def test_schema_version_is_stable():
     assert base().schema_version == base().schema_version
+
 
 def test_schema_version_ignores_inference_params():
     assert base(n_min=1).schema_version == base(n_min=9).schema_version
     assert base(alpha=None).schema_version == base(alpha=2.0).schema_version
 
+
 def test_schema_version_tracks_meaning():
     assert base().schema_version != base(max_wl_depth=4).schema_version
-    assert base().schema_version != base(
-        attribute_codes={"element": {"C": 0, "H": 2}}).schema_version
-    assert base().schema_version != base(
-        attribute_levels=(("element",), ("aromatic",))).schema_version
+    assert (
+        base().schema_version
+        != base(attribute_codes={"element": {"C": 0, "H": 2}}).schema_version
+    )
+    assert (
+        base().schema_version
+        != base(attribute_levels=(("element",), ("aromatic",))).schema_version
+    )
+
 
 def test_mergeable_requires_matching_schema():
-    check_mergeable(base(), base(n_min=7))          # inference params may differ
+    check_mergeable(base(), base(n_min=7))  # inference params may differ
     with pytest.raises(ValueError, match="schema"):
         check_mergeable(base(), base(max_wl_depth=4))
+
 
 def test_n_levels_counts_attribute_levels_plus_wl_depths():
     cfg = base(attribute_levels=(("element",), ("aromatic",)), max_wl_depth=3)
     assert cfg.n_levels == 5
+
 
 def test_neighbour_schema_is_not_implemented():
     with pytest.raises(NotImplementedError):

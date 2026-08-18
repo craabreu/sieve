@@ -1,6 +1,8 @@
 import numpy as np
+
 import sieve
 from tests.helpers import chain_batch, simple_config
+
 
 def test_class_of_two_returns_the_other_member():
     """design.md 10.4: the sharpest statement of what LOO means."""
@@ -9,6 +11,7 @@ def test_class_of_two_returns_the_other_member():
     m = sieve.fit(b, cfg)
     p = sieve.predict_loo(m, b)
     from sieve.refine import refine
+
     labels = refine(b, cfg)[-1].labels
     for c in np.unique(labels):
         members = np.flatnonzero(labels == c)
@@ -16,6 +19,7 @@ def test_class_of_two_returns_the_other_member():
             i, j = members
             np.testing.assert_allclose(p.value[i], b.y[j])
             np.testing.assert_allclose(p.value[j], b.y[i])
+
 
 def test_singleton_classes_back_off_instead_of_dividing_by_zero():
     """design.md 10.3: a class of exactly one member must never be used
@@ -34,6 +38,7 @@ def test_singleton_classes_back_off_instead_of_dividing_by_zero():
         if at_k.any():
             assert np.all(m.levels[k].count[p.class_id[at_k]] != 1)
 
+
 def test_loo_is_strictly_worse_than_in_sample():
     """The point of the method: in-sample scores are meaningless at n_min=1."""
     cfg = simple_config(max_wl_depth=3)
@@ -43,8 +48,10 @@ def test_loo_is_strictly_worse_than_in_sample():
     loo = np.mean((sieve.predict_loo(m, b).value - b.y) ** 2)
     assert loo > ins
 
+
 def test_loo_requires_targets():
     import pytest
+
     b = chain_batch(6)
     m = sieve.fit(b, simple_config())
     with pytest.raises(ValueError, match="targets"):

@@ -1,4 +1,5 @@
 """Per-class statistics: a count and two means (design.md 4.1, 7.3)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,11 +20,11 @@ class FrozenLevel:
     keeps the merge weights scalar.
     """
 
-    signatures: np.ndarray    # (nc, width) int64 -- the vocabulary
-    count: np.ndarray         # (nc,) int64
-    mean: np.ndarray          # (nc, d) float64
-    msd: np.ndarray           # (nc, d) float64 -- population variance
-    parent: np.ndarray        # (nc,) int32
+    signatures: np.ndarray  # (nc, width) int64 -- the vocabulary
+    count: np.ndarray  # (nc,) int64
+    mean: np.ndarray  # (nc, d) float64
+    msd: np.ndarray  # (nc, d) float64 -- population variance
+    parent: np.ndarray  # (nc,) int32
 
     @property
     def n_classes(self) -> int:
@@ -56,13 +57,12 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
 
     # Built once, reused across both passes and all d dimensions. bincount is
     # scalar-only and would need a loop over dimensions.
-    P = sparse.csr_matrix(
-        (np.ones(n), (labels, np.arange(n))), shape=(nc, n))
+    P = sparse.csr_matrix((np.ones(n), (labels, np.arange(n))), shape=(nc, n))
 
     count = np.bincount(labels, minlength=nc).astype(np.int64)
     safe = np.maximum(count, 1)[:, None].astype(np.float64)
     mean = (P @ y) / safe
-    resid = y - mean[labels]              # centre first, then reduce
+    resid = y - mean[labels]  # centre first, then reduce
     msd = (P @ (resid * resid)) / safe
     # Classes with no members must be exactly zero, not whatever the reduction
     # happened to leave there.

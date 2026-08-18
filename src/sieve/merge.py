@@ -5,6 +5,7 @@ variance in intensive variables -- Chan, Golub and LeVeque's parallel form --
 not an ad hoc correction, which is why the full-covariance upgrade is a
 one-term change and why merging is order-independent.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -14,15 +15,16 @@ from sieve.dedupe import dense_rows
 from sieve.level import FrozenLevel
 
 
-def _translate(sig: np.ndarray, remap_prev: np.ndarray | None,
-               n_bond: int, is_wl: bool) -> np.ndarray:
+def _translate(
+    sig: np.ndarray, remap_prev: np.ndarray | None, n_bond: int, is_wl: bool
+) -> np.ndarray:
     """Rewrite B's signature rows in the merged id space.
 
     A signature row is written in terms of the *previous level's local ids*, so
     B's row [3, 7, 12] and A's row [3, 7, 12] generally denote different
     classes. Without this step the merge silently unions unrelated classes.
     """
-    if remap_prev is None:          # level 0: attribute codes are already global
+    if remap_prev is None:  # level 0: attribute codes are already global
         return sig
     out = sig.copy()
     out[:, 0] = remap_prev[sig[:, 0]]
@@ -52,7 +54,7 @@ def _lookup_rows(sig: np.ndarray, table: np.ndarray) -> np.ndarray:
         if m.shape[1] == width:
             return np.ascontiguousarray(m)
         out = np.full((m.shape[0], width), -1, np.int64)
-        out[:, :m.shape[1]] = m
+        out[:, : m.shape[1]] = m
         return out
 
     s, t = widen(sig), widen(table)
@@ -67,8 +69,13 @@ def _lookup_rows(sig: np.ndarray, table: np.ndarray) -> np.ndarray:
     return np.where(hit, cand, -1).astype(np.int64)
 
 
-def merge_level(a: FrozenLevel, b: FrozenLevel, remap_prev: np.ndarray | None,
-                n_bond: int, is_wl: bool) -> tuple[FrozenLevel, np.ndarray]:
+def merge_level(
+    a: FrozenLevel,
+    b: FrozenLevel,
+    remap_prev: np.ndarray | None,
+    n_bond: int,
+    is_wl: bool,
+) -> tuple[FrozenLevel, np.ndarray]:
     """Merge one level. A's ids are preserved; only B's are remapped.
 
     Pinning A means A's ``parent`` array needs no translation at all -- only
@@ -88,14 +95,14 @@ def merge_level(a: FrozenLevel, b: FrozenLevel, remap_prev: np.ndarray | None,
         if sig.shape[1] == width:
             return sig
         out = np.full((sig.shape[0], width), -1, np.int64)
-        out[:, :sig.shape[1]] = sig
+        out[:, : sig.shape[1]] = sig
         return out
 
     a_sig = widen(a.signatures)
     b_sig = widen(_translate(b.signatures, remap_prev, n_bond, is_wl))
     m = a.n_classes
 
-    found = _lookup_rows(b_sig, a_sig)      # -1 where B's row is new to A
+    found = _lookup_rows(b_sig, a_sig)  # -1 where B's row is new to A
     new_mask = found < 0
     if np.any(new_mask):
         new_local, new_uniq = dense_rows(b_sig[new_mask])
@@ -120,25 +127,29 @@ def merge_level(a: FrozenLevel, b: FrozenLevel, remap_prev: np.ndarray | None,
     msd[:m] = a.msd
     parent[:m] = a.parent
 
-    i = remap                       # a bijection: no duplicate scatter writes
+    i = remap  # a bijection: no duplicate scatter writes
     nA = count[i].astype(np.float64)
     nB = b.count.astype(np.float64)
     n = nA + nB
     safe = np.maximum(n, 1.0)
     wA, wB = (nA / safe)[:, None], (nB / safe)[:, None]
 
-    delta = b.mean - mean[i]        # MUST precede the mean update below
+    delta = b.mean - mean[i]  # MUST precede the mean update below
     msd[i] = wA * msd[i] + wB * b.msd + wA * wB * delta * delta
     mean[i] = wA * mean[i] + wB * b.mean
     count[i] = n.astype(np.int64)
 
-    b_parent = (np.full(b.n_classes, -1, np.int32) if remap_prev is None
-                else remap_prev[b.parent].astype(np.int32))
+    b_parent = (
+        np.full(b.n_classes, -1, np.int32)
+        if remap_prev is None
+        else remap_prev[b.parent].astype(np.int32)
+    )
     # For classes in both models the parent must already agree (design.md 2.1).
     both = count[i] > nB
     if np.any(both):
-        assert np.array_equal(parent[i][both], b_parent[both]), \
+        assert np.array_equal(parent[i][both], b_parent[both]), (
             "parent disagreement: the nesting invariant is broken"
+        )
     parent[i] = np.where(nA > 0, parent[i], b_parent)
     return FrozenLevel(uniq, count, mean, msd, parent), remap
 
@@ -153,8 +164,9 @@ def merge_models(a, b):
 
     levels, remap = [], None
     for k in range(cfg.n_levels):
-        lvl, remap = merge_level(a.levels[k], b.levels[k], remap,
-                                 cfg.n_bond, is_wl=k >= n_attr_levels)
+        lvl, remap = merge_level(
+            a.levels[k], b.levels[k], remap, cfg.n_bond, is_wl=k >= n_attr_levels
+        )
         levels.append(lvl)
 
     nA, nB = float(a.global_count), float(b.global_count)
@@ -181,6 +193,8 @@ def fold(models, config: SieveConfig):
     if not items:
         return SieveModel.empty(config)
     while len(items) > 1:
-        items = [merge_models(items[i], items[i + 1]) if i + 1 < len(items)
-                 else items[i] for i in range(0, len(items), 2)]
+        items = [
+            merge_models(items[i], items[i + 1]) if i + 1 < len(items) else items[i]
+            for i in range(0, len(items), 2)
+        ]
     return items[0]

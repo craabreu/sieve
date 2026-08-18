@@ -1,12 +1,16 @@
 import numpy as np
 import pytest
+
 import sieve
 from sieve.merge import fold
 from tests.helpers import chain_batch, simple_config, split_batch
 
+
 def preds(model, batch):
     from sieve.predict import predict
+
     return predict(model, batch)
+
 
 def test_merge_of_disjoint_shards_equals_fitting_the_union():
     """design.md 5.2: the headline property. Everything else is machinery."""
@@ -19,12 +23,14 @@ def test_merge_of_disjoint_shards_equals_fitting_the_union():
     whole = sieve.fit(b, cfg)
     _assert_same_statistics(merged, whole)
 
+
 def test_merge_is_commutative():
     cfg = simple_config()
     b = chain_batch(10, graphs=4)
     a = sieve.fit(split_batch(b, b.graph_id < 2), cfg)
     c = sieve.fit(split_batch(b, b.graph_id >= 2), cfg)
     _assert_same_statistics(a.merge(c), c.merge(a))
+
 
 def test_merge_is_associative():
     cfg = simple_config()
@@ -34,12 +40,14 @@ def test_merge_is_associative():
     right = parts[0].merge(parts[1].merge(parts[2]))
     _assert_same_statistics(left, right)
 
+
 def test_empty_model_is_the_identity():
     cfg = simple_config()
     m = sieve.fit(chain_batch(8), cfg)
     e = sieve.SieveModel.empty(cfg)
     _assert_same_statistics(m.merge(e), m)
     _assert_same_statistics(e.merge(m), m)
+
 
 def test_merge_reproduces_variance_not_just_the_mean():
     """Trap 2: swapping the delta and mean updates leaves means correct and
@@ -51,9 +59,13 @@ def test_merge_reproduces_variance_not_just_the_mean():
     whole = sieve.fit(b, cfg)
     merged = a.merge(c)
     for k in range(len(whole.levels)):
-        np.testing.assert_allclose(np.sort(merged.levels[k].msd, axis=0),
-                                   np.sort(whole.levels[k].msd, axis=0),
-                                   rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(
+            np.sort(merged.levels[k].msd, axis=0),
+            np.sort(whole.levels[k].msd, axis=0),
+            rtol=1e-10,
+            atol=1e-12,
+        )
+
 
 def test_class_present_in_only_one_model_is_carried_through_exactly():
     cfg = simple_config()
@@ -64,12 +76,14 @@ def test_class_present_in_only_one_model_is_carried_through_exactly():
     np.testing.assert_array_equal(m.levels[-1].count, a.levels[-1].count)
     np.testing.assert_allclose(m.levels[-1].msd, a.levels[-1].msd)
 
+
 def test_incompatible_configs_are_rejected_loudly():
     b = chain_batch(8)
     a = sieve.fit(b, simple_config(max_wl_depth=2))
     c = sieve.fit(b, simple_config(max_wl_depth=3))
     with pytest.raises(ValueError, match="schema"):
         a.merge(c)
+
 
 def test_parent_relations_survive_the_merge():
     cfg = simple_config(max_wl_depth=3)
@@ -83,6 +97,7 @@ def test_parent_relations_survive_the_merge():
         # support monotonicity must still hold after merging
         assert np.all(m.levels[k].count <= m.levels[k - 1].count[m.levels[k].parent])
 
+
 def test_fold_matches_sequential_merge():
     cfg = simple_config()
     b = chain_batch(7, graphs=8)
@@ -92,12 +107,14 @@ def test_fold_matches_sequential_merge():
         seq = seq.merge(p)
     _assert_same_statistics(fold(parts, cfg), seq)
 
+
 def test_chunked_fit_equals_single_chunk_fit():
     """design.md 4.1: chunk size is a memory decision, not a statistical one."""
     b = chain_batch(9, graphs=10)
     whole = sieve.fit(b, simple_config())
     chunked = sieve.fit(b, simple_config(chunk_size=20))
     _assert_same_statistics(chunked, whole)
+
 
 def _assert_same_statistics(a, b):
     """Compare two models up to class-id permutation, level by level."""

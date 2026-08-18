@@ -4,6 +4,7 @@ Contorting the core into fit-mutates-self would forfeit the merge monoid for
 the sake of an interface. This adapter exists so GridSearchCV can sweep alpha,
 n_min and K without the core inheriting mutable-estimator semantics.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -39,8 +40,9 @@ class GraphKFold:
 
 
 class SieveRegressor:
-    def __init__(self, config: SieveConfig, n_min: int | None = None,
-                 alpha: float | None = None):
+    def __init__(
+        self, config: SieveConfig, n_min: int | None = None, alpha: float | None = None
+    ):
         self.config = config
         self.n_min = config.n_min if n_min is None else n_min
         self.alpha = config.alpha if alpha is None else alpha

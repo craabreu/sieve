@@ -1,7 +1,8 @@
 import numpy as np
-import pytest
+
 import sieve
 from tests.helpers import chain_batch, simple_config, split_batch
+
 
 def test_training_atoms_recover_their_class_mean():
     cfg = simple_config()
@@ -9,22 +10,26 @@ def test_training_atoms_recover_their_class_mean():
     m = sieve.fit(b, cfg)
     p = sieve.predict_detailed(m, b)
     from sieve.refine import refine
+
     labels = refine(b, cfg)[-1].labels
     for i in range(b.n_atoms):
         if p.matched_level[i] == cfg.n_levels - 1:
             np.testing.assert_allclose(p.value[i], b.y[labels == labels[i]].mean(0))
+
 
 def test_unseen_atom_falls_back_to_the_global_mean():
     cfg = simple_config()
     train = chain_batch(6)
     m = sieve.fit(train, cfg)
     alien = chain_batch(3)
-    alien = type(alien)(**{**alien.__dict__,
-                           "node_attrs": np.full((3, 1), 7, np.int64)})
+    alien = type(alien)(
+        **{**alien.__dict__, "node_attrs": np.full((3, 1), 7, np.int64)}
+    )
     p = sieve.predict_detailed(m, alien)
     assert np.all(p.matched_level == -1)
     assert np.all(p.class_id == -1)
     np.testing.assert_allclose(p.value, np.broadcast_to(m.global_mean, p.value.shape))
+
 
 def test_n_min_moves_the_match_shallower_never_deeper():
     """design.md 10.4."""
@@ -35,12 +40,14 @@ def test_n_min_moves_the_match_shallower_never_deeper():
     tight = sieve.predict_detailed(m.with_params(n_min=4), b).matched_level
     assert np.all(tight <= loose)
 
+
 def test_threshold_bound_distinguishes_support_stops_from_oov():
     cfg = simple_config(max_wl_depth=3, n_min=1000)
     b = chain_batch(20, graphs=3)
     m = sieve.fit(b, cfg)
     p = sieve.predict_detailed(m, b)
     assert p.threshold_bound.any(), "a huge n_min must stop on support, not OOV"
+
 
 def test_matched_levels_form_a_prefix():
     """design.md 2.2: no gaps are constructible. Verified by construction here:
@@ -54,6 +61,7 @@ def test_matched_levels_form_a_prefix():
         if 0 <= k < cfg.n_levels - 1:
             assert p.support[i] >= cfg.n_min
 
+
 def test_variance_is_nan_at_support_one():
     cfg = simple_config(max_wl_depth=4)
     b = chain_batch(30, graphs=1)
@@ -62,6 +70,7 @@ def test_variance_is_nan_at_support_one():
     singles = p.support == 1
     if singles.any():
         assert np.all(np.isnan(p.variance[singles]))
+
 
 def test_batched_and_split_prediction_agree():
     """design.md 10.4: batched and per-node prediction must agree."""
@@ -72,11 +81,13 @@ def test_batched_and_split_prediction_agree():
     parts = [sieve.predict(m, split_batch(b, b.graph_id == g)) for g in range(4)]
     np.testing.assert_allclose(full, np.concatenate(parts))
 
+
 def test_vector_targets_predict_elementwise():
     cfg = simple_config(target_dim=3)
     b = chain_batch(12, d=3)
     m = sieve.fit(b, cfg)
     assert sieve.predict(m, b).shape == (12, 3)
+
 
 def test_global_fallback_iff_level_zero_unsupported():
     cfg = simple_config()

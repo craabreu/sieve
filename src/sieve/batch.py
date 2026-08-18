@@ -1,4 +1,5 @@
 """The columnar input contract and its CSR layout (design.md 7.1, 11)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,18 +32,20 @@ class AtomBatch:
     batch that loses it cannot be validated correctly.
     """
 
-    node_attrs: np.ndarray            # (n_atoms, n_attr) int64, encoded categoricals
-    edge_src: np.ndarray              # (n_edges,) int64
-    edge_dst: np.ndarray              # (n_edges,) int64
-    edge_attr: np.ndarray             # (n_edges,) int64
-    graph_id: np.ndarray              # (n_atoms,) int64
-    y: np.ndarray | None = None       # (n_atoms, d) float64
+    node_attrs: np.ndarray  # (n_atoms, n_attr) int64, encoded categoricals
+    edge_src: np.ndarray  # (n_edges,) int64
+    edge_dst: np.ndarray  # (n_edges,) int64
+    edge_attr: np.ndarray  # (n_edges,) int64
+    graph_id: np.ndarray  # (n_atoms,) int64
+    y: np.ndarray | None = None  # (n_atoms, d) float64
     elements: np.ndarray | None = None  # (n_atoms,) int64, for the alignment guard
 
     def __post_init__(self) -> None:
         n = self.node_attrs.shape[0]
         if self.graph_id.shape != (n,):
-            raise ValueError(f"graph_id must have shape ({n},), got {self.graph_id.shape}")
+            raise ValueError(
+                f"graph_id must have shape ({n},), got {self.graph_id.shape}"
+            )
         e = self.edge_src.shape[0]
         for name in ("edge_dst", "edge_attr"):
             if getattr(self, name).shape != (e,):
@@ -73,13 +76,20 @@ class AtomBatch:
         # Position within the source's adjacency block. Valid only because
         # `src` is sorted, which is why `order` is applied first.
         slot = np.arange(src.shape[0], dtype=np.int64) - indptr[src]
-        return CSRLayout(order=order, indptr=indptr, slot=slot, src=src,
-                         dst=self.edge_dst[order], attr=self.edge_attr[order],
-                         max_deg=int(deg.max()) if n else 0)
+        return CSRLayout(
+            order=order,
+            indptr=indptr,
+            slot=slot,
+            src=src,
+            dst=self.edge_dst[order],
+            attr=self.edge_attr[order],
+            max_deg=int(deg.max()) if n else 0,
+        )
 
 
-def check_alignment(batch: AtomBatch, atom_counts: np.ndarray,
-                    elements: np.ndarray) -> None:
+def check_alignment(
+    batch: AtomBatch, atom_counts: np.ndarray, elements: np.ndarray
+) -> None:
     """Verify targets line up with parsed molecules (design.md 7.5, 11.3).
 
     This is the highest-severity failure mode in the system: a misalignment

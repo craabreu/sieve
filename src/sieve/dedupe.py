@@ -1,4 +1,5 @@
 """Row deduplication through a void view (design.md 7.2)."""
+
 from __future__ import annotations
 
 import numpy as np

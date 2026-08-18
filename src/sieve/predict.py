@@ -1,4 +1,5 @@
 """Bottom-up backoff through the refinement chain (design.md 6, 10.3, 12)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,12 +21,12 @@ class Predictions:
     how much support it had, and how heterogeneous its labels were.
     """
 
-    value: np.ndarray             # (n, d)
-    matched_level: np.ndarray     # (n,) k*, -1 for global fallback
-    class_id: np.ndarray          # (n,) id at the matched level, -1 if none
-    support: np.ndarray           # (n,) N at the matched class (eff_n if LOO)
-    variance: np.ndarray          # (n, d) s^2, NaN where support == 1
-    threshold_bound: np.ndarray   # (n,) stopped by n_min rather than by OOV
+    value: np.ndarray  # (n, d)
+    matched_level: np.ndarray  # (n,) k*, -1 for global fallback
+    class_id: np.ndarray  # (n,) id at the matched level, -1 if none
+    support: np.ndarray  # (n,) N at the matched class (eff_n if LOO)
+    variance: np.ndarray  # (n, d) s^2, NaN where support == 1
+    threshold_bound: np.ndarray  # (n,) stopped by n_min rather than by OOV
     raw_value: np.ndarray | None = None
     shrinkage_weight: np.ndarray | None = None
 
@@ -49,16 +50,16 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
     variance = np.full((n, d), np.nan)
     threshold = np.zeros(n, bool)
 
-    remap = None            # query class ids -> model class ids, previous level
+    remap = None  # query class ids -> model class ids, previous level
     alive = np.ones(n, bool)
     for k in range(cfg.n_levels):
         lvl = model.levels[k]
         q = query[k]
         sig = _translate(q.signatures, remap, cfg.n_bond, is_wl=k >= n_attr)
-        found = _lookup(sig, lvl.signatures)          # per query class
+        found = _lookup(sig, lvl.signatures)  # per query class
         remap = found
         if not alive.any():
-            break                                     # graph-level stop (6.2)
+            break  # graph-level stop (6.2)
         cid = found[q.labels]
         ok = alive & (cid >= 0)
         enough = np.zeros(n, bool)
@@ -73,10 +74,12 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
                 eff_n = cnt - 1.0
                 # N == 1 leaves nothing behind: treat as unsupported and let
                 # the search back off to the parent rather than dividing by 0.
-                est_ok = np.where(eff_n[:, None] > 0,
-                                  (cnt[:, None] * lvl.mean[cid[ok]] - loo_y[ok]) /
-                                  np.maximum(eff_n, 1.0)[:, None],
-                                  np.nan)
+                est_ok = np.where(
+                    eff_n[:, None] > 0,
+                    (cnt[:, None] * lvl.mean[cid[ok]] - loo_y[ok])
+                    / np.maximum(eff_n, 1.0)[:, None],
+                    np.nan,
+                )
             enough[ok] = eff_n >= cfg.n_min
             est[ok] = est_ok
             eff_n_full[ok] = eff_n
@@ -89,10 +92,11 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
         class_id[hit] = cid[hit]
         support[hit] = eff_n_full[hit].astype(np.int64)
         variance[hit] = lvl.variance[cid[hit]]
-        alive = hit                                   # prefix property (2.2)
+        alive = hit  # prefix property (2.2)
 
     if cfg.alpha is not None:
         from sieve.shrinkage import shrunk_means
+
         raw = value.copy()
         weight = np.zeros(n)
         shrunk = shrunk_means(model)
@@ -102,8 +106,16 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
                 value[sel] = shrunk[k][class_id[sel]]
                 nn = support[sel].astype(np.float64)
                 weight[sel] = nn / (nn + cfg.alpha)
-        return Predictions(value, matched, class_id, support, variance, threshold,
-                           raw_value=raw, shrinkage_weight=weight)
+        return Predictions(
+            value,
+            matched,
+            class_id,
+            support,
+            variance,
+            threshold,
+            raw_value=raw,
+            shrinkage_weight=weight,
+        )
 
     return Predictions(value, matched, class_id, support, variance, threshold)
 

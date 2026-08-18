@@ -1,4 +1,5 @@
 """Attribute levels then WL rounds, all vectorised (design.md 3.5, 7.1, 7.2)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,9 +21,9 @@ class LevelLabels:
     and single-parenthood is structural rather than asserted.
     """
 
-    labels: np.ndarray        # (n_atoms,) int64
-    signatures: np.ndarray    # (n_classes, width) int64
-    parent: np.ndarray        # (n_classes,) int32; -1 at level 0
+    labels: np.ndarray  # (n_atoms,) int64
+    signatures: np.ndarray  # (n_classes, width) int64
+    parent: np.ndarray  # (n_classes,) int32; -1 at level 0
 
     @property
     def n_classes(self) -> int:
@@ -45,15 +46,18 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
     used = 0
     for j, group in enumerate(config.attribute_levels):
         width = len(group)
-        cols = batch.node_attrs[:, used:used + width]
+        cols = batch.node_attrs[:, used : used + width]
         used += width
         if j == 0:
             sig = cols
         else:
             sig = np.concatenate([levels[-1].labels[:, None], cols], axis=1)
         labels, uniq = dense_rows(sig)
-        parent = (np.full(uniq.shape[0], -1, np.int32) if j == 0
-                  else uniq[:, 0].astype(np.int32))
+        parent = (
+            np.full(uniq.shape[0], -1, np.int32)
+            if j == 0
+            else uniq[:, 0].astype(np.int32)
+        )
         levels.append(LevelLabels(labels, uniq, parent))
 
     # --- WL rounds (design.md 7.2) ---------------------------------------

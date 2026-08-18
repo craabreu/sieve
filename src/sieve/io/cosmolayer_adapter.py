@@ -1,4 +1,5 @@
 """cosmolayer SegmentStore -> AtomBatch (design.md 11.3, 11.4)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -7,8 +8,9 @@ from sieve.batch import AtomBatch, check_alignment
 from sieve.config import SieveConfig
 
 
-def from_segment_store(store, target="area", *, config: SieveConfig,
-                       scheme="cosmo-rs") -> tuple[AtomBatch, np.ndarray]:
+def from_segment_store(
+    store, target="area", *, config: SieveConfig, scheme="cosmo-rs"
+) -> tuple[AtomBatch, np.ndarray]:
     """Build a batch and a test mask from a cosmolayer segment store.
 
     ``sigma_profile`` targets are converted to **area** units. The store's
@@ -26,11 +28,11 @@ def from_segment_store(store, target="area", *, config: SieveConfig,
     n_atoms = int(ai.max()) + 1
 
     if target == "area":
-        y = np.bincount(ai, weights=np.asarray(store.areas),
-                        minlength=n_atoms)[:, None]
+        y = np.bincount(ai, weights=np.asarray(store.areas), minlength=n_atoms)[:, None]
     elif target == "charge":
-        y = np.bincount(ai, weights=np.asarray(store.charges),
-                        minlength=n_atoms)[:, None]
+        y = np.bincount(ai, weights=np.asarray(store.charges), minlength=n_atoms)[
+            :, None
+        ]
     elif target == "sigma_profile":
         table = store.compute_atom_sigma_profiles(scheme=scheme)
         y = np.asarray(table.profiles, np.float64) * np.asarray(table.areas)[:, None]
@@ -38,7 +40,7 @@ def from_segment_store(store, target="area", *, config: SieveConfig,
         raise ValueError(f"unknown target {target!r}")
 
     params = Chem.SmilesParserParams()
-    params.removeHs = False          # COSMO tables carry explicit hydrogens
+    params.removeHs = False  # COSMO tables carry explicit hydrogens
     mols, orders = [], []
     for smi in df.smiles:
         mol = Chem.MolFromSmiles(smi, params)
@@ -52,8 +54,9 @@ def from_segment_store(store, target="area", *, config: SieveConfig,
 
     # design.md 7.5 / 11.3: the check that actually catches reordering.
     pt = Chem.GetPeriodicTable()
-    expected = np.array([pt.GetAtomicNumber(s) for s in store.atoms_df["element"]],
-                        np.int64)
+    expected = np.array(
+        [pt.GetAtomicNumber(s) for s in store.atoms_df["element"]], np.int64
+    )
     check_alignment(batch, df.num_atoms.to_numpy(), expected)
 
     is_test = np.repeat((df.split == "test").to_numpy(), df.num_atoms.to_numpy())

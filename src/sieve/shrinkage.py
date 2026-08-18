@@ -1,4 +1,5 @@
 """Hierarchically shrunk means, derived on demand (design.md 4.2)."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -19,8 +20,11 @@ def shrunk_means(model) -> list[np.ndarray]:
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
         n = lvl.count[:, None].astype(np.float64)
-        parent_est = (np.broadcast_to(model.global_mean, lvl.mean.shape) if k == 0
-                      else out[k - 1][lvl.parent])
+        parent_est = (
+            np.broadcast_to(model.global_mean, lvl.mean.shape)
+            if k == 0
+            else out[k - 1][lvl.parent]
+        )
         if alpha is None or alpha == 0.0:
             out.append(np.where(n > 0, lvl.mean, parent_est))
         else:

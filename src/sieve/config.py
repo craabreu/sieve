@@ -1,9 +1,10 @@
 """Fit-time and inference-time configuration. See design.md section 9.2."""
+
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 
@@ -45,8 +46,13 @@ class SieveConfig:
         if self.n_min < 1:
             raise ValueError("n_min must be >= 1")
         # Freeze the mappings so the frozen dataclass is honest.
-        object.__setattr__(self, "attribute_codes", MappingProxyType(
-            {k: MappingProxyType(dict(v)) for k, v in self.attribute_codes.items()}))
+        object.__setattr__(
+            self,
+            "attribute_codes",
+            MappingProxyType(
+                {k: MappingProxyType(dict(v)) for k, v in self.attribute_codes.items()}
+            ),
+        )
         object.__setattr__(self, "edge_codes", MappingProxyType(dict(self.edge_codes)))
 
     @property
@@ -69,8 +75,10 @@ class SieveConfig:
         payload = {
             "target_dim": self.target_dim,
             "attribute_levels": [list(g) for g in self.attribute_levels],
-            "attribute_codes": {k: dict(sorted(v.items()))
-                                for k, v in sorted(self.attribute_codes.items())},
+            "attribute_codes": {
+                k: dict(sorted(v.items()))
+                for k, v in sorted(self.attribute_codes.items())
+            },
             "edge_codes": dict(sorted(self.edge_codes.items())),
             "max_wl_depth": self.max_wl_depth,
             "neighbour_schema": self.neighbour_schema,

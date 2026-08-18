@@ -1,4 +1,5 @@
 """The fitted model and the fit entry point (design.md 5.1, 7, 10.1)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -31,9 +32,15 @@ class SieveModel:
         """The identity of the merge monoid (design.md 5.4)."""
         d = config.target_dim
         levels = tuple(
-            FrozenLevel(np.zeros((0, 1), np.int64), np.zeros(0, np.int64),
-                        np.zeros((0, d)), np.zeros((0, d)), np.zeros(0, np.int32))
-            for _ in range(config.n_levels))
+            FrozenLevel(
+                np.zeros((0, 1), np.int64),
+                np.zeros(0, np.int64),
+                np.zeros((0, d)),
+                np.zeros((0, d)),
+                np.zeros(0, np.int32),
+            )
+            for _ in range(config.n_levels)
+        )
         return cls(config, levels, 0, np.zeros(d), np.zeros(d))
 
     def with_params(self, **kw) -> "SieveModel":
@@ -50,6 +57,7 @@ class SieveModel:
     def merge(self, other: "SieveModel") -> "SieveModel":
         """Combine two models. Named `merge` because `a + b` reads as ensembling."""
         from sieve.merge import merge_models
+
         return merge_models(self, other)
 
     def __add__(self, other):
@@ -62,14 +70,17 @@ class SieveModel:
 
     def predict(self, batch: AtomBatch) -> np.ndarray:
         from sieve.predict import predict as _predict
+
         return _predict(self, batch)
 
     def predict_detailed(self, batch: AtomBatch):
         from sieve.predict import predict_detailed as _predict_detailed
+
         return _predict_detailed(self, batch)
 
     def predict_loo(self, batch: AtomBatch):
         from sieve.predict import predict_loo as _predict_loo
+
         return _predict_loo(self, batch)
 
     def save(self, path) -> None:
@@ -98,8 +109,9 @@ class SieveModel:
         }
         arrays = {
             "config": np.frombuffer(json.dumps(blob).encode(), np.uint8),
-            "global": np.concatenate([[float(self.global_count)],
-                                      self.global_mean, self.global_msd]),
+            "global": np.concatenate(
+                [[float(self.global_count)], self.global_mean, self.global_msd]
+            ),
         }
         for k, lvl in enumerate(self.levels):
             arrays[f"level_{k}_vocab"] = lvl.signatures
@@ -121,27 +133,38 @@ class SieveModel:
         if blob["format_version"] != FORMAT_VERSION:
             raise ValueError(
                 f"unsupported format_version {blob['format_version']}; "
-                f"this build reads {FORMAT_VERSION}. Refusing to guess.")
+                f"this build reads {FORMAT_VERSION}. Refusing to guess."
+            )
         cfg = SieveConfig(
             target_dim=blob["target_dim"],
             attribute_levels=tuple(tuple(g) for g in blob["attribute_levels"]),
             attribute_codes=blob["attribute_codes"],
             edge_codes=blob["edge_codes"],
             max_wl_depth=blob["max_wl_depth"],
-            neighbour_schema=(None if blob["neighbour_schema"] is None
-                              else tuple(blob["neighbour_schema"])),
-            n_min=blob["n_min"], alpha=blob["alpha"],
-            chunk_size=blob["chunk_size"])
+            neighbour_schema=(
+                None
+                if blob["neighbour_schema"] is None
+                else tuple(blob["neighbour_schema"])
+            ),
+            n_min=blob["n_min"],
+            alpha=blob["alpha"],
+            chunk_size=blob["chunk_size"],
+        )
         if cfg.schema_version != blob["schema_version"]:
             raise ValueError("schema_version does not match the stored config")
         d = cfg.target_dim
         g = data["global"]
         levels = tuple(
-            FrozenLevel(data[f"level_{k}_vocab"], data[f"level_{k}_count"],
-                        data[f"level_{k}_mean"], data[f"level_{k}_msd"],
-                        data[f"level_{k}_parent"])
-            for k in range(cfg.n_levels))
-        return cls(cfg, levels, int(g[0]), g[1:1 + d], g[1 + d:1 + 2 * d])
+            FrozenLevel(
+                data[f"level_{k}_vocab"],
+                data[f"level_{k}_count"],
+                data[f"level_{k}_mean"],
+                data[f"level_{k}_msd"],
+                data[f"level_{k}_parent"],
+            )
+            for k in range(cfg.n_levels)
+        )
+        return cls(cfg, levels, int(g[0]), g[1 : 1 + d], g[1 + d : 1 + 2 * d])
 
 
 def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
@@ -156,17 +179,20 @@ def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
     if batch.y.shape[1] != config.target_dim:
         raise ValueError(
             f"target_dim is {config.target_dim} but batch.y has "
-            f"{batch.y.shape[1]} columns")
+            f"{batch.y.shape[1]} columns"
+        )
 
     if config.chunk_size is not None and config.chunk_size < batch.n_atoms:
         from sieve.merge import fold
+
         graphs = np.unique(batch.graph_id)
         n_parts = max(1, -(-batch.n_atoms // config.chunk_size))
         shards = []
         for part in np.array_split(graphs, n_parts):
             mask = np.isin(batch.graph_id, part)
-            shards.append(fit(_sub_batch(batch, mask),
-                              replace(config, chunk_size=None)))
+            shards.append(
+                fit(_sub_batch(batch, mask), replace(config, chunk_size=None))
+            )
         return fold(shards, config)
 
     levels_lbl = refine(batch, config)
@@ -188,4 +214,5 @@ def _sub_batch(batch: AtomBatch, mask: np.ndarray) -> AtomBatch:
         edge_attr=batch.edge_attr[keep],
         graph_id=batch.graph_id[idx],
         y=None if batch.y is None else batch.y[idx],
-        elements=None if batch.elements is None else batch.elements[idx])
+        elements=None if batch.elements is None else batch.elements[idx],
+    )
