@@ -552,6 +552,26 @@ ergonomic alias for `sum()`.
 **Provide an empty-model identity** so `sum(models)` works and associativity/commutativity can be
 property-tested directly. Those tests are cheap and catch remapping bugs immediately.
 
+### 5.5 Parallel fitting in practice — measured
+
+§5.1 frames parallel fitting as "a fold over independently fitted shards," which is algorithmically
+sound — §5.2's merge is $O(|A|+|B|)$, not a re-dedup of the concatenation, and §5.4's balanced tree
+keeps combining $N$ shards from growing quadratically. Both were measured directly (COSMO 10k store,
+8-core machine): merging two pre-fitted shards costs ~10× less than refitting them (33.7 ms vs 336 ms
+at full corpus size), and `fold()` beats a naive sequential reduce by 2.2× at 64 shards, 5.1× at 256.
+
+**That is necessary, not sufficient, for `multiprocessing`-based parallelism to pay off.** A worker
+pool spun up fresh for each call is a net *loss*: `Pool(8)` startup alone costs 260–390 ms, which
+rivals or exceeds an entire single-threaded fit at this corpus's size (339 ms) — measured 0.5–0.6×,
+slower than not parallelising. A **persistent** pool, created once and reused across calls, wins
+instead — 1.66× at the store's own size, climbing to 3.75× at 16× that size with 8 workers, efficiency
+still climbing when the sweep ended. Below a few hundred milliseconds of total fit work, process
+overhead dominates regardless of algorithm.
+
+Practical consequence: a caller wanting parallel fitting should own a long-lived worker pool across
+many `fit()` calls, not create one per call. This isn't yet exposed as a documented API (`sieve.fit`
+has no `n_jobs` or pool-aware entry point) — §13.9.
+
 ---
 
 ## 6. Inference
@@ -1084,6 +1104,10 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    Implement as a configurable neighbour schema — an ablation flag, not an architecture. This
    comparison is part of the planned ablation suite rather than a design decision to be made in
    advance; the entry stays open until that suite runs.
+9. **Whether `sieve` should expose a pool-aware parallel-fitting entry point** (§5.5), or leave pool
+   lifecycle entirely to the caller. Measured: a persistent worker pool pays off and a per-call pool
+   does not, so an API that quietly creates one pool per `fit()` call would be actively harmful — if
+   this is ever exposed, the pool's lifetime needs to be a caller-visible decision, not an implicit one.
 
 ---
 
