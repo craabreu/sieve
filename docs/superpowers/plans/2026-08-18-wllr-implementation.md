@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `wllr`, a node-level regression library that fits empirical target statistics to the nested vertex partitions produced by Weisfeiler–Lehman colour refinement, and predicts by backing off to the deepest supported class.
+**Goal:** Build `wllr`, a node-level regression library that fits empirical target statistics to the nested vertex partitions produced by Weisfeiler–Lehman color refinement, and predicts by backing off to the deepest supported class.
 
-**Architecture:** A fitted model is an immutable, columnar, per-level structure — one array set per refinement level, class ids dense from 0, `parent[k]` indexing directly into level `k-1`. Fitting is fully vectorised: the corpus is one block-diagonal graph, each level is one array operation, and per-class statistics come from a sparse class-membership operator. Models combine through a merge monoid (law of total variance in intensive variables), which doubles as the chunking/streaming mechanism so there is no second accumulation path.
+**Architecture:** A fitted model is an immutable, columnar, per-level structure — one array set per refinement level, class ids dense from 0, `parent[k]` indexing directly into level `k-1`. Fitting is fully vectorized: the corpus is one block-diagonal graph, each level is one array operation, and per-class statistics come from a sparse class-membership operator. Models combine through a merge monoid (law of total variance in intensive variables), which doubles as the chunking/streaming mechanism so there is no second accumulation path.
 
 **Tech Stack:** Python ≥3.11, NumPy, SciPy (`scipy.sparse`), pytest. RDKit for the molecular adapter (optional import). `cosmolayer` for the benchmark fixture (optional import).
 
@@ -18,14 +18,14 @@
 - **No per-atom or per-molecule Python loop anywhere in the fit path.** A loop over *levels* is expected and fine; a loop over nodes is a defect.
 - Stored variance is `msd` — population variance, divisor `N`. The name `var`/`variance` is reserved for the accessor that applies Bessel's correction. (§4.1)
 - `s² = N/(N-1)·σ²` is **undefined at N=1** — return `None` (scalar API) or `NaN` (array API), never `0.0`. (§4.1, §12)
-- Never compute variance as `E[y²] − E[y]²`. Always centre first, then reduce. (§4.1, §7.4)
+- Never compute variance as `E[y²] − E[y]²`. Always center first, then reduce. (§4.1, §7.4)
 - Shrunk means are **derived, never stored**. (§4.2)
 
 ### The four traps
 
 These fail silently — no exception, plausible-looking numbers. Each has a dedicated test in this plan.
 
-1. **`np.unique` return order** is `(unique, index, inverse)` regardless of the order the keywords are passed. Binding them wrongly makes the vectorised path silently behave like the slow one. (§7.2)
+1. **`np.unique` return order** is `(unique, index, inverse)` regardless of the order the keywords are passed. Binding them wrongly makes the vectorized path silently behave like the slow one. (§7.2)
 2. **Merge statement order**: `delta` must be read from `mean[i]` *before* `mean[i]` is overwritten, and `msd[i]` consumed before being overwritten. Reversing corrupts every σ² for classes present in both models by ~1e-2 relative. (§5.3)
 3. **Power sums instead of centring**: the one-pass formula produces negative variances on realistic data. (§7.4)
 4. **Input misalignment**: targets indexed by atom position, molecule parsed in a different order — corrupts every label and raises nothing. (§7.5, §11.3)
@@ -57,13 +57,13 @@ These fail silently — no exception, plausible-looking numbers. Each has a dedi
 
 **A. `vocab` is a signature-row array, not `dict[bytes, int]`.** §3.1 shows `dict[bytes, int]`; §9 supersedes it — "vocab is stored as an `(n_classes, width)` integer array", because §7.2 mints ids by deduplicating signature rows and *the deduped rows are the vocabulary*. Follow §9. No hashing is required anywhere in fit, merge, or predict.
 
-**B. Merging cannot compare signature rows directly.** §5.3's `merge_level` keys `vocab` by a content hash `h`, which is globally meaningful. Signature rows are **not** — they are written in terms of the *previous level's local ids*, so B's row `[3, 7, 12]` and A's row `[3, 7, 12]` generally denote different classes. Before deduplicating B's level-`k` rows against A's, every id inside them must be translated into the merged id space using `remap_prev` from level `k-1`, **and the neighbour columns re-sorted afterwards** because remapping changes their order. Task 7 gives the code. Implementing §5.3 literally against dedupe-derived ids produces a silently wrong merge.
+**B. Merging cannot compare signature rows directly.** §5.3's `merge_level` keys `vocab` by a content hash `h`, which is globally meaningful. Signature rows are **not** — they are written in terms of the *previous level's local ids*, so B's row `[3, 7, 12]` and A's row `[3, 7, 12]` generally denote different classes. Before deduplicating B's level-`k` rows against A's, every id inside them must be translated into the merged id space using `remap_prev` from level `k-1`, **and the neighbor columns re-sorted afterwards** because remapping changes their order. Task 7 gives the code. Implementing §5.3 literally against dedupe-derived ids produces a silently wrong merge.
 
 **C. Attribute code tables must be shared across merged models.** Since level-0 signatures are attribute codes, two models are mergeable only if their encoders agree. The code tables therefore live in `WLLRConfig` and are covered by `schema_version`. §9.2 does not list them; it should.
 
 **D. `chunk_size` needs no separate code path.** §4.1 establishes that chunked accumulation *is* the merge. Implement it as "split the batch, fit each part, fold" — five lines in `fit`, no streaming machinery, no Welford recurrence.
 
-**E. Out of scope for v1, deliberately.** §8 vocabulary pruning (spec calls it opt-in, not a default). §3.6 neighbour schema (spec says evaluated, not adopted) — the config field exists and must `raise NotImplementedError` if set. §5.2's full-covariance upgrade (spec defers it). Record these in the README so their absence reads as a decision.
+**E. Out of scope for v1, deliberately.** §8 vocabulary pruning (spec calls it opt-in, not a default). §3.6 neighbor schema (spec says evaluated, not adopted) — the config field exists and must `raise NotImplementedError` if set. §5.2's full-covariance upgrade (spec defers it). Record these in the README so their absence reads as a decision.
 
 ---
 
@@ -410,7 +410,7 @@ class AtomBatch:
             raise ValueError(f"y must have {n} rows, got {self.y.shape[0]}")
         if e:
             # Undirected graphs must carry both directions; the CSR construction
-            # assumes it, and a one-way corpus silently halves every neighbourhood.
+            # assumes it, and a one-way corpus silently halves every neighborhood.
             fwd = {(int(a), int(b)) for a, b in zip(self.edge_src, self.edge_dst)}
             if any((b, a) not in fwd for a, b in fwd):
                 raise ValueError("edges must be stored in both directions")
@@ -666,7 +666,7 @@ def test_bond_type_is_distinguished():
     other = AtomBatch(**{**b.__dict__, "edge_attr": np.array([2, 2, 1, 1], np.int64)})
     assert not _same_partition(refine(b, cfg())[-1].labels,
                                refine(other, cfg())[-1].labels) or True
-    # the centre atom sees {SINGLE,SINGLE} vs {DOUBLE,SINGLE}: classes must differ
+    # the center atom sees {SINGLE,SINGLE} vs {DOUBLE,SINGLE}: classes must differ
     assert refine(b, cfg())[1].labels[0] != refine(other, cfg())[1].labels[0] or \
            refine(other, cfg())[1].labels[0] != refine(other, cfg())[1].labels[2]
 
@@ -703,7 +703,7 @@ Expected: FAIL, `ModuleNotFoundError: No module named 'wllr.refine'`
 
 ```python
 # src/wllr/refine.py
-"""Attribute levels then WL rounds, all vectorised (design.md 3.5, 7.1, 7.2)."""
+"""Attribute levels then WL rounds, all vectorized (design.md 3.5, 7.1, 7.2)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -766,12 +766,12 @@ def refine(batch: AtomBatch, config: WLLRConfig) -> list[LevelLabels]:
     n_bond = config.n_bond
     for _ in range(config.max_wl_depth):
         prev = levels[-1].labels
-        # Encode (neighbour label, bond) as one integer so a row of neighbours
+        # Encode (neighbor label, bond) as one integer so a row of neighbors
         # is a plain integer vector.
         pair = prev[csr.dst] * n_bond + csr.attr
         pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
         pad[csr.src, csr.slot] = pair
-        # Sorting canonicalises the multiset; -1 pads sort first, and because a
+        # Sorting canonicalizes the multiset; -1 pads sort first, and because a
         # node's pad count is fixed, degree stays encoded.
         pad.sort(axis=1)
         sig = np.concatenate([prev[:, None], pad], axis=1)
@@ -790,7 +790,7 @@ Expected: PASS (8 tests)
 
 ```bash
 git add src/wllr/refine.py tests/test_refine.py
-git commit -m "feat: vectorised refinement chain with graded attribute levels"
+git commit -m "feat: vectorized refinement chain with graded attribute levels"
 ```
 
 ---
@@ -937,7 +937,7 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     count = np.bincount(labels, minlength=nc).astype(np.int64)
     safe = np.maximum(count, 1)[:, None].astype(np.float64)
     mean = (P @ y) / safe
-    resid = y - mean[labels]              # centre first, then reduce
+    resid = y - mean[labels]              # center first, then reduce
     msd = (P @ (resid * resid)) / safe
     # Classes with no members must be exactly zero, not whatever the reduction
     # happened to leave there.
@@ -1162,9 +1162,9 @@ def fit(batch: AtomBatch, config: WLLRConfig) -> WLLRModel:
             f"target_dim is {config.target_dim} but batch.y has "
             f"{batch.y.shape[1]} columns")
 
-    # NOTE: config.chunk_size is honoured in Task 7, once `fold` exists.
+    # NOTE: config.chunk_size is honored in Task 7, once `fold` exists.
     # Leave it unhandled here -- a single chunk is the correct default and the
-    # only behaviour Task 6's tests exercise.
+    # only behavior Task 6's tests exercise.
     levels_lbl = refine(batch, config)
     levels = tuple(fit_level(lv, batch.y) for lv in levels_lbl)
     n, mean, msd = global_stats(batch.y)
@@ -1229,7 +1229,7 @@ Expected: PASS (8 tests)
 
 ```bash
 git add src/wllr/model.py src/wllr/__init__.py tests/test_fit.py tests/helpers.py
-git commit -m "feat: WLLRModel container and vectorised fit"
+git commit -m "feat: WLLRModel container and vectorized fit"
 ```
 
 ---
@@ -1412,7 +1412,7 @@ def _translate(sig: np.ndarray, remap_prev: np.ndarray | None,
         new = remap_prev[lab] * n_bond + bond
         out[:, 1:] = np.where(filled, new, -1)
         # Remapping changes the sort order, so the multiset must be
-        # re-canonicalised or equal multisets stop comparing equal.
+        # re-canonicalized or equal multisets stop comparing equal.
         out[:, 1:] = np.sort(out[:, 1:], axis=1)
     return out
 
@@ -1891,7 +1891,7 @@ def shrunk_means(model) -> list[np.ndarray]:
     """Compute shrunk class means top-down, level 0 first.
 
     Each level consumes the *already-shrunk* parent, not the raw parent mean --
-    which is why the pass must run downward and cannot be vectorised across
+    which is why the pass must run downward and cannot be vectorized across
     levels.
 
     Never stored as model state: any added data changes the global mean and
@@ -2061,7 +2061,7 @@ git commit -m "feat: leave-one-out prediction as a first-class leakage guard"
 
 ---
 
-## Task 11: Serialisation
+## Task 11: Serialization
 
 **Files:**
 - Modify: `src/wllr/model.py`
@@ -2223,7 +2223,7 @@ Expected: PASS (5 tests)
 
 ```bash
 git add src/wllr/model.py tests/test_io.py
-git commit -m "feat: npz serialisation with bit-exact round trip"
+git commit -m "feat: npz serialization with bit-exact round trip"
 ```
 
 ---
@@ -2239,7 +2239,7 @@ git commit -m "feat: npz serialisation with bit-exact round trip"
 
 Read design.md 11.2, 11.3, and `literature.md` 4.6.
 
-The adapter owns encoding and must map an unseen category to a **reserved unknown code** rather than colliding with a seen one. An unknown code then simply fails to match at level 0 and backs off, which is the correct behaviour.
+The adapter owns encoding and must map an unseen category to a **reserved unknown code** rather than colliding with a seen one. An unknown code then simply fails to match at level 0 and backs off, which is the correct behavior.
 
 Supported attribute names: `element`, `degree`, `hybridization`, `aromatic`, `formal_charge`, `num_h`, `chirality`.
 
@@ -2420,7 +2420,7 @@ def from_smiles(smiles, y=None, *, config: WLLRConfig) -> AtomBatch:
     return from_rdkit(mols, y, config=config)
 ```
 
-**Note:** the per-molecule Python loop here is acceptable — parsing is inherently per-molecule and this is the adapter, not the fit path. Everything downstream of `AtomBatch` stays vectorised.
+**Note:** the per-molecule Python loop here is acceptable — parsing is inherently per-molecule and this is the adapter, not the fit path. Everything downstream of `AtomBatch` stays vectorized.
 
 - [ ] **Step 4: Run tests**
 
@@ -2598,7 +2598,7 @@ def from_segment_store(store, target="area", *, config: WLLRConfig,
     ``sigma_profile`` targets are converted to **area** units. The store's
     native ``SigmaProfileTable.profiles`` are area *fractions* summing to 1,
     with the scale held separately in ``.areas``; design.md 11.4 requires
-    unnormalised areas, which is ``profiles * areas[:, None]``. Getting this
+    unnormalized areas, which is ``profiles * areas[:, None]``. Getting this
     wrong produces plausible numbers and no error.
     """
     import pandas as pd
@@ -2671,7 +2671,7 @@ git commit -m "feat: cosmolayer adapter with end-to-end acceptance benchmark"
 **Interfaces:**
 - Produces: `WLLRRegressor(config, **params)` with `fit(X, y)`, `predict(X)`, `get_params`, `set_params`, `score`; `GraphKFold(n_splits)` yielding graph-disjoint index splits.
 
-Read design.md 10.2. The wrapper must default to **graph-level** splitting: node-level random splitting puts WL-identical atoms from one molecule on both sides and inflates scores badly. This is the single easiest way to produce a misleading number with this method, so the safe behaviour belongs in the default rather than in the documentation.
+Read design.md 10.2. The wrapper must default to **graph-level** splitting: node-level random splitting puts WL-identical atoms from one molecule on both sides and inflates scores badly. This is the single easiest way to produce a misleading number with this method, so the safe behavior belongs in the default rather than in the documentation.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2817,7 +2817,7 @@ git commit -m "feat: scikit-learn wrapper with graph-level splitting by default"
 **Files:**
 - Create: `README.md`, `tests/test_properties.py`
 
-The negative control pins the known 1-WL expressiveness bound as *intended behaviour* rather than an undetected bug (design.md 10.4, last row). Without it, a future contributor may "fix" it.
+The negative control pins the known 1-WL expressiveness bound as *intended behavior* rather than an undetected bug (design.md 10.4, last row). Without it, a future contributor may "fix" it.
 
 - [ ] **Step 1: Write the test**
 
@@ -2849,7 +2849,7 @@ def _cycles(sizes):
 def test_two_wl_indistinguishable_graphs_do_collide():
     """Accepted limit, not a bug: C6 and 2xC3 are 1-WL indistinguishable.
 
-    Every node in both is degree-2 with degree-2 neighbours at every depth, so
+    Every node in both is degree-2 with degree-2 neighbors at every depth, so
     WLLR must assign them one class. Pinning this stops a future contributor
     from 'fixing' the expressiveness bound.
     """
@@ -2874,7 +2874,7 @@ Expected: PASS (2 tests)
 
 - [ ] **Step 3: Write `README.md`**
 
-Cover: what WLLR is (one paragraph, using the hierarchical-regressogram framing from `literature.md` 3); install; a fifteen-line worked example on SMILES; the merge monoid in three lines (`sum(models)`); a **Not implemented in v1** section listing vocabulary pruning (design.md 8), the neighbour schema (3.6), and full covariance (5.2), each with its one-line reason, so their absence reads as a decision; and a pointer to `design.md` as authoritative and `literature.md` for prior work.
+Cover: what WLLR is (one paragraph, using the hierarchical-regressogram framing from `literature.md` 3); install; a fifteen-line worked example on SMILES; the merge monoid in three lines (`sum(models)`); a **Not implemented in v1** section listing vocabulary pruning (design.md 8), the neighbor schema (3.6), and full covariance (5.2), each with its one-line reason, so their absence reads as a decision; and a pointer to `design.md` as authoritative and `literature.md` for prior work.
 
 - [ ] **Step 4: Commit**
 
@@ -2889,6 +2889,6 @@ git commit -m "docs: README and the 1-WL negative control"
 
 **Spec coverage.** §2 → Tasks 4, 7, 8 (nesting, prefix, monotonicity all tested). §3.1/3.3 → Task 4 (ids are dedupe-derived; no hashing needed, per §7.2/§9). §3.4 hash width → **not applicable**: no truncated digests are used anywhere, which is the stronger resolution. §3.5 → Task 4. §3.6 → config field raising `NotImplementedError` (Task 1), as the spec's "evaluated, not adopted" requires. §4.1 → Task 5. §4.2 → Task 9. §5 → Task 7. §6 → Task 8. §7 → Tasks 2–5. §8 → deliberately out of scope, recorded in the README (Task 15). §9 → Task 11. §10.1 → Task 6. §10.2 → Task 14. §10.3 → Task 10. §10.4 → every property has a test; the negative control is Task 15. §11 → Tasks 2, 12, 13. §11.4 → Task 13's non-negativity test and the fraction→area conversion. §12 → Task 8. §13 open questions are not implementation work.
 
-**One cross-task dependency.** `fit` accepts `chunk_size` in its config from Task 1, but the branch that honours it needs `fold`, which does not exist until Task 7. Task 6 therefore ships `fit` without it and Task 7 adds it, together with `test_chunked_fit_equals_single_chunk_fit`. `_sub_batch` lands in Task 6 because Task 13 imports it.
+**One cross-task dependency.** `fit` accepts `chunk_size` in its config from Task 1, but the branch that honors it needs `fold`, which does not exist until Task 7. Task 6 therefore ships `fit` without it and Task 7 adds it, together with `test_chunked_fit_equals_single_chunk_fit`. `_sub_batch` lands in Task 6 because Task 13 imports it.
 
 **Type consistency.** `FrozenLevel` fields (`signatures`, `count`, `mean`, `msd`, `parent`) are used identically in Tasks 5, 7, 8, 9, 11. `LevelLabels` (`labels`, `signatures`, `parent`) in Tasks 4, 5. `_translate(sig, remap_prev, n_bond, is_wl)` has one signature, used by Tasks 7 and 8. `_sub_batch` is defined in `wllr/model.py` (Task 6/7) and used by Task 13's benchmark.

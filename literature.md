@@ -105,7 +105,7 @@ context length. This matters for the write-up in two ways:
 2. It supplies the correct framing for support thresholding and shrinkage: the language-modeling
    literature established decades ago that most-specific-match on raw counts is unstable and requires
    either a count threshold (Katz's cutoff) or interpolation (Jelinek–Mercer, which is structurally
-   what hierarchical shrinkage is). Presenting these as the WL analogues of established smoothing
+   what hierarchical shrinkage is). Presenting these as the WL analogs of established smoothing
    practice is stronger than presenting them as ad hoc regularization.
 
 Bilmes and Kirchhoff generalize this to backoff over *multiple factors* rather than a single context,
@@ -442,12 +442,12 @@ closed before the evaluation plan is fixed. Item 5 is the only one that could st
 
 ### 9.1 The regressogram framing is uncited
 
-§3 calls Sieve "a hierarchical regressogram over the nested vertex partitions induced by WL colour
+§3 calls Sieve "a hierarchical regressogram over the nested vertex partitions induced by WL color
 refinement" and §5.3 treats that as the most defensible one-line description of the method. It is also
 the only section of this document with no supporting reference.
 
 Partitioning (histogram) regression estimators have a developed theory — consistency, convergence
-rates, the bias–variance behaviour of cell size. Claiming the framing invites the question of which of
+rates, the bias–variance behavior of cell size. Claiming the framing invites the question of which of
 those results transfer, given that WL cells are data-independent and do *not* shrink geometrically
 with sample size the way the classical analysis assumes. Backoff makes the effective partition
 data-dependent, which is a further departure.
@@ -504,7 +504,7 @@ a competitive result.
 
 `design.md` stores a per-class mean vector and per-component MSD, so a σ-profile is handled as d
 unrelated numbers that happen to share a hierarchy. On a fixed grid a σ-profile is closer to a
-function — or, being non-negative, to an unnormalised density — than to a vector of independent
+function — or, being non-negative, to an unnormalized density — than to a vector of independent
 outputs.
 
 Elementwise means and elementwise shrinkage remain defensible: the grid is shared across all

@@ -9,7 +9,7 @@ def shrunk_means(model) -> list[np.ndarray]:
     """Compute shrunk class means top-down, level 0 first.
 
     Each level consumes the *already-shrunk* parent, not the raw parent mean --
-    which is why the pass must run downward and cannot be vectorised across
+    which is why the pass must run downward and cannot be vectorized across
     levels.
 
     Never stored as model state: any added data changes the global mean and

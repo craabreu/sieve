@@ -31,7 +31,7 @@ The hook:
 
 - runs only when the commit touches `references/` or `wllr.md`, so unrelated commits
   pay nothing;
-- validates the **staged** content, not the working tree — it materialises the index
+- validates the **staged** content, not the working tree — it materializes the index
   with `git checkout-index` into a temp directory rather than stashing, so it neither
   passes a broken staged file that happens to have a clean working copy, nor
   false-positives on a good staged fix while the working copy is still broken;

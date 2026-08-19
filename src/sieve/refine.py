@@ -1,4 +1,4 @@
-"""Attribute levels then WL rounds, all vectorised (design.md 3.5, 7.1, 7.2)."""
+"""Attribute levels then WL rounds, all vectorized (design.md 3.5, 7.1, 7.2)."""
 
 from __future__ import annotations
 

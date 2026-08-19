@@ -53,10 +53,10 @@ trap 'rm -rf "$tmp"' EXIT
 # Checking the working tree is the classic pre-commit bug: it would pass a
 # broken staged doi_list.txt whenever the working copy happened to be clean,
 # and fail a good staged fix whenever the working copy happened to be broken.
-# checkout-index materialises exactly what is about to be committed, without
+# checkout-index materializes exactly what is about to be committed, without
 # touching or stashing the working tree.
 if ! git checkout-index -a --prefix="$tmp/" 2>/dev/null; then
-  echo "pre-commit: could not materialise the index; skipping bibliography check" >&2
+  echo "pre-commit: could not materialize the index; skipping bibliography check" >&2
   exit 0
 fi
 

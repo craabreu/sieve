@@ -26,10 +26,10 @@ evaluation protocol); those are listed as open in §13.
 | Immutable models combined by a merge monoid | §5 |
 | Bottom-up inference with early termination | §6 |
 | Vector targets, per-dimension variance | §1, §5.2 |
-| Vectorised fit: void-view dedupe + sparse two-pass reduction | §7 |
-| Shared target grid; unnormalised areas; closure over non-negative vectors | §11.4 |
+| Vectorized fit: void-view dedupe + sparse two-pass reduction | §7 |
+| Shared target grid; unnormalized areas; closure over non-negative vectors | §11.4 |
 
-§3.6 records a design option that has been **measured but not adopted** — coarsening the neighbour
+§3.6 records a design option that has been **measured but not adopted** — coarsening the neighbor
 attribute schema. Figures quoted elsewhere in this document as "measured on cosmobase" come from
 that experiment.
 
@@ -236,10 +236,10 @@ any claim to that effect needs an out-of-distribution split behind it.
 the structure of factored language models with generalized parallel backoff
 [Bilmes2003FactoredLM], including the problem of choosing the order.
 
-### 3.6 Neighbour attribute resolution — evaluated, not adopted
+### 3.6 Neighbor attribute resolution — evaluated, not adopted
 
-**The idea.** Let neighbours contribute a *coarser* WL state than the centre. The centre keeps the
-full attribute vector; neighbours contribute an element-only chain $g$:
+**The idea.** Let neighbors contribute a *coarser* WL state than the center. The center keeps the
+full attribute vector; neighbors contribute an element-only chain $g$:
 
 $$
 g_k(u)=H\bigl(g_{k-1}(u),\ \operatorname{MULTISET}\{g_{k-1}(w)\}\bigr),
@@ -250,10 +250,10 @@ $$
 Note $h_k$ still takes $h_{k-1}$ as an explicit argument, so §2 holds unchanged and this stays a
 single chain — nothing in §4–§7 is affected.
 
-**A degenerate variant to avoid.** If neighbours contribute a *static* coarse attribute (their
+**A degenerate variant to avoid.** If neighbors contribute a *static* coarse attribute (their
 element, not their element-only WL state) the multiset is identical at every level, so
-$h_k=H(h_{k-1},\text{same multiset})$ and the partition stabilises at $k=1$. Nothing propagates.
-The neighbour descriptor must itself be a refining chain.
+$h_k=H(h_{k-1},\text{same multiset})$ and the partition stabilizes at $k=1$. Nothing propagates.
+The neighbor descriptor must itself be a refining chain.
 
 **Measurement.** cosmobase, all 13,092 parseable molecules (147,412 heavy atoms, 11.3 per molecule),
 levels 0–5, molecule-level 80/20 split, 2026-08-17. Full attribute schema: element, degree, formal
@@ -277,8 +277,8 @@ H\bigl(\text{charge},\text{aromatic},\text{hybridization},n_H \;\big|\; \text{el
 = 0.133 \text{ bits of } 3.095
 $$
 
-so 95.7% of that information is already implied, and element-only neighbours discard almost nothing
-while collapsing the neighbour alphabet about fourfold. This is a property of *this* corpus. A
+so 95.7% of that information is already implied, and element-only neighbors discard almost nothing
+while collapsing the neighbor alphabet about fourfold. This is a property of *this* corpus. A
 dataset rich in charged species, tautomers, or unusual protonation states would score higher here
 and benefit less — the entropy is the diagnostic to run before assuming the result transfers.
 
@@ -370,12 +370,12 @@ rounding noise, not a different algorithm. So the recurrence needs no separate i
 **Practical consequence: chunk as large as memory allows.** Accuracy is flat across chunk sizes and
 *best* at the large end, so there is no statistical argument for smaller chunks — only a memory one.
 For a corpus that fits in memory as a dataframe plus an atom-indexed array, that means a single
-chunk, or a handful of shards purely to parallelise, and the scalar recurrence never appears at all.
+chunk, or a handful of shards purely to parallelize, and the scalar recurrence never appears at all.
 It becomes relevant only when data is streamed from disk or arrives as online updates, and even then
 the right response is a smaller chunk, not a chunk of one.
 
 **What bounds the chunk.** Two pressures, not one. The obvious is the corpus itself. The less obvious
-is that the centring step of §7.3 materialises an $n_{\text{chunk}}\times d$ residual array: 59 MB at
+is that the centring step of §7.3 materializes an $n_{\text{chunk}}\times d$ residual array: 59 MB at
 cosmobase scale with $d=50$, but **4 GB at $10^7$ atoms**. Since chunking is already the mechanism
 here, this needs no separate machinery — but it does mean the chunk size must be chosen against $d$,
 not against atom count alone.
@@ -563,7 +563,7 @@ at full corpus size), and `fold()` beats a naive sequential reduce by 2.2× at 6
 **That is necessary, not sufficient, for `multiprocessing`-based parallelism to pay off.** A worker
 pool spun up fresh for each call is a net *loss*: `Pool(8)` startup alone costs 260–390 ms, which
 rivals or exceeds an entire single-threaded fit at this corpus's size (339 ms) — measured 0.5–0.6×,
-slower than not parallelising. A **persistent** pool, created once and reused across calls, wins
+slower than not parallelizing. A **persistent** pool, created once and reused across calls, wins
 instead — 1.66× at the store's own size, climbing to 3.75× at 16× that size with 8 workers, efficiency
 still climbing when the sweep ended. Below a few hundred milliseconds of total fit work, process
 overhead dominates regardless of algorithm.
@@ -621,7 +621,7 @@ and it is why the default should not be 1.
 
 ## 7. Fit path
 
-Fitting is fully vectorised: one pass per level over the entire corpus, with no per-molecule and no
+Fitting is fully vectorized: one pass per level over the entire corpus, with no per-molecule and no
 per-atom Python loop. Timings below are cosmobase — 147,412 atoms, 289,774 directed edges, max
 degree 6, levels 0–5, measured 2026-08-17.
 
@@ -632,7 +632,7 @@ for k = 0..L:  sparse two-pass -> (N, mean, sigma^2)      (§7.3)
                parent falls out of the deduped signatures
     -> an immutable shard model
 reduce shard models pairwise as a balanced tree           (§5.4)
-optionally materialise shrunk estimates top-down          (§4.2)
+optionally materialize shrunk estimates top-down          (§4.2)
 ```
 
 ### 7.1 Corpus layout
@@ -653,7 +653,7 @@ slot   = np.arange(n_edges) - indptr[src]     # position within the node's block
 ### 7.2 Refinement
 
 ```python
-pair = labels[dst] * n_bond + bond            # encode (neighbour label, bond)
+pair = labels[dst] * n_bond + bond            # encode (neighbor label, bond)
 pad  = np.full((n_atoms, max_deg), -1, np.int64)
 pad[src, slot] = pair
 pad.sort(axis=1)                              # canonical multiset; -1 pads sort first
@@ -669,7 +669,7 @@ is fixed. Two consequences worth noting:
   signature, so all members of a class necessarily share it. The assertion §2.1 recommends is
   redundant on this path — it is only needed when identifiers come from truncated digests.
 - **No cryptographic hashing is required to fit.** Dense ids come from deduplication. Hashing
-  matters only for cross-run stable identifiers at serialisation (§3.3, §3.4).
+  matters only for cross-run stable identifiers at serialization (§3.3, §3.4).
 
 **Dedupe rows through a void view, not `axis=0`.** This is the whole performance story:
 
@@ -693,7 +693,7 @@ def dense_rows(mat):
 ```
 
 Per-level breakdown: gather+encode 1.0 ms, scatter 1.5 ms, row-sort 2.8 ms, dedupe 51 ms. Dedupe
-dominates by an order of magnitude; optimising anything else is wasted effort.
+dominates by an order of magnitude; optimizing anything else is wasted effort.
 
 ### 7.3 Statistics
 
@@ -706,7 +706,7 @@ P = sparse.csr_matrix((np.ones(n), (labels, np.arange(n))), shape=(nc, n))
 N      = np.bincount(labels, minlength=nc)
 S      = P @ Y                                # (nc, d)
 mean   = S / N[:, None]
-R      = Y - mean[labels]                     # centre first, then reduce
+R      = Y - mean[labels]                     # center first, then reduce
 msd    = (P @ (R * R)) / N[:, None]
 ```
 
@@ -723,7 +723,7 @@ identical work:
 | 128 | **79.5 ms** | 140.1 ms |
 
 Tied at $d=1$, 1.8× faster at σ-profile widths, and one code path rather than a scalar special case.
-Building $P$ costs 1.0 ms and is amortised over both passes.
+Building $P$ costs 1.0 ms and is amortized over both passes.
 
 This reduces one chunk. Chunks combine through §5.2 — see §4.1: chunk size is a memory decision, and
 the scalar recurrence is simply the chunk-of-one endpoint, not a different code path. For scale, at
@@ -749,12 +749,12 @@ $P$ at every width measured (52.4 ms against 11.4 ms for the segment sum at $d=5
 reach for it.
 
 **Power sums instead of centring.** The one-pass form $Q/N-\bar y^{\odot2}$ with $Q=\sum y^{\odot2}$
-is the obvious vectorisation and is unusable, as §4.1 argues on principle and this measures in
+is the obvious vectorization and is unusable, as §4.1 argues on principle and this measures in
 practice. On targets with mean $10^6$ and spread $3$:
 
 | | max rel. error | negative variances |
 |---|---:|---:|
-| two-pass, centred | 5.4e-08 | 0 |
+| two-pass, centered | 5.4e-08 | 0 |
 | power sums | **1.3e+02** | **2** |
 
 Centring costs one extra pass and one $n\times d$ temporary (§4.1). The fast-looking formula and the
@@ -765,7 +765,7 @@ correct formula are not the same formula.
 When targets live in a separate array indexed by atom position, a misalignment between the parsed
 molecule and its target rows corrupts every label with **no error raised**. `MolFromSmiles` does
 preserve the input SMILES heavy-atom order, but `AddHs` appends hydrogens at the end, and any
-canonicalisation round-trip reorders.
+canonicalization round-trip reorders.
 
 Guard it on load: assert per-molecule atom counts match the row slice, and store element symbols
 alongside the targets so atomic numbers can be verified against the parsed molecule. The check costs
@@ -791,14 +791,14 @@ Treat as an opt-in compaction of a finished raw-mean model, not a default.
 
 ---
 
-## 9. Serialisation
+## 9. Serialization
 
 **Everything the model holds is already an array**, including the vocabulary. §7.2 mints class ids by
 deduplicating signature rows, and the deduped rows *are* the vocabulary: row $i$ of `vocab[k]` is the
 signature of class $i$ at level $k$. There is no dict to encode, and no digest to store.
 
 This settles what was an open question: **`vocab` is stored as an `(n_classes, width)` integer array**,
-not `dict[bytes, int]`. Storage is compact, serialisation is trivial, and at load time either form can
+not `dict[bytes, int]`. Storage is compact, serialization is trivial, and at load time either form can
 be rebuilt — a dict for $O(1)$ lookup, or a lexsorted view for binary search at lower memory.
 
 ### 9.1 Format
@@ -837,10 +837,10 @@ file and let $\alpha$ drift out of sync with the values it produced.
 
 Two version fields, doing different jobs:
 
-- **`format_version`** describes the file layout. A reader that does not recognise it must refuse to
+- **`format_version`** describes the file layout. A reader that does not recognize it must refuse to
   load, not guess.
 - **`schema_version`** is a digest over everything that affects what a class *means* — the attribute
-  levels and their order, edge attributes, neighbour schema, depth. Two models may be merged (§5.4)
+  levels and their order, edge attributes, neighbor schema, depth. Two models may be merged (§5.4)
   only if their `schema_version` matches. This is the mechanism behind "reject incompatible configs
   loudly"; without it, config drift silently produces a model whose classes mean two different things.
 
@@ -877,7 +877,7 @@ class SieveConfig:
     attribute_levels: tuple[tuple[str, ...], ...]   # graded order, §3.5
     max_wl_depth: int
     edge_attributes: tuple[str, ...] = ("bond_type",)
-    neighbor_schema: tuple[str, ...] | None = None # §3.6; None = same as centre
+    neighbor_schema: tuple[str, ...] | None = None # §3.6; None = same as center
     n_min: int = 1
     alpha: float | None = None                      # None = raw means, §4.2
     chunk_size: int | None = None                   # §4.1; None = whole corpus
@@ -896,7 +896,7 @@ mutable-estimator semantics.
 
 The adapter must default to **graph-level** splitting. Node-level random splitting puts WL-identical
 atoms from one molecule on both sides and inflates scores badly; this is the single easiest way to
-produce a misleading number with this method, so the safe behaviour belongs in the default rather than
+produce a misleading number with this method, so the safe behavior belongs in the default rather than
 in the documentation.
 
 ### 10.3 Leave-one-out prediction
@@ -918,7 +918,7 @@ than dividing by zero. This is the standard remedy from the target-encoding lite
 [MicciBarreca2001HighCardinality], and it is also the cheapest test that the implementation is not
 leaking — which is why it is a first-class method rather than a notebook recipe.
 
-### 10.4 Behaviours that must hold
+### 10.4 Behaviors that must hold
 
 These are the properties an implementation has to satisfy; they follow from §2 and §5 and are the
 natural test suite.
@@ -940,7 +940,7 @@ natural test suite.
 | `predict_loo` on a class of size 2 returns the other member's value | §10.3 |
 | Two 1-WL-indistinguishable graphs *do* collide | accepted limit |
 
-The last is a negative control: it pins the known 1-WL expressiveness bound as intended behaviour
+The last is a negative control: it pins the known 1-WL expressiveness bound as intended behavior
 rather than an undetected bug.
 
 ---
@@ -978,7 +978,7 @@ sieve.io.from_smiles(smiles, y=None, *, config)   -> AtomBatch
 The adapter owns attribute encoding: it maps each configured attribute name to a dense integer code
 and stores the mapping, so that an unseen category at inference produces a *reserved unknown code*
 rather than a silent collision with a seen one. An unknown code then simply fails to match at level 0
-and backs off, which is the correct behaviour.
+and backs off, which is the correct behavior.
 
 ### 11.3 Alignment is checked, not assumed
 
@@ -993,7 +993,7 @@ preserves them. It costs one integer comparison per atom and rules out the only 
 that presents purely as unexplained inaccuracy.
 
 `MolFromSmiles` preserves the input SMILES heavy-atom order, but `AddHs` appends hydrogens at the end
-and any canonicalisation round-trip reorders, so the guard must run after whatever preprocessing the
+and any canonicalization round-trip reorders, so the guard must run after whatever preprocessing the
 pipeline applies, not before.
 
 ### 11.4 The target contract
@@ -1006,7 +1006,7 @@ For the σ-profile application the contract is specific:
 
 - the σ grid is **fixed and shared by every molecule** — same bin edges, same $d$, same order;
 - values are **areas**, in the profile's native area units;
-- they are **not normalised** — no division by total area, no conversion to a probability density.
+- they are **not normalized** — no division by total area, no conversion to a probability density.
 
 Two consequences are worth stating, because they are what make the estimator well behaved here rather
 than merely well typed.
@@ -1034,7 +1034,7 @@ per-atom profiles gives an estimate of the molecular surface area, not a guarant
 hard per-molecule total is ever required it must be imposed downstream by rescaling, which preserves
 non-negativity (a positive scale factor) but voids the convex-combination bounds above.
 
-**Targets must not be centred or standardised.** Subtracting a per-component mean would destroy both
+**Targets must not be centered or standardized.** Subtracting a per-component mean would destroy both
 the non-negativity closure and the additivity of areas, and would buy nothing: the estimator is a
 conditional mean, which is equivariant under such a shift anyway.
 
@@ -1073,7 +1073,7 @@ and how heterogeneous its labels were. That is genuinely informative for triage,
 predictive interval — anything claiming to be one needs conformal prediction or the machinery of
 [JonasKuhn2019Uncertainty], neither of which is in scope. Any write-up must say so explicitly.
 
-A high global-fallback rate is a *featurisation* alarm, not a prediction: it means atoms are arriving
+A high global-fallback rate is a *featurization* alarm, not a prediction: it means atoms are arriving
 whose level-0 attributes were never seen. Surface it prominently rather than burying it in a column.
 
 ---
@@ -1097,11 +1097,11 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    until there is a use for the off-diagonal structure — correlated σ-profile bins would be the
    obvious one. Whether $\alpha$ (§4.2) should then become per-dimension is a separate question, and
    should stay scalar without evidence.
-8. **Whether neighbours should carry a coarser attribute schema than the centre (§3.6).** Measured on
+8. **Whether neighbors should carry a coarser attribute schema than the center (§3.6).** Measured on
    cosmobase: coarsening buys ~0.6 levels of extra reach at identical support. What remains open is
    whether that reach is *worth* the attribute resolution it costs, which needs targets. Run the
    comparison again with real σ-profiles or partial charges and decide on MAE at the matched class.
-   Implement as a configurable neighbour schema — an ablation flag, not an architecture. This
+   Implement as a configurable neighbor schema — an ablation flag, not an architecture. This
    comparison is part of the planned ablation suite rather than a design decision to be made in
    advance; the entry stays open until that suite runs.
 9. **Whether `sieve` should expose a pool-aware parallel-fitting entry point** (§5.5), or leave pool
