@@ -23,19 +23,23 @@ def ring(n):
 
 
 def best_of(fn, repeats=5):
-    """The minimum wall-clock time of `fn()` over several repeats.
+    """The minimum CPU time of `fn()` over several repeats.
 
-    A single `perf_counter` sample is at the mercy of one scheduling hiccup on
-    a shared CI runner -- exactly the flake this guards against. The minimum
-    over repeats is the standard fix: any given call can be slowed down by
-    noise, never sped up below its true cost, so the minimum converges on that
-    cost while a mean or a single sample does not.
+    `perf_counter` measures wall-clock time, so it also counts every
+    millisecond the process spends *descheduled* while a noisy neighbor on a
+    shared CI runner gets the CPU instead -- and that hiccup lands on
+    whichever of the two timings happens to be running at that instant,
+    which is exactly the coin flip that made this test flaky even after
+    taking the minimum over 5 repeats. `process_time` counts only CPU time
+    actually spent executing this process, so a scheduling gap costs it
+    nothing. The minimum-over-repeats is kept as a second line of defense
+    against unrelated per-call noise (cache effects, allocator work).
     """
     best = float("inf")
     for _ in range(repeats):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         fn()
-        best = min(best, time.perf_counter() - t0)
+        best = min(best, time.process_time() - t0)
     return best
 
 
