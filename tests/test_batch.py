@@ -1,3 +1,5 @@
+import dataclasses
+import pickle
 import time
 
 import numpy as np
@@ -158,6 +160,44 @@ def test_slicing_does_not_revalidate_edges():
         f"slicing ({sliced * 1000:.1f} ms) still pays the construction-time "
         f"edge validation ({full * 1000:.1f} ms)"
     )
+
+
+def test_slicing_carries_every_field():
+    """``_with_trusted_edges`` sets fields by name onto a bare instance, so a
+    dropped one does not raise: every optional field has a dataclass default,
+    which is a *class* attribute, and the instance silently reads through to it.
+    ``elements`` quietly becoming None would disable the alignment guard
+    (design.md 11.3) rather than fail.
+    """
+    kw = ring(40)
+    kw["y"] = np.arange(40, dtype=np.float64).reshape(-1, 1)
+    kw["elements"] = np.arange(40, dtype=np.int64)
+    parent = AtomBatch(**kw)
+    sub = parent[np.arange(25)]
+
+    for f in dataclasses.fields(AtomBatch):
+        assert getattr(sub, f.name) is not None, f"field {f.name} was dropped"
+    assert np.array_equal(sub.elements, parent.elements[:25])
+    assert np.array_equal(sub.y, parent.y[:25])
+
+
+def test_a_sliced_batch_survives_a_pickle_round_trip():
+    """Sub-batches are built through ``_with_trusted_edges``, which bypasses
+    ``__init__`` entirely. Parallel fitting ships batches to workers by pickle,
+    so a half-initialized object would surface as a worker-side crash rather
+    than anything the constructor could catch."""
+    kw = ring(40)
+    kw["y"] = np.arange(40, dtype=np.float64).reshape(-1, 1)
+    kw["elements"] = np.full(40, 6, np.int64)
+    sub = AtomBatch(**kw)[np.arange(25)]
+    back = pickle.loads(pickle.dumps(sub))
+
+    # every field, generically: a bypass that drops one would otherwise only
+    # surface wherever that field happens to be read
+    for f in dataclasses.fields(AtomBatch):
+        original, restored = getattr(sub, f.name), getattr(back, f.name)
+        assert np.array_equal(original, restored), f"field {f.name} did not survive"
+    assert back.csr().max_deg == sub.csr().max_deg
 
 
 def test_a_sliced_batch_is_still_bidirectional():

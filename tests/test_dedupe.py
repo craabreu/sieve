@@ -131,6 +131,28 @@ def test_a_partial_hash_collision_falls_back(monkeypatch):
     assert uniq.shape[0] == len({tuple(r) for r in m.tolist()})
 
 
+def test_row_keys_match_a_recorded_baseline():
+    """Keys must be a pure function of the bytes -- identical in every process.
+
+    Independently fitted shards are combined by matching signatures against
+    each other, so a worker process that keyed rows differently from its parent
+    would mint duplicate classes rather than merge them. Anything seed- or
+    address-dependent (``hash()`` being the obvious trap) fails this, as does
+    any unintended change to the mixing.
+    """
+    m = np.ascontiguousarray(np.arange(24, dtype=np.int64).reshape(8, 3))
+    assert [int(x) for x in sieve.dedupe._row_keys(m)] == [
+        9276827215579975395,
+        752523549488575333,
+        16189849825120920578,
+        14145680651066150495,
+        6081766414869024413,
+        109111657846721951,
+        10589562359658575017,
+        11685874297919304909,
+    ]
+
+
 def test_low_bits_of_the_key_are_not_linear_in_the_input():
     """Without a finalizer, bit 0 of an FNV-over-8-byte-lanes key is exactly
     the XOR of bit 0 of every column -- a linear relation that involves more

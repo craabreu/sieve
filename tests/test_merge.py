@@ -14,6 +14,29 @@ def brute_force_lookup(sig, table):
     return np.array([index.get(tuple(r), -1) for r in sig.tolist()], np.int64)
 
 
+def test_a_pickled_shard_merges_identically_to_a_local_one():
+    """Parallel fitting hands shards back from workers by pickle, and merging
+    matches signature rows against each other. A shard whose ids or keys did
+    not survive transport would mint duplicate classes instead of merging,
+    which shows up as a silently larger vocabulary rather than an error.
+    """
+    import pickle
+
+    b = chain_batch(6, graphs=8)
+    cfg = simple_config()
+    first = b.graph_id < 4
+    a, c = sieve.fit(b[first], cfg), sieve.fit(b[~first], cfg)
+
+    local = a.merge(c)
+    transported = pickle.loads(pickle.dumps(a)).merge(pickle.loads(pickle.dumps(c)))
+    whole = sieve.fit(b, cfg)
+
+    counts = [lv.n_classes for lv in whole.levels]
+    assert [lv.n_classes for lv in local.levels] == counts
+    assert [lv.n_classes for lv in transported.levels] == counts
+    np.testing.assert_allclose(preds(transported, b), preds(whole, b))
+
+
 def test_lookup_matches_a_brute_force_oracle():
     rng = np.random.default_rng(4)
     table = np.unique(rng.integers(0, 8, size=(400, 3)).astype(np.int64), axis=0)
