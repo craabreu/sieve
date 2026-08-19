@@ -4,6 +4,7 @@ Skipped unless both cosmolayer and the store are present.
 """
 
 import pathlib
+import time
 
 import numpy as np
 import pytest
@@ -22,6 +23,33 @@ def store():
     from cosmolayer.store import SegmentStore
 
     return SegmentStore.load(STORE)
+
+
+@pytest.fixture(scope="module")
+def cfg_and_batch(store):
+    """Shared by the merge-cost benchmarks below so they parse the store's
+    10,000 SMILES and build codes once between them, not once each."""
+    from rdkit import Chem
+
+    from sieve.config import SieveConfig
+    from sieve.io.cosmolayer_adapter import from_segment_store
+    from sieve.io.rdkit_adapter import build_codes
+
+    attrs = ("element", "hybridization", "degree", "aromatic")
+    p = Chem.SmilesParserParams()
+    p.removeHs = False
+    mols = [Chem.MolFromSmiles(s, p) for s in store.molecules_df.smiles]
+    codes, edges = build_codes(mols, attrs)
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(attrs,),
+        attribute_codes=codes,
+        edge_codes=edges,
+        max_wl_depth=3,
+        n_min=1,
+    )
+    batch, _ = from_segment_store(store, target="area", config=cfg)
+    return cfg, batch
 
 
 def _run(store, target):
@@ -171,3 +199,63 @@ def test_sigma_profile_predictions_are_non_negative(store):
     v = sieve.predict(model, _sub_batch(batch, is_test))
     assert v.shape[1] == 51
     assert v.min() >= 0.0
+
+
+def test_merge_is_cheaper_than_a_full_refit(cfg_and_batch):
+    """design.md 5.3: pinning A's ids and remapping only B's makes a merge
+    close to O(|A|+|B|) lookups, not a fresh sort-based dedup of the
+    concatenation -- so combining two pre-fitted shards should cost a small
+    fraction of refitting them from scratch, not a comparable amount.
+    Measured ~10x cheaper on this store; the 2x margin below is loose on
+    purpose so ordinary machine noise can't flake it."""
+    import sieve
+
+    cfg, batch = cfg_and_batch
+
+    t0 = time.perf_counter()
+    whole = sieve.fit(batch, cfg)
+    fit_time = time.perf_counter() - t0
+
+    half = int(batch.graph_id.max()) // 2
+    a = sieve.fit(batch[batch.graph_id <= half], cfg)
+    b = sieve.fit(batch[batch.graph_id > half], cfg)
+    t0 = time.perf_counter()
+    merged = a.merge(b)
+    merge_time = time.perf_counter() - t0
+
+    assert merged.global_count == whole.global_count
+    assert merge_time < 0.5 * fit_time, (
+        f"merge ({merge_time * 1000:.1f} ms) should be well under half of a "
+        f"full refit ({fit_time * 1000:.1f} ms)"
+    )
+
+
+def test_fold_beats_sequential_merge_at_many_shards(cfg_and_batch):
+    """design.md 5.4: a sequential reduce re-touches classes it has already
+    merged at every step, so its cost keeps climbing with shard count while
+    the balanced tree's does not. fold() must win once there are enough
+    shards for that to matter -- measured 2.2x faster at 64 shards, growing
+    to 5.1x at 256; 64 is chosen here to keep this test's own runtime down."""
+    import sieve
+    from sieve.merge import fold
+
+    cfg, batch = cfg_and_batch
+    n_mol = int(batch.graph_id.max()) + 1
+    n_shards = 64
+    parts = np.array_split(np.arange(n_mol), n_shards)
+    shards = [sieve.fit(batch[np.isin(batch.graph_id, part)], cfg) for part in parts]
+
+    t0 = time.perf_counter()
+    fold(list(shards), cfg)
+    fold_time = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    acc = shards[0]
+    for s in shards[1:]:
+        acc = acc.merge(s)
+    sequential_time = time.perf_counter() - t0
+
+    assert fold_time < sequential_time, (
+        f"fold() ({fold_time * 1000:.1f} ms) should beat a plain sequential "
+        f"reduce ({sequential_time * 1000:.1f} ms) at {n_shards} shards"
+    )
