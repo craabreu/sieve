@@ -118,20 +118,16 @@ def test_merge_across_differing_max_degree_shards():
     cfg = simple_config()
     star = star_batch(4, graphs=2)  # max degree 4
     chain = chain_batch(3, graphs=2, seed=1)  # max degree 2
-    chain = AtomBatch(
-        node_attrs=chain.node_attrs,
-        edge_src=chain.edge_src + star.n_atoms,
-        edge_dst=chain.edge_dst + star.n_atoms,
-        edge_attr=chain.edge_attr,
-        graph_id=chain.graph_id + 2,
-        y=chain.y,
-    )
+    # The chain's node indices are shifted into the combined batch's range as
+    # the two are concatenated. Shifting them inside a standalone AtomBatch
+    # first would build one whose edges point past its own last atom.
+    off = star.n_atoms
     whole = AtomBatch(
         node_attrs=np.concatenate([star.node_attrs, chain.node_attrs]),
-        edge_src=np.concatenate([star.edge_src, chain.edge_src]),
-        edge_dst=np.concatenate([star.edge_dst, chain.edge_dst]),
+        edge_src=np.concatenate([star.edge_src, chain.edge_src + off]),
+        edge_dst=np.concatenate([star.edge_dst, chain.edge_dst + off]),
         edge_attr=np.concatenate([star.edge_attr, chain.edge_attr]),
-        graph_id=np.concatenate([star.graph_id, chain.graph_id]),
+        graph_id=np.concatenate([star.graph_id, chain.graph_id + 2]),
         y=np.concatenate([star.y, chain.y]),
     )
 
