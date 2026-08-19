@@ -22,6 +22,23 @@ def ring(n):
     }
 
 
+def best_of(fn, repeats=5):
+    """The minimum wall-clock time of `fn()` over several repeats.
+
+    A single `perf_counter` sample is at the mercy of one scheduling hiccup on
+    a shared CI runner -- exactly the flake this guards against. The minimum
+    over repeats is the standard fix: any given call can be slowed down by
+    noise, never sped up below its true cost, so the minimum converges on that
+    cost while a mean or a single sample does not.
+    """
+    best = float("inf")
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - t0)
+    return best
+
+
 def python_set_check(src, dst):
     """The reference both-direction check, written the obvious slow way.
 
@@ -127,13 +144,8 @@ def test_validation_does_not_build_a_python_set():
     a Python set of every edge tuple. It must be vectorized, so constructing a
     batch has to come in well under the cost of that set."""
     kw = ring(150_000)
-    t0 = time.perf_counter()
-    python_set_check(kw["edge_src"], kw["edge_dst"])
-    reference = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    AtomBatch(**kw)
-    construction = time.perf_counter() - t0
+    reference = best_of(lambda: python_set_check(kw["edge_src"], kw["edge_dst"]))
+    construction = best_of(lambda: AtomBatch(**kw))
 
     assert construction < 0.5 * reference, (
         f"construction ({construction * 1000:.1f} ms) should be far under the "
@@ -148,13 +160,8 @@ def test_slicing_does_not_revalidate_edges():
     batch = AtomBatch(**ring(150_000))
     mask = batch.graph_id == 0  # keep everything, so the edge work is maximal
 
-    t0 = time.perf_counter()
-    AtomBatch(**ring(150_000))
-    full = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    batch[mask]
-    sliced = time.perf_counter() - t0
+    full = best_of(lambda: AtomBatch(**ring(150_000)))
+    sliced = best_of(lambda: batch[mask])
 
     assert sliced < 0.5 * full, (
         f"slicing ({sliced * 1000:.1f} ms) still pays the construction-time "
