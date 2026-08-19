@@ -2,8 +2,55 @@ import numpy as np
 import pytest
 
 import sieve
-from sieve.merge import fold
+import sieve.dedupe
+import sieve.merge
+from sieve.merge import _lookup_rows, fold
 from tests.helpers import chain_batch, simple_config, split_batch, star_batch
+
+
+def brute_force_lookup(sig, table):
+    """Row-wise membership, the obvious slow way, as an oracle."""
+    index = {tuple(r): i for i, r in enumerate(table.tolist())}
+    return np.array([index.get(tuple(r), -1) for r in sig.tolist()], np.int64)
+
+
+def test_lookup_matches_a_brute_force_oracle():
+    rng = np.random.default_rng(4)
+    table = np.unique(rng.integers(0, 8, size=(400, 3)).astype(np.int64), axis=0)
+    sig = rng.integers(0, 8, size=(500, 3)).astype(np.int64)
+    got = _lookup_rows(sig, table, is_wl=False)
+    assert np.array_equal(got, brute_force_lookup(sig, table))
+
+
+def test_lookup_falls_back_when_the_vocabulary_has_a_key_collision(monkeypatch):
+    """Two *distinct* vocabulary rows sharing a key would make searchsorted land
+    on the wrong one, and the row check would then reject a match that really
+    does exist -- splitting a class that must stay unified. The vocabulary is
+    already deduplicated, so any repeated key is a collision and forces the
+    exact path."""
+    monkeypatch.setattr(
+        sieve.merge, "_row_keys", lambda m: np.zeros(m.shape[0], np.uint64)
+    )
+    table = np.array([[1, 2], [3, 4], [5, 6]], np.int64)
+    sig = np.array([[3, 4], [9, 9], [1, 2]], np.int64)
+    got = _lookup_rows(sig, table, is_wl=False)
+    assert got.tolist() == [1, -1, 0]
+
+
+def test_a_query_colliding_with_a_vocabulary_row_is_not_a_false_match(monkeypatch):
+    """The dangerous direction: a query claiming to be a class it is not."""
+    real = sieve.dedupe._row_keys
+
+    def collide_query(m):
+        keys = real(m).copy()
+        target = (m[:, 0] == 9) & (m[:, 1] == 9)
+        keys[target] = real(np.array([[1, 2]], np.int64))[0]
+        return keys
+
+    monkeypatch.setattr(sieve.merge, "_row_keys", collide_query)
+    table = np.array([[1, 2], [3, 4]], np.int64)
+    got = _lookup_rows(np.array([[9, 9], [1, 2]], np.int64), table, is_wl=False)
+    assert got.tolist() == [-1, 0]
 
 
 def preds(model, batch):
