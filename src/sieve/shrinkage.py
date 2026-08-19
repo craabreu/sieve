@@ -16,7 +16,7 @@ def shrunk_means(model) -> list[np.ndarray]:
     every estimate depends on its full ancestor chain, so one new node
     invalidates essentially every value. There is no incremental patch.
     """
-    alpha = model.config.alpha
+    shrinkage_strength = model.config.shrinkage_strength
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
         n = lvl.count[:, None].astype(np.float64)
@@ -25,8 +25,11 @@ def shrunk_means(model) -> list[np.ndarray]:
             if k == 0
             else out[k - 1][lvl.parent]
         )
-        if alpha is None or alpha == 0.0:
+        if shrinkage_strength is None or shrinkage_strength == 0.0:
             out.append(np.where(n > 0, lvl.mean, parent_est))
         else:
-            out.append((n * lvl.mean + alpha * parent_est) / (n + alpha))
+            out.append(
+                (n * lvl.mean + shrinkage_strength * parent_est)
+                / (n + shrinkage_strength)
+            )
     return out

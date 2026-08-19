@@ -1,8 +1,9 @@
 """A mutable-estimator wrapper around the immutable core (design.md 10.2).
 
 Contorting the core into fit-mutates-self would forfeit the merge monoid for
-the sake of an interface. This adapter exists so GridSearchCV can sweep alpha,
-n_min and K without the core inheriting mutable-estimator semantics.
+the sake of an interface. This adapter exists so GridSearchCV can sweep
+shrinkage_strength, minimum_support and K without the core inheriting
+mutable-estimator semantics.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from dataclasses import replace
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.config import SieveConfig
 from sieve.model import fit as _fit
 from sieve.predict import predict as _predict
@@ -28,7 +29,7 @@ class GraphKFold:
     def __init__(self, n_splits: int = 5, shuffle: bool = True, random_state: int = 0):
         self.n_splits, self.shuffle, self.random_state = n_splits, shuffle, random_state
 
-    def split(self, batch: AtomBatch, y=None, groups=None):
+    def split(self, batch: NodeBatch, y=None, groups=None):
         graphs = np.unique(batch.graph_id)
         if self.shuffle:
             np.random.default_rng(self.random_state).shuffle(graphs)
@@ -47,33 +48,51 @@ class SieveRegressor(BaseEstimator, RegressorMixin):
     ``__sklearn_tags__``, which only ``BaseEstimator`` provides -- without
     it, ``cross_val_score``/``GridSearchCV`` fail before ever calling `fit`.
     ``get_params``/``set_params`` stay explicit below rather than relying on
-    ``BaseEstimator``'s signature introspection, since `n_min`/`alpha`
-    resolve from `config` at construction time.
+    ``BaseEstimator``'s signature introspection, since
+    `minimum_support`/`shrinkage_strength` resolve from `config` at
+    construction time.
     """
 
     def __init__(
-        self, config: SieveConfig, n_min: int | None = None, alpha: float | None = None
+        self,
+        config: SieveConfig,
+        minimum_support: int | None = None,
+        shrinkage_strength: float | None = None,
     ):
         self.config = config
-        self.n_min = config.n_min if n_min is None else n_min
-        self.alpha = config.alpha if alpha is None else alpha
+        self.minimum_support = (
+            config.minimum_support if minimum_support is None else minimum_support
+        )
+        self.shrinkage_strength = (
+            config.shrinkage_strength
+            if shrinkage_strength is None
+            else shrinkage_strength
+        )
         self.model_ = None
 
     def get_params(self, deep: bool = True) -> dict:
-        return {"config": self.config, "n_min": self.n_min, "alpha": self.alpha}
+        return {
+            "config": self.config,
+            "minimum_support": self.minimum_support,
+            "shrinkage_strength": self.shrinkage_strength,
+        }
 
     def set_params(self, **params) -> SieveRegressor:
         for k, v in params.items():
             setattr(self, k, v)
         return self
 
-    def fit(self, X: AtomBatch, y=None) -> SieveRegressor:
-        cfg = replace(self.config, n_min=self.n_min, alpha=self.alpha)
-        batch = X if y is None else AtomBatch(**{**X.__dict__, "y": y})
+    def fit(self, X: NodeBatch, y=None) -> SieveRegressor:
+        cfg = replace(
+            self.config,
+            minimum_support=self.minimum_support,
+            shrinkage_strength=self.shrinkage_strength,
+        )
+        batch = X if y is None else NodeBatch(**{**X.__dict__, "y": y})
         self.model_ = _fit(batch, cfg)
         return self
 
-    def predict(self, X: AtomBatch) -> np.ndarray:
+    def predict(self, X: NodeBatch) -> np.ndarray:
         if self.model_ is None:
             raise RuntimeError("call fit before predict")
         return _predict(self.model_, X)

@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pytest
 
-from sieve.batch import AtomBatch, check_alignment
+from sieve.batch import NodeBatch, check_alignment
 
 
 def ring(n):
@@ -51,7 +51,7 @@ def python_set_check(src, dst):
 
 def tri():
     """Triangle 0-1-2 plus an isolated node 3, as two graphs."""
-    return AtomBatch(
+    return NodeBatch(
         node_attrs=np.array([[0], [1], [1], [0]], np.int64),
         edge_src=np.array([0, 1, 1, 2, 2, 0], np.int64),
         edge_dst=np.array([1, 0, 2, 1, 0, 2], np.int64),
@@ -63,7 +63,7 @@ def tri():
 
 def test_shapes_are_validated():
     with pytest.raises(ValueError, match="graph_id"):
-        AtomBatch(
+        NodeBatch(
             node_attrs=np.zeros((3, 1), np.int64),
             edge_src=np.zeros(0, np.int64),
             edge_dst=np.zeros(0, np.int64),
@@ -75,7 +75,7 @@ def test_shapes_are_validated():
 
 def test_edges_must_be_symmetric():
     with pytest.raises(ValueError, match="both directions"):
-        AtomBatch(
+        NodeBatch(
             node_attrs=np.zeros((2, 1), np.int64),
             edge_src=np.array([0], np.int64),
             edge_dst=np.array([1], np.int64),
@@ -86,11 +86,11 @@ def test_edges_must_be_symmetric():
 
 
 def test_edge_indices_must_be_within_the_node_range():
-    """An index past the last atom currently surfaces as an IndexError deep
+    """An index past the last node currently surfaces as an IndexError deep
     inside csr(), or as silent garbage. It is also what makes the vectorized
     both-direction check's src*n+dst key a bijection, so it is checked here."""
     with pytest.raises(ValueError, match="edge index"):
-        AtomBatch(
+        NodeBatch(
             node_attrs=np.zeros((2, 1), np.int64),
             edge_src=np.array([0, 5], np.int64),
             edge_dst=np.array([5, 0], np.int64),
@@ -102,7 +102,7 @@ def test_edge_indices_must_be_within_the_node_range():
 
 def test_negative_edge_index_is_rejected():
     with pytest.raises(ValueError, match="edge index"):
-        AtomBatch(
+        NodeBatch(
             node_attrs=np.zeros((2, 1), np.int64),
             edge_src=np.array([0, -1], np.int64),
             edge_dst=np.array([-1, 0], np.int64),
@@ -122,7 +122,7 @@ def test_one_way_edges_are_caught_with_narrow_integer_dtypes():
     """
     n = 65537
     with pytest.raises(ValueError, match="both directions"):
-        AtomBatch(
+        NodeBatch(
             node_attrs=np.zeros((n, 1), np.int64),
             edge_src=np.array([65536], np.int32),
             edge_dst=np.array([0], np.int32),
@@ -136,7 +136,7 @@ def test_trusted_constructor_rejects_unknown_fields():
     """It bypasses __init__, so an unrecognized name would otherwise be set as
     a stray attribute rather than rejected."""
     with pytest.raises(TypeError, match="unexpected"):
-        AtomBatch._with_trusted_edges(**{**ring(4), "elements": None, "bogus": 1})
+        NodeBatch._with_trusted_edges(**{**ring(4), "elements": None, "bogus": 1})
 
 
 def test_validation_does_not_build_a_python_set():
@@ -145,7 +145,7 @@ def test_validation_does_not_build_a_python_set():
     batch has to come in well under the cost of that set."""
     kw = ring(150_000)
     reference = best_of(lambda: python_set_check(kw["edge_src"], kw["edge_dst"]))
-    construction = best_of(lambda: AtomBatch(**kw))
+    construction = best_of(lambda: NodeBatch(**kw))
 
     assert construction < 0.5 * reference, (
         f"construction ({construction * 1000:.1f} ms) should be far under the "
@@ -157,10 +157,10 @@ def test_slicing_does_not_revalidate_edges():
     """``__getitem__`` keeps an edge only when both endpoints are selected, so
     (a,b) survives exactly when (b,a) does: the sub-batch is bidirectional by
     construction and re-checking it is pure overhead (design.md 11.1)."""
-    batch = AtomBatch(**ring(150_000))
+    batch = NodeBatch(**ring(150_000))
     mask = batch.graph_id == 0  # keep everything, so the edge work is maximal
 
-    full = best_of(lambda: AtomBatch(**ring(150_000)))
+    full = best_of(lambda: NodeBatch(**ring(150_000)))
     sliced = best_of(lambda: batch[mask])
 
     assert sliced < 0.5 * full, (
@@ -179,10 +179,10 @@ def test_slicing_carries_every_field():
     kw = ring(40)
     kw["y"] = np.arange(40, dtype=np.float64).reshape(-1, 1)
     kw["elements"] = np.arange(40, dtype=np.int64)
-    parent = AtomBatch(**kw)
+    parent = NodeBatch(**kw)
     sub = parent[np.arange(25)]
 
-    for f in dataclasses.fields(AtomBatch):
+    for f in dataclasses.fields(NodeBatch):
         assert getattr(sub, f.name) is not None, f"field {f.name} was dropped"
     assert parent.elements is not None and sub.elements is not None
     assert parent.y is not None and sub.y is not None
@@ -198,12 +198,12 @@ def test_a_sliced_batch_survives_a_pickle_round_trip():
     kw = ring(40)
     kw["y"] = np.arange(40, dtype=np.float64).reshape(-1, 1)
     kw["elements"] = np.full(40, 6, np.int64)
-    sub = AtomBatch(**kw)[np.arange(25)]
+    sub = NodeBatch(**kw)[np.arange(25)]
     back = pickle.loads(pickle.dumps(sub))
 
     # every field, generically: a bypass that drops one would otherwise only
     # surface wherever that field happens to be read
-    for f in dataclasses.fields(AtomBatch):
+    for f in dataclasses.fields(NodeBatch):
         original, restored = getattr(sub, f.name), getattr(back, f.name)
         assert np.array_equal(original, restored), f"field {f.name} did not survive"
     assert back.csr().max_deg == sub.csr().max_deg
@@ -211,7 +211,7 @@ def test_a_sliced_batch_survives_a_pickle_round_trip():
 
 def test_a_sliced_batch_is_still_bidirectional():
     """The invariant that makes skipping revalidation on a slice safe."""
-    batch = AtomBatch(**ring(50))
+    batch = NodeBatch(**ring(50))
     keep = np.zeros(50, bool)
     keep[:30] = True  # cuts the ring, dropping the two edges across the cut
     sub = batch[keep]
@@ -221,7 +221,7 @@ def test_a_sliced_batch_is_still_bidirectional():
 def test_parallel_edges_are_accepted():
     """Pins existing semantics: the check compares edge *sets*, so a repeated
     edge is not by itself a missing-reverse-direction error."""
-    AtomBatch(
+    NodeBatch(
         node_attrs=np.zeros((2, 1), np.int64),
         edge_src=np.array([0, 0, 1], np.int64),
         edge_dst=np.array([1, 1, 0], np.int64),
@@ -232,7 +232,7 @@ def test_parallel_edges_are_accepted():
 
 
 def test_self_loop_is_its_own_reverse():
-    AtomBatch(
+    NodeBatch(
         node_attrs=np.zeros((1, 1), np.int64),
         edge_src=np.array([0], np.int64),
         edge_dst=np.array([0], np.int64),
@@ -243,7 +243,7 @@ def test_self_loop_is_its_own_reverse():
 
 
 def test_a_batch_with_no_edges_is_valid():
-    AtomBatch(
+    NodeBatch(
         node_attrs=np.zeros((3, 1), np.int64),
         edge_src=np.zeros(0, np.int64),
         edge_dst=np.zeros(0, np.int64),
@@ -272,7 +272,7 @@ def test_isolated_node_has_degree_zero():
 def test_alignment_guard_accepts_matching_corpus():
     b = tri()
     check_alignment(
-        b, atom_counts=np.array([3, 1]), elements=np.array([6, 1, 1, 8], np.int64)
+        b, node_counts=np.array([3, 1]), elements=np.array([6, 1, 1, 8], np.int64)
     )
 
 
@@ -280,14 +280,14 @@ def test_alignment_guard_catches_count_mismatch():
     b = tri()
     with pytest.raises(ValueError, match="atom count"):
         check_alignment(
-            b, atom_counts=np.array([2, 1]), elements=np.array([6, 1, 1, 8], np.int64)
+            b, node_counts=np.array([2, 1]), elements=np.array([6, 1, 1, 8], np.int64)
         )
 
 
 def test_alignment_guard_catches_permutation():
     """The bug counts alone cannot catch: same atoms, wrong order."""
-    b = AtomBatch(**{**tri().__dict__, "elements": np.array([6, 1, 1, 8], np.int64)})
+    b = NodeBatch(**{**tri().__dict__, "elements": np.array([6, 1, 1, 8], np.int64)})
     with pytest.raises(ValueError, match="element"):
         check_alignment(
-            b, atom_counts=np.array([3, 1]), elements=np.array([1, 6, 1, 8], np.int64)
+            b, node_counts=np.array([3, 1]), elements=np.array([1, 6, 1, 8], np.int64)
         )

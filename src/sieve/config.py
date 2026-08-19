@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -30,8 +30,8 @@ class SieveConfig:
     edge_codes: Mapping[str, int]
     max_wl_depth: int
     neighbor_schema: tuple[str, ...] | None = None
-    n_min: int = 1
-    alpha: float | None = None
+    minimum_support: int = 1
+    shrinkage_strength: float | None = None
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
@@ -49,8 +49,8 @@ class SieveConfig:
             raise ValueError("each attribute level must declare >= 1 attribute")
         if self.target_dim < 1:
             raise ValueError("target_dim must be >= 1")
-        if self.n_min < 1:
-            raise ValueError("n_min must be >= 1")
+        if self.minimum_support < 1:
+            raise ValueError("minimum_support must be >= 1")
         self._freeze_mappings()
 
     def _freeze_mappings(self) -> None:
@@ -105,7 +105,7 @@ class SieveConfig:
         return len(self.attribute_levels) + self.max_wl_depth
 
     @property
-    def n_bond(self) -> int:
+    def n_edge_types(self) -> int:
         """Edge-code alphabet size, including the 0 slot reserved for padding."""
         return max(self.edge_codes.values()) + 1
 
@@ -113,8 +113,9 @@ class SieveConfig:
     def schema_version(self) -> str:
         """Digest over everything that changes what a class means (design.md 9.2).
 
-        ``n_min``, ``alpha`` and ``chunk_size`` are deliberately excluded: they
-        are read at prediction time and do not invalidate fitted statistics.
+        ``minimum_support``, ``shrinkage_strength`` and ``chunk_size`` are
+        deliberately excluded: they are read at prediction time and do not
+        invalidate fitted statistics.
         """
         payload = {
             "target_dim": self.target_dim,

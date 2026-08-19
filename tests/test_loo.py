@@ -40,7 +40,8 @@ def test_singleton_classes_back_off_instead_of_dividing_by_zero():
 
 
 def test_loo_is_strictly_worse_than_in_sample():
-    """The point of the method: in-sample scores are meaningless at n_min=1."""
+    """The point of the method: in-sample scores are meaningless at
+    minimum_support=1."""
     cfg = simple_config(max_wl_depth=3)
     b = chain_batch(30, graphs=4, seed=2)
     m = sieve.fit(b, cfg)
@@ -50,10 +51,11 @@ def test_loo_is_strictly_worse_than_in_sample():
 
 
 def test_loo_is_strictly_worse_than_in_sample_under_shrinkage():
-    """design.md 10.3: LOO exists to catch leakage. With alpha set, shrinkage
-    must not reintroduce the held-out node's own label by shrinking the
-    model's raw (non-LOO) class mean instead of the LOO-adjusted one."""
-    cfg = simple_config(max_wl_depth=3, alpha=1.0)
+    """design.md 10.3: LOO exists to catch leakage. With shrinkage_strength
+    set, shrinkage must not reintroduce the held-out node's own label by
+    shrinking the model's raw (non-LOO) class mean instead of the
+    LOO-adjusted one."""
+    cfg = simple_config(max_wl_depth=3, shrinkage_strength=1.0)
     b = chain_batch(30, graphs=4, seed=2)
     m = sieve.fit(b, cfg)
     ins = np.mean((sieve.predict(m, b) - b.y) ** 2)
@@ -64,7 +66,9 @@ def test_loo_is_strictly_worse_than_in_sample_under_shrinkage():
     assert loo.shrinkage_weight is not None
     matched = loo.matched_level >= 0
     n = loo.support[matched].astype(float)
-    np.testing.assert_allclose(loo.shrinkage_weight[matched], n / (n + cfg.alpha))
+    np.testing.assert_allclose(
+        loo.shrinkage_weight[matched], n / (n + cfg.shrinkage_strength)
+    )
 
 
 def test_loo_requires_targets():

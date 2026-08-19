@@ -1,16 +1,16 @@
-"""cosmolayer SegmentStore -> AtomBatch (design.md 11.3, 11.4)."""
+"""cosmolayer SegmentStore -> NodeBatch (design.md 11.3, 11.4)."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from sieve.batch import AtomBatch, check_alignment
+from sieve.batch import NodeBatch, check_alignment
 from sieve.config import SieveConfig
 
 
 def from_segment_store(
     store, target="area", *, config: SieveConfig, scheme="cosmo-rs"
-) -> tuple[AtomBatch, np.ndarray]:
+) -> tuple[NodeBatch, np.ndarray]:
     """Build a batch and a test mask from a cosmolayer segment store.
 
     ``sigma_profile`` targets are converted to **area** units. The store's
@@ -25,12 +25,12 @@ def from_segment_store(
 
     df = store.molecules_df
     ai = np.asarray(store.atom_indices)
-    n_atoms = int(ai.max()) + 1
+    n_nodes = int(ai.max()) + 1
 
     if target == "area":
-        y = np.bincount(ai, weights=np.asarray(store.areas), minlength=n_atoms)[:, None]
+        y = np.bincount(ai, weights=np.asarray(store.areas), minlength=n_nodes)[:, None]
     elif target == "charge":
-        y = np.bincount(ai, weights=np.asarray(store.charges), minlength=n_atoms)[
+        y = np.bincount(ai, weights=np.asarray(store.charges), minlength=n_nodes)[
             :, None
         ]
     elif target == "sigma_profile":
@@ -50,7 +50,7 @@ def from_segment_store(
         orders.append(np.argsort([a.GetAtomMapNum() for a in mol.GetAtoms()]))
         mols.append(mol)
 
-    batch = from_rdkit(mols, y=y, config=config, atom_order=orders)
+    batch = from_rdkit(mols, y=y, config=config, node_order=orders)
 
     # design.md 7.5 / 11.3: the check that actually catches reordering.
     pt = Chem.GetPeriodicTable()

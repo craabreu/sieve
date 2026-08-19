@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.config import SieveConfig
 
 _BASE_CONFIG = SieveConfig(
@@ -32,7 +32,7 @@ def chain_batch(n, d=1, seed=0, graphs=1):
             src += [off + i, off + i + 1]
             dst += [off + i + 1, off + i]
         gid += [g] * per
-    return AtomBatch(
+    return NodeBatch(
         node_attrs=(np.arange(total) % 2).reshape(-1, 1).astype(np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
@@ -59,7 +59,7 @@ def star_batch(n_leaves, d=1, seed=0, graphs=1):
             src += [off, off + leaf]
             dst += [off + leaf, off]
         gid += [g] * per
-    return AtomBatch(
+    return NodeBatch(
         node_attrs=np.zeros((total, 1), np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
@@ -70,5 +70,5 @@ def star_batch(n_leaves, d=1, seed=0, graphs=1):
 
 
 def split_batch(batch, mask):
-    """Take the sub-batch of atoms where `mask` is True, reindexing edges."""
+    """Take the sub-batch of nodes where `mask` is True, reindexing edges."""
     return batch[mask]

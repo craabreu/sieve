@@ -1,10 +1,10 @@
-"""RDKit -> AtomBatch (design.md 11.2)."""
+"""RDKit -> NodeBatch (design.md 11.2)."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.config import SieveConfig
 
 _ATTRS = {
@@ -34,7 +34,7 @@ def build_codes(mols, attributes):
     return codes, edge_codes
 
 
-def from_rdkit(mols, y=None, *, config: SieveConfig, atom_order=None) -> AtomBatch:
+def from_rdkit(mols, y=None, *, config: SieveConfig, node_order=None) -> NodeBatch:
     flat = [a for g in config.attribute_levels for a in g]
     n = sum(m.GetNumAtoms() for m in mols)
     node_attrs = np.zeros((n, len(flat)), np.int64)
@@ -45,8 +45,8 @@ def from_rdkit(mols, y=None, *, config: SieveConfig, atom_order=None) -> AtomBat
     for gi, mol in enumerate(mols):
         order = (
             list(range(mol.GetNumAtoms()))
-            if atom_order is None
-            else list(atom_order[gi])
+            if node_order is None
+            else list(node_order[gi])
         )
         inv = np.empty(mol.GetNumAtoms(), np.int64)
         inv[order] = np.arange(mol.GetNumAtoms())
@@ -67,7 +67,7 @@ def from_rdkit(mols, y=None, *, config: SieveConfig, atom_order=None) -> AtomBat
             dst += [v, u]
             attr += [c, c]
         off += mol.GetNumAtoms()
-    return AtomBatch(
+    return NodeBatch(
         node_attrs=node_attrs,
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
@@ -78,7 +78,7 @@ def from_rdkit(mols, y=None, *, config: SieveConfig, atom_order=None) -> AtomBat
     )
 
 
-def from_smiles(smiles, y=None, *, config: SieveConfig) -> AtomBatch:
+def from_smiles(smiles, y=None, *, config: SieveConfig) -> NodeBatch:
     from rdkit import Chem
 
     mols = [Chem.MolFromSmiles(s) for s in smiles]

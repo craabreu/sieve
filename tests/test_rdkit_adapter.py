@@ -31,7 +31,7 @@ def test_batch_shapes_match_the_molecules():
     cfg = cfg_for(SMILES)
     b = from_smiles(SMILES, config=cfg)
     mols = [Chem.MolFromSmiles(s) for s in SMILES]
-    assert b.n_atoms == sum(m.GetNumAtoms() for m in mols)
+    assert b.n_nodes == sum(m.GetNumAtoms() for m in mols)
     assert b.n_edges == 2 * sum(m.GetNumBonds() for m in mols)
 
 

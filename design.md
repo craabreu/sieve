@@ -586,7 +586,7 @@ best = global_mean
 for k in 0..L:                                 # attribute levels then WL depths (§3.5)
     h = refine(k)                              # incremental
     if h not in vocab[k]:      break           # §2.2: all deeper levels also miss
-    if count[k][id] < n_min:   break           # §2.3: support only decreases
+    if count[k][id] < minimum_support: break   # §2.3: support only decreases
     best = estimate(k, id)
 return best
 ```
@@ -643,7 +643,7 @@ each edge's position within its source atom's adjacency block:
 
 ```python
 order  = np.argsort(src, kind="stable")
-deg    = np.bincount(src, minlength=n_atoms)
+deg    = np.bincount(src, minlength=n_nodes)
 indptr = np.concatenate([[0], np.cumsum(deg)])
 slot   = np.arange(n_edges) - indptr[src]     # position within the node's block
 ```
@@ -653,8 +653,8 @@ slot   = np.arange(n_edges) - indptr[src]     # position within the node's block
 ### 7.2 Refinement
 
 ```python
-pair = labels[dst] * n_bond + bond            # encode (neighbor label, bond)
-pad  = np.full((n_atoms, max_deg), -1, np.int64)
+pair = labels[dst] * n_edge_types + bond      # encode (neighbor label, bond)
+pad  = np.full((n_nodes, max_deg), -1, np.int64)
 pad[src, slot] = pair
 pad.sort(axis=1)                              # canonical multiset; -1 pads sort first
 sig  = np.concatenate([labels[:, None], pad], axis=1)
@@ -830,8 +830,8 @@ file and let $\alpha$ drift out of sync with the values it produced.
   "neighbor_schema": null,
   "max_wl_depth": 3,
   "n_levels": 6,
-  "n_min": 5,
-  "alpha": 2.0
+  "minimum_support": 5,
+  "shrinkage_strength": 2.0
 }
 ```
 
@@ -844,8 +844,9 @@ Two version fields, doing different jobs:
   only if their `schema_version` matches. This is the mechanism behind "reject incompatible configs
   loudly"; without it, config drift silently produces a model whose classes mean two different things.
 
-`n_min` and `alpha` are inference-time parameters, not part of `schema_version` — changing them does
-not invalidate the fitted statistics, and two models differing only in $\alpha$ are still mergeable.
+`minimum_support` and `shrinkage_strength` are inference-time parameters, not part of
+`schema_version` — changing them does not invalidate the fitted statistics, and two models
+differing only in $\alpha$ are still mergeable.
 
 ### 9.3 Round-trip guarantee
 
@@ -864,7 +865,7 @@ A fitted model is immutable (§5.1), so the core does not use the fit-mutates-se
 
 ```python
 model = sieve.fit(batch, config)             # -> SieveModel, immutable
-values = model.predict(batch)                # -> (n_atoms, d)
+values = model.predict(batch)                # -> (n_nodes, d)
 detail = model.predict_detailed(batch)       # -> Predictions (§12)
 merged = model_a.merge(model_b)              # or model_a + model_b
 model.save(path);  SieveModel.load(path)
@@ -878,14 +879,14 @@ class SieveConfig:
     max_wl_depth: int
     edge_attributes: tuple[str, ...] = ("bond_type",)
     neighbor_schema: tuple[str, ...] | None = None # §3.6; None = same as center
-    n_min: int = 1
-    alpha: float | None = None                      # None = raw means, §4.2
+    minimum_support: int = 1
+    shrinkage_strength: float | None = None          # None = raw means, §4.2
     chunk_size: int | None = None                   # §4.1; None = whole corpus
 ```
 
-`alpha` and `n_min` are read at prediction time from the model's config, so sweeping them does not
-require refitting — a `with_params()` returning a new model sharing the same arrays is the cheap way
-to expose that.
+`shrinkage_strength` and `minimum_support` are read at prediction time from the model's config, so
+sweeping them does not require refitting — a `with_params()` returning a new model sharing the same
+arrays is the cheap way to expose that.
 
 ### 10.2 A scikit-learn wrapper, not a scikit-learn core
 
@@ -954,20 +955,20 @@ also exactly what §7.1 consumes:
 
 ```python
 @dataclass(frozen=True)
-class AtomBatch:
-    node_attrs: np.ndarray     # (n_atoms, n_attr)  int64, encoded categoricals
+class NodeBatch:
+    node_attrs: np.ndarray     # (n_nodes, n_attr)  int64, encoded categoricals
     edge_src:   np.ndarray     # (n_edges,)   int64, CSR-sorted
     edge_dst:   np.ndarray     # (n_edges,)   int64
     edge_attrs: np.ndarray     # (n_edges, n_edge_attr) int64
-    graph_id:   np.ndarray     # (n_atoms,)   int64
-    y:          np.ndarray | None   # (n_atoms, d) float64
+    graph_id:   np.ndarray     # (n_nodes,)   int64
+    y:          np.ndarray | None   # (n_nodes, d) float64
 ```
 
 Edges are stored **both directions** for undirected graphs; §7.1's CSR construction assumes it.
 
 Both that and the in-range endpoint requirement are checked on construction, and both checks are
-vectorized: an edge is encoded as `src * n_atoms + dst`, which is a bijection once endpoints are
-known to be in `[0, n_atoms)`, so comparing the edge set against its own reverse is exact. The
+vectorized: an edge is encoded as `src * n_nodes + dst`, which is a bijection once endpoints are
+known to be in `[0, n_nodes)`, so comparing the edge set against its own reverse is exact. The
 obvious spelling — a Python set of `(int(src), int(dst))` tuples — measured 330 ms on a
 227k-atom corpus, more than an entire `fit()`, and was paid again on every sub-batch.
 
@@ -983,8 +984,8 @@ loses it cannot be validated correctly no matter what the splitter does.
 ### 11.2 Adapters
 
 ```python
-sieve.io.from_rdkit(mols, y=None, *, config)      -> AtomBatch
-sieve.io.from_smiles(smiles, y=None, *, config)   -> AtomBatch
+sieve.io.from_rdkit(mols, y=None, *, config)      -> NodeBatch
+sieve.io.from_smiles(smiles, y=None, *, config)   -> NodeBatch
 ```
 
 The adapter owns attribute encoding: it maps each configured attribute name to a dense integer code
@@ -1010,7 +1011,7 @@ pipeline applies, not before.
 
 ### 11.4 The target contract
 
-`y` is `(n_atoms, d)`. The core requires only that **component $j$ means the same thing in every
+`y` is `(n_nodes, d)`. The core requires only that **component $j$ means the same thing in every
 row** — $d$ is fixed across the corpus and the components are aligned. Everything below follows from
 that, and the adapter, not the core, is responsible for establishing it.
 
@@ -1027,7 +1028,7 @@ than merely well typed.
 the mean of $N$ quantities that denote the same thing, so §7.3's elementwise reduction is a statement
 about a physical quantity rather than about array positions. Were grids to differ per molecule, the
 elementwise mean would be meaningless, and resampling onto a common grid would be required *upstream*
-of `AtomBatch`. The core will not detect a violation: mismatched grids produce plausible numbers and
+of `NodeBatch`. The core will not detect a violation: mismatched grids produce plausible numbers and
 no error, which puts this in the same hazard class as §11.3's misalignment.
 
 **The estimator is closed over non-negative vectors.** Areas are $\ge 0$; backoff returns one stored
@@ -1065,10 +1066,10 @@ class Predictions:
     class_id:         np.ndarray   # (n,)    id at the matched level, -1 if none
     support:          np.ndarray   # (n,)    N at the matched class
     variance:         np.ndarray   # (n, d)  s^2, NaN where support == 1
-    threshold_bound:  np.ndarray   # (n,)    bool: stopped by n_min, not by OOV
-    # present only when alpha is not None
+    threshold_bound:  np.ndarray   # (n,)    bool: stopped by minimum_support, not by OOV
+    # present only when shrinkage_strength is not None
     raw_value:        np.ndarray   # (n, d)  before shrinkage
-    shrinkage_weight: np.ndarray   # (n,)    N / (N + alpha)
+    shrinkage_weight: np.ndarray   # (n,)    N / (N + shrinkage_strength)
 ```
 
 `threshold_bound` exists because a shallow match caused by $n_{\min}$ and one caused by genuine OOV

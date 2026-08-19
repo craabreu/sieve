@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.config import SieveConfig
 from sieve.dedupe import dense_rows
 
@@ -21,7 +21,7 @@ class LevelLabels:
     and single-parenthood is structural rather than asserted.
     """
 
-    labels: np.ndarray  # (n_atoms,) int64
+    labels: np.ndarray  # (n_nodes,) int64
     signatures: np.ndarray  # (n_classes, width) int64
     parent: np.ndarray  # (n_classes,) int32; -1 at level 0
 
@@ -30,13 +30,13 @@ class LevelLabels:
         return int(self.signatures.shape[0])
 
 
-def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
+def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     """Build the full refinement chain for a corpus.
 
     One array operation per level over the whole block-diagonal corpus -- there
     is no per-molecule or per-atom loop anywhere in this function.
     """
-    n = batch.n_atoms
+    n = batch.n_nodes
     levels: list[LevelLabels] = []
 
     declared = sum(len(group) for group in config.attribute_levels)
@@ -73,22 +73,23 @@ def refine(batch: AtomBatch, config: SieveConfig) -> list[LevelLabels]:
 
     # --- WL rounds (design.md 7.2) ---------------------------------------
     csr = batch.csr()
-    n_bond = config.n_bond
+    n_edge_types = config.n_edge_types
     if config.max_wl_depth and csr.attr.size:
-        # `pair = prev[dst] * n_bond + attr` assumes 0 <= attr < n_bond. A
-        # code outside that range collides with a *different* (label, bond)
-        # pair instead of raising, silently conflating two distinct classes.
-        bad = (csr.attr < 0) | (csr.attr >= n_bond)
+        # `pair = prev[dst] * n_edge_types + attr` assumes 0 <= attr <
+        # n_edge_types. A code outside that range collides with a *different*
+        # (label, bond) pair instead of raising, silently conflating two
+        # distinct classes.
+        bad = (csr.attr < 0) | (csr.attr >= n_edge_types)
         if bad.any():
             raise ValueError(
                 f"edge_attr contains code {int(csr.attr[bad][0])}, outside "
-                f"[0, {n_bond}) implied by config.edge_codes"
+                f"[0, {n_edge_types}) implied by config.edge_codes"
             )
     for _ in range(config.max_wl_depth):
         prev = levels[-1].labels
         # Encode (neighbor label, bond) as one integer so a row of neighbors
         # is a plain integer vector.
-        pair = prev[csr.dst] * n_bond + csr.attr
+        pair = prev[csr.dst] * n_edge_types + csr.attr
         pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
         pad[csr.src, csr.slot] = pair
         # Sorting canonicalizes the multiset; -1 pads sort first, and because a
