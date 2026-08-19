@@ -177,6 +177,8 @@ def test_slicing_carries_every_field():
 
     for f in dataclasses.fields(AtomBatch):
         assert getattr(sub, f.name) is not None, f"field {f.name} was dropped"
+    assert parent.elements is not None and sub.elements is not None
+    assert parent.y is not None and sub.y is not None
     assert np.array_equal(sub.elements, parent.elements[:25])
     assert np.array_equal(sub.y, parent.y[:25])
 
