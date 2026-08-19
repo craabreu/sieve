@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.merge import _lookup_rows as _lookup
 from sieve.merge import _translate
 from sieve.refine import refine
@@ -30,12 +30,12 @@ class Predictions:
     # predict_loo this is *not* adjusted for the held-out node's own label,
     # unlike `value` and `support`.
     variance: np.ndarray
-    threshold_bound: np.ndarray  # (n,) stopped by n_min rather than by OOV
+    threshold_bound: np.ndarray  # (n,) stopped by minimum_support rather than by OOV
     raw_value: np.ndarray | None = None
     shrinkage_weight: np.ndarray | None = None
 
 
-def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predictions:
+def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predictions:
     """Bottom-up backoff, shared by ``predict_detailed`` and ``predict_loo``.
 
     With ``loo_y`` set, a training node's own contribution is subtracted from
@@ -43,7 +43,7 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
     is treated as unsupported (design.md 10.3) rather than dividing by zero.
     """
     cfg = model.config
-    n, d = batch.n_atoms, cfg.target_dim
+    n, d = batch.n_nodes, cfg.target_dim
     n_attr = len(cfg.attribute_levels)
     query = refine(batch, cfg)
 
@@ -60,7 +60,7 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
         lvl = model.levels[k]
         q = query[k]
         is_wl = k >= n_attr
-        sig = _translate(q.signatures, remap, cfg.n_bond, is_wl=is_wl)
+        sig = _translate(q.signatures, remap, cfg.n_edge_types, is_wl=is_wl)
         found = _lookup(sig, lvl.signatures, is_wl)  # per query class
         remap = found
         if not alive.any():
@@ -85,7 +85,7 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
                     / np.maximum(eff_n, 1.0)[:, None],
                     np.nan,
                 )
-            enough[ok] = eff_n >= cfg.n_min
+            enough[ok] = eff_n >= cfg.minimum_support
             est[ok] = est_ok
             eff_n_full[ok] = eff_n
         # Stopped by support rather than by OOV: a different situation with a
@@ -99,7 +99,7 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
         variance[hit] = lvl.variance[cid[hit]]
         alive = hit  # prefix property (2.2)
 
-    if cfg.alpha is not None:
+    if cfg.shrinkage_strength is not None:
         from sieve.shrinkage import shrunk_means
 
         raw = value.copy()
@@ -123,10 +123,10 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
                     parent_est = np.broadcast_to(model.global_mean, (sel.sum(), d))
                 else:
                     parent_est = shrunk[k - 1][model.levels[k].parent[class_id[sel]]]
-                value[sel] = (nn[:, None] * raw[sel] + cfg.alpha * parent_est) / (
-                    nn[:, None] + cfg.alpha
-                )
-                weight[sel] = nn / (nn + cfg.alpha)
+                value[sel] = (
+                    nn[:, None] * raw[sel] + cfg.shrinkage_strength * parent_est
+                ) / (nn[:, None] + cfg.shrinkage_strength)
+                weight[sel] = nn / (nn + cfg.shrinkage_strength)
         return Predictions(
             value,
             matched,
@@ -141,22 +141,23 @@ def _search(model, batch: AtomBatch, loo_y: np.ndarray | None = None) -> Predict
     return Predictions(value, matched, class_id, support, variance, threshold)
 
 
-def predict_detailed(model, batch: AtomBatch) -> Predictions:
+def predict_detailed(model, batch: NodeBatch) -> Predictions:
     """Predict with full metadata."""
     return _search(model, batch)
 
 
-def predict(model, batch: AtomBatch) -> np.ndarray:
+def predict(model, batch: NodeBatch) -> np.ndarray:
     return predict_detailed(model, batch).value
 
 
-def predict_loo(model, batch: AtomBatch) -> Predictions:
+def predict_loo(model, batch: NodeBatch) -> Predictions:
     """Predict training nodes with their own contribution removed (design.md 10.3).
 
     A training node contributes its own label to its class mean, so any
-    in-sample score is meaningless -- at n_min=1 and large L it approaches
-    perfect recall. This is the standard remedy from the target-encoding
-    literature, and the cheapest test that the implementation is not leaking.
+    in-sample score is meaningless -- at minimum_support=1 and large L it
+    approaches perfect recall. This is the standard remedy from the
+    target-encoding literature, and the cheapest test that the implementation
+    is not leaking.
     """
     if batch.y is None:
         raise ValueError("predict_loo requires targets; batch.y is None")

@@ -5,17 +5,17 @@ from sieve.shrinkage import shrunk_means
 from tests.helpers import chain_batch, simple_config
 
 
-def test_alpha_zero_reproduces_raw_means():
+def test_shrinkage_strength_zero_reproduces_raw_means():
     """design.md 10.4."""
-    cfg = simple_config(alpha=0.0)
+    cfg = simple_config(shrinkage_strength=0.0)
     b = chain_batch(15, graphs=3)
     m = sieve.fit(b, cfg)
     for lvl, sh in zip(m.levels, shrunk_means(m), strict=True):
         np.testing.assert_allclose(sh[lvl.count > 0], lvl.mean[lvl.count > 0])
 
 
-def test_large_alpha_approaches_the_global_mean():
-    cfg = simple_config(alpha=1e12)
+def test_large_shrinkage_strength_approaches_the_global_mean():
+    cfg = simple_config(shrinkage_strength=1e12)
     b = chain_batch(15, graphs=3)
     m = sieve.fit(b, cfg)
     for sh in shrunk_means(m):
@@ -25,11 +25,11 @@ def test_large_alpha_approaches_the_global_mean():
 
 
 def test_shrinkage_uses_the_shrunk_parent_not_the_raw_parent():
-    cfg = simple_config(alpha=3.0, max_wl_depth=2)
+    cfg = simple_config(shrinkage_strength=3.0, max_wl_depth=2)
     b = chain_batch(20, graphs=3)
     m = sieve.fit(b, cfg)
     sh = shrunk_means(m)
-    a = cfg.alpha
+    a = cfg.shrinkage_strength
     for k in range(1, len(m.levels)):
         lvl = m.levels[k]
         n = lvl.count[:, None].astype(float)
@@ -38,7 +38,7 @@ def test_shrinkage_uses_the_shrunk_parent_not_the_raw_parent():
 
 
 def test_level_zero_shrinks_toward_the_global_mean():
-    cfg = simple_config(alpha=2.0)
+    cfg = simple_config(shrinkage_strength=2.0)
     m = sieve.fit(chain_batch(12), cfg)
     lvl, sh = m.levels[0], shrunk_means(m)[0]
     n = lvl.count[:, None].astype(float)
@@ -46,8 +46,8 @@ def test_level_zero_shrinks_toward_the_global_mean():
     np.testing.assert_allclose(sh, expect)
 
 
-def test_predict_exposes_raw_value_and_weight_when_alpha_is_set():
-    cfg = simple_config(alpha=2.0)
+def test_predict_exposes_raw_value_and_weight_when_shrinkage_strength_is_set():
+    cfg = simple_config(shrinkage_strength=2.0)
     b = chain_batch(12)
     p = sieve.predict_detailed(sieve.fit(b, cfg), b)
     assert p.raw_value is not None and p.shrinkage_weight is not None
@@ -56,7 +56,7 @@ def test_predict_exposes_raw_value_and_weight_when_alpha_is_set():
     np.testing.assert_allclose(p.shrinkage_weight[matched], n / (n + 2.0))
 
 
-def test_predict_omits_shrinkage_fields_when_alpha_is_none():
+def test_predict_omits_shrinkage_fields_when_shrinkage_strength_is_none():
     b = chain_batch(12)
     p = sieve.predict_detailed(sieve.fit(b, simple_config()), b)
     assert p.raw_value is None and p.shrinkage_weight is None

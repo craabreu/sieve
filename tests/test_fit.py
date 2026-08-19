@@ -48,8 +48,8 @@ def test_empty_model_has_no_classes():
 
 def test_with_params_shares_arrays():
     m = sieve.fit(chain_batch(10), simple_config())
-    m2 = m.with_params(n_min=5)
-    assert m2.config.n_min == 5
+    m2 = m.with_params(minimum_support=5)
+    assert m2.config.minimum_support == 5
     assert m2.levels[0].mean is m.levels[0].mean  # no copy
 
 

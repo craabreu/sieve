@@ -1,6 +1,6 @@
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.refine import refine
 from tests.helpers import simple_config
 
@@ -16,7 +16,7 @@ def _cycles(sizes):
         gid += [g] * n
         off += n
     n_total = off
-    return AtomBatch(
+    return NodeBatch(
         node_attrs=np.zeros((n_total, 1), np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),

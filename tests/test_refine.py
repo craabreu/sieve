@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.config import SieveConfig
 from sieve.refine import refine
 
@@ -24,7 +24,7 @@ def path_graph(n, attrs=None):
     dst = src.copy()
     src[0::2], dst[0::2] = np.arange(n - 1), np.arange(1, n)
     src[1::2], dst[1::2] = np.arange(1, n), np.arange(n - 1)
-    return AtomBatch(
+    return NodeBatch(
         node_attrs=(np.zeros((n, 1), np.int64) if attrs is None else attrs),
         edge_src=src,
         edge_dst=dst,
@@ -63,7 +63,7 @@ def test_refinement_is_invariant_to_node_ordering():
     b = path_graph(7)
     perm = np.array([3, 0, 6, 1, 5, 2, 4])
     inv = np.argsort(perm)
-    permuted = AtomBatch(
+    permuted = NodeBatch(
         node_attrs=b.node_attrs[perm],
         edge_src=inv[b.edge_src],
         edge_dst=inv[b.edge_dst],
@@ -78,7 +78,7 @@ def test_refinement_is_invariant_to_node_ordering():
 
 def test_bond_type_is_distinguished():
     b = path_graph(3)
-    other = AtomBatch(**{**b.__dict__, "edge_attr": np.array([2, 2, 1, 1], np.int64)})
+    other = NodeBatch(**{**b.__dict__, "edge_attr": np.array([2, 2, 1, 1], np.int64)})
     assert (
         not _same_partition(
             refine(b, cfg())[-1].labels, refine(other, cfg())[-1].labels
@@ -93,7 +93,7 @@ def test_bond_type_is_distinguished():
 
 
 def test_isolated_nodes_refine_without_error():
-    b = AtomBatch(
+    b = NodeBatch(
         node_attrs=np.zeros((3, 1), np.int64),
         edge_src=np.zeros(0, np.int64),
         edge_dst=np.zeros(0, np.int64),
@@ -106,13 +106,14 @@ def test_isolated_nodes_refine_without_error():
 
 
 def test_edge_attr_outside_the_bond_alphabet_is_rejected():
-    """`pair = prev[dst] * n_bond + attr` assumes attr in [0, n_bond); a code
-    outside that range silently collides with a different (label, bond) pair
-    instead of raising (design.md 7.2's n_bond convention)."""
+    """`pair = prev[dst] * n_edge_types + attr` assumes attr in
+    [0, n_edge_types); a code outside that range silently collides with a
+    different (label, bond) pair instead of raising (design.md 7.2's
+    n_edge_types convention)."""
     import pytest
 
-    b = path_graph(3)  # cfg()'s edge_codes give n_bond = 3
-    bad = AtomBatch(**{**b.__dict__, "edge_attr": np.full(4, 7, np.int64)})
+    b = path_graph(3)  # cfg()'s edge_codes give n_edge_types = 3
+    bad = NodeBatch(**{**b.__dict__, "edge_attr": np.full(4, 7, np.int64)})
     with pytest.raises(ValueError, match="edge_attr"):
         refine(bad, cfg())
 

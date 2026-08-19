@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from sieve.batch import AtomBatch
+from sieve.batch import NodeBatch
 from sieve.config import SieveConfig
 from sieve.level import FrozenLevel, fit_level, global_stats
 from sieve.refine import refine
@@ -46,10 +46,10 @@ class SieveModel:
     def with_params(self, **kw) -> SieveModel:
         """A new model sharing the same arrays, with inference params changed.
 
-        ``n_min`` and ``alpha`` are read at prediction time, so sweeping them
-        never requires refitting.
+        ``minimum_support`` and ``shrinkage_strength`` are read at prediction
+        time, so sweeping them never requires refitting.
         """
-        bad = set(kw) - {"n_min", "alpha", "chunk_size"}
+        bad = set(kw) - {"minimum_support", "shrinkage_strength", "chunk_size"}
         if bad:
             raise ValueError(f"with_params only changes inference params, got {bad}")
         return replace(self, config=replace(self.config, **kw))
@@ -68,17 +68,17 @@ class SieveModel:
 
     __radd__ = __add__
 
-    def predict(self, batch: AtomBatch) -> np.ndarray:
+    def predict(self, batch: NodeBatch) -> np.ndarray:
         from sieve.predict import predict as _predict
 
         return _predict(self, batch)
 
-    def predict_detailed(self, batch: AtomBatch):
+    def predict_detailed(self, batch: NodeBatch):
         from sieve.predict import predict_detailed as _predict_detailed
 
         return _predict_detailed(self, batch)
 
-    def predict_loo(self, batch: AtomBatch):
+    def predict_loo(self, batch: NodeBatch):
         from sieve.predict import predict_loo as _predict_loo
 
         return _predict_loo(self, batch)
@@ -87,7 +87,8 @@ class SieveModel:
         """Write a single .npz (design.md 9.1).
 
         Shrunk estimates are deliberately absent: they are derived, and storing
-        them would let alpha drift out of sync with the values it produced.
+        them would let shrinkage_strength drift out of sync with the values it
+        produced.
         """
         import json
 
@@ -103,8 +104,8 @@ class SieveModel:
             "edge_codes": dict(cfg.edge_codes),
             "max_wl_depth": cfg.max_wl_depth,
             "neighbor_schema": cfg.neighbor_schema,
-            "n_min": cfg.n_min,
-            "alpha": cfg.alpha,
+            "minimum_support": cfg.minimum_support,
+            "shrinkage_strength": cfg.shrinkage_strength,
             "chunk_size": cfg.chunk_size,
         }
         arrays = {
@@ -146,8 +147,8 @@ class SieveModel:
                 if blob["neighbor_schema"] is None
                 else tuple(blob["neighbor_schema"])
             ),
-            n_min=blob["n_min"],
-            alpha=blob["alpha"],
+            minimum_support=blob["minimum_support"],
+            shrinkage_strength=blob["shrinkage_strength"],
             chunk_size=blob["chunk_size"],
         )
         if cfg.schema_version != blob["schema_version"]:
@@ -167,7 +168,7 @@ class SieveModel:
         return cls(cfg, levels, int(g[0]), g[1 : 1 + d], g[1 + d : 1 + 2 * d])
 
 
-def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
+def fit(batch: NodeBatch, config: SieveConfig) -> SieveModel:
     """Fit a model to one corpus.
 
     When ``config.chunk_size`` is set the batch is fitted in pieces and folded,
@@ -182,11 +183,11 @@ def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
             f"{batch.y.shape[1]} columns"
         )
 
-    if config.chunk_size is not None and config.chunk_size < batch.n_atoms:
+    if config.chunk_size is not None and config.chunk_size < batch.n_nodes:
         from sieve.merge import fold
 
         graphs = np.unique(batch.graph_id)
-        n_parts = max(1, -(-batch.n_atoms // config.chunk_size))
+        n_parts = max(1, -(-batch.n_nodes // config.chunk_size))
         shards = []
         for part in np.array_split(graphs, n_parts):
             mask = np.isin(batch.graph_id, part)
@@ -199,10 +200,10 @@ def fit(batch: AtomBatch, config: SieveConfig) -> SieveModel:
     return SieveModel(config, levels, n, mean, msd)
 
 
-def _sub_batch(batch: AtomBatch, mask: np.ndarray) -> AtomBatch:
-    """Atoms where `mask` is True, with edges reindexed onto the subset.
+def _sub_batch(batch: NodeBatch, mask: np.ndarray) -> NodeBatch:
+    """Nodes where `mask` is True, with edges reindexed onto the subset.
 
-    Kept as a thin alias for ``AtomBatch.__getitem__`` (design.md 10.2): the
+    Kept as a thin alias for ``NodeBatch.__getitem__`` (design.md 10.2): the
     two must not drift into separate implementations of the same reindexing.
     """
     return batch[mask]

@@ -183,16 +183,16 @@ def test_merge_across_differing_max_degree_shards():
     7.2); merging shards with different max degrees must not misalign the
     padding columns and silently split classes that fitting the union keeps
     together."""
-    from sieve.batch import AtomBatch
+    from sieve.batch import NodeBatch
 
     cfg = simple_config()
     star = star_batch(4, graphs=2)  # max degree 4
     chain = chain_batch(3, graphs=2, seed=1)  # max degree 2
     # The chain's node indices are shifted into the combined batch's range as
-    # the two are concatenated. Shifting them inside a standalone AtomBatch
+    # the two are concatenated. Shifting them inside a standalone NodeBatch
     # first would build one whose edges point past its own last atom.
-    off = star.n_atoms
-    whole = AtomBatch(
+    off = star.n_nodes
+    whole = NodeBatch(
         node_attrs=np.concatenate([star.node_attrs, chain.node_attrs]),
         edge_src=np.concatenate([star.edge_src, chain.edge_src + off]),
         edge_dst=np.concatenate([star.edge_dst, chain.edge_dst + off]),

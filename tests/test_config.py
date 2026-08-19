@@ -23,8 +23,13 @@ def test_schema_version_is_stable():
 
 
 def test_schema_version_ignores_inference_params():
-    assert base(n_min=1).schema_version == base(n_min=9).schema_version
-    assert base(alpha=None).schema_version == base(alpha=2.0).schema_version
+    assert (
+        base(minimum_support=1).schema_version == base(minimum_support=9).schema_version
+    )
+    assert (
+        base(shrinkage_strength=None).schema_version
+        == base(shrinkage_strength=2.0).schema_version
+    )
 
 
 def test_schema_version_tracks_meaning():
@@ -40,7 +45,7 @@ def test_schema_version_tracks_meaning():
 
 
 def test_mergeable_requires_matching_schema():
-    check_mergeable(base(), base(n_min=7))  # inference params may differ
+    check_mergeable(base(), base(minimum_support=7))  # inference params may differ
     with pytest.raises(ValueError, match="schema"):
         check_mergeable(base(), base(max_wl_depth=4))
 

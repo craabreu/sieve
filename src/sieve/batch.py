@@ -24,7 +24,7 @@ class CSRLayout:
 
 
 @dataclass(frozen=True)
-class AtomBatch:
+class NodeBatch:
     """One block-diagonal graph over a whole corpus (design.md 11.1).
 
     Edges are stored in **both directions** for undirected graphs. ``graph_id``
@@ -32,13 +32,13 @@ class AtomBatch:
     batch that loses it cannot be validated correctly.
     """
 
-    node_attrs: np.ndarray  # (n_atoms, n_attr) int64, encoded categoricals
+    node_attrs: np.ndarray  # (n_nodes, n_attr) int64, encoded categoricals
     edge_src: np.ndarray  # (n_edges,) int64
     edge_dst: np.ndarray  # (n_edges,) int64
     edge_attr: np.ndarray  # (n_edges,) int64
-    graph_id: np.ndarray  # (n_atoms,) int64
-    y: np.ndarray | None = None  # (n_atoms, d) float64
-    elements: np.ndarray | None = None  # (n_atoms,) int64, for the alignment guard
+    graph_id: np.ndarray  # (n_nodes,) int64
+    y: np.ndarray | None = None  # (n_nodes, d) float64
+    elements: np.ndarray | None = None  # (n_nodes,) int64, for the alignment guard
 
     def __post_init__(self) -> None:
         self._check_shapes()
@@ -81,7 +81,7 @@ class AtomBatch:
         if lo < 0 or hi >= n:
             raise ValueError(
                 f"edge index out of range: endpoints span [{lo}, {hi}], "
-                f"but the batch has {n} atoms"
+                f"but the batch has {n} nodes"
             )
         # In int64. Computed in a narrower input dtype the product wraps and
         # the key stops being a bijection: at n - 1 == 2**16 the edge (65536, 0)
@@ -95,7 +95,7 @@ class AtomBatch:
             raise ValueError("edges must be stored in both directions")
 
     @classmethod
-    def _with_trusted_edges(cls, **kw) -> AtomBatch:
+    def _with_trusted_edges(cls, **kw) -> NodeBatch:
         """Build a batch whose edges are already known to satisfy `_check_edges`.
 
         Only for callers that *derive* a batch from an already-valid one in a
@@ -114,7 +114,7 @@ class AtomBatch:
         return obj
 
     @property
-    def n_atoms(self) -> int:
+    def n_nodes(self) -> int:
         return int(self.node_attrs.shape[0])
 
     @property
@@ -123,20 +123,20 @@ class AtomBatch:
 
     @property
     def shape(self) -> tuple[int]:
-        """One "row" per atom (design.md 10.2).
+        """One "row" per node (design.md 10.2).
 
         Exists so scikit-learn's ``_safe_indexing``/``_num_samples`` treat an
-        ``AtomBatch`` as array-like instead of falling back to indexing it one
+        ``NodeBatch`` as array-like instead of falling back to indexing it one
         element at a time -- without this, ``GraphKFold`` cannot actually be
         used with ``cross_val_score``/``GridSearchCV`` despite that being the
         whole point of this module.
         """
-        return (self.n_atoms,)
+        return (self.n_nodes,)
 
     def __len__(self) -> int:
-        return self.n_atoms
+        return self.n_nodes
 
-    def __getitem__(self, key) -> AtomBatch:
+    def __getitem__(self, key) -> NodeBatch:
         """Select a sub-batch by boolean mask or integer index array.
 
         Edges are kept only when both endpoints are selected; a selection
@@ -151,14 +151,14 @@ class AtomBatch:
         """
         if isinstance(key, tuple):
             key = key[0]
-        mask = np.zeros(self.n_atoms, bool)
+        mask = np.zeros(self.n_nodes, bool)
         idx = np.asarray(key)
         if idx.dtype == bool:
             mask[:] = idx
         else:
             mask[idx] = True
         sel = np.flatnonzero(mask)
-        remap = np.full(self.n_atoms, -1, np.int64)
+        remap = np.full(self.n_nodes, -1, np.int64)
         remap[sel] = np.arange(sel.size)
         keep = mask[self.edge_src] & mask[self.edge_dst]
         # An edge is kept only when *both* endpoints are selected, so (a,b)
@@ -166,7 +166,7 @@ class AtomBatch:
         # selection: the sub-batch inherits bidirectionality and in-range
         # endpoints from a parent that already had them. Re-deriving that is
         # the single most expensive thing this class does, so it is skipped.
-        return AtomBatch._with_trusted_edges(
+        return NodeBatch._with_trusted_edges(
             node_attrs=self.node_attrs[sel],
             edge_src=remap[self.edge_src[keep]],
             edge_dst=remap[self.edge_dst[keep]],
@@ -177,7 +177,7 @@ class AtomBatch:
         )
 
     def csr(self) -> CSRLayout:
-        n = self.n_atoms
+        n = self.n_nodes
         order = np.argsort(self.edge_src, kind="stable")
         src = self.edge_src[order]
         deg = np.bincount(src, minlength=n)
@@ -197,7 +197,7 @@ class AtomBatch:
 
 
 def check_alignment(
-    batch: AtomBatch, atom_counts: np.ndarray, elements: np.ndarray
+    batch: NodeBatch, node_counts: np.ndarray, elements: np.ndarray
 ) -> None:
     """Verify targets line up with parsed molecules (design.md 7.5, 11.3).
 
@@ -207,10 +207,10 @@ def check_alignment(
     so the element check is the one that actually does the work.
     """
     _, sizes = np.unique(batch.graph_id, return_counts=True)
-    if sizes.shape != atom_counts.shape or not np.array_equal(sizes, atom_counts):
+    if sizes.shape != node_counts.shape or not np.array_equal(sizes, node_counts):
         raise ValueError(
             f"atom count mismatch: batch has {sizes.tolist()[:5]}..., "
-            f"corpus reports {np.asarray(atom_counts).tolist()[:5]}..."
+            f"corpus reports {np.asarray(node_counts).tolist()[:5]}..."
         )
     if batch.elements is not None:
         bad = np.flatnonzero(batch.elements != elements)

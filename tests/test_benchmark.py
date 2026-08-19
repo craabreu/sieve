@@ -46,7 +46,7 @@ def cfg_and_batch(store):
         attribute_codes=codes,
         edge_codes=edges,
         max_wl_depth=3,
-        n_min=1,
+        minimum_support=1,
     )
     batch, _ = from_segment_store(store, target="area", config=cfg)
     return cfg, batch
@@ -71,7 +71,7 @@ def _run(store, target):
         attribute_codes=codes,
         edge_codes=edges,
         max_wl_depth=3,
-        n_min=1,
+        minimum_support=1,
     )
     batch, is_test = from_segment_store(store, target=target, config=cfg)
     from sieve.model import _sub_batch
@@ -104,7 +104,7 @@ def test_corpus_shape(store):
         max_wl_depth=3,
     )
     batch, is_test = from_segment_store(store, target="area", config=cfg)
-    assert batch.n_atoms == 227_723
+    assert batch.n_nodes == 227_723
     assert int((~is_test).sum()) == 187_605
     assert int(is_test.sum()) == 40_118
 
@@ -192,7 +192,7 @@ def test_sigma_profile_predictions_are_non_negative(store):
         attribute_codes=codes,
         edge_codes=edges,
         max_wl_depth=3,
-        alpha=2.0,
+        shrinkage_strength=2.0,
     )
     batch, is_test = from_segment_store(store, target="sigma_profile", config=cfg)
     model = sieve.fit(_sub_batch(batch, ~is_test), cfg)

@@ -18,7 +18,7 @@ _OOV_NEIGHBOR = -2  # distinct from both a real code (>=0) and the pad sentinel 
 
 
 def _translate(
-    sig: np.ndarray, remap_prev: np.ndarray | None, n_bond: int, is_wl: bool
+    sig: np.ndarray, remap_prev: np.ndarray | None, n_edge_types: int, is_wl: bool
 ) -> np.ndarray:
     """Rewrite B's signature rows in the merged id space.
 
@@ -29,8 +29,8 @@ def _translate(
     ``remap_prev`` can contain -1 here (predict.py's lookup leaves an unmatched
     query class as -1; merge.py's own remaps never do). A neighbor with an
     OOV previous-level class must make the row unmatchable, not accidentally
-    plausible: ``-1 * n_bond + bond`` lands on the real pad sentinel -1 itself
-    whenever ``bond == n_bond - 1``, so an OOV neighbor reached by the
+    plausible: ``-1 * n_edge_types + bond`` lands on the real pad sentinel -1 itself
+    whenever ``bond == n_edge_types - 1``, so an OOV neighbor reached by the
     top bond code was indistinguishable from a node with one fewer neighbor
     -- a false match at exactly the classes it should confidently miss.
     """
@@ -41,10 +41,10 @@ def _translate(
     if is_wl and sig.shape[1] > 1:
         pad = sig[:, 1:]
         filled = pad >= 0
-        lab, bond = np.divmod(np.where(filled, pad, 0), n_bond)
+        lab, bond = np.divmod(np.where(filled, pad, 0), n_edge_types)
         remapped_lab = remap_prev[lab]
         oov = filled & (remapped_lab < 0)
-        new = remapped_lab * n_bond + bond
+        new = remapped_lab * n_edge_types + bond
         out[:, 1:] = np.where(oov, _OOV_NEIGHBOR, np.where(filled, new, -1))
         # Remapping changes the sort order, so the multiset must be
         # re-canonicalized or equal multisets stop comparing equal.
@@ -138,7 +138,7 @@ def merge_level(
     a: FrozenLevel,
     b: FrozenLevel,
     remap_prev: np.ndarray | None,
-    n_bond: int,
+    n_edge_types: int,
     is_wl: bool,
 ) -> tuple[FrozenLevel, np.ndarray]:
     """Merge one level. A's ids are preserved; only B's are remapped.
@@ -157,7 +157,9 @@ def merge_level(
     width = max(a.signatures.shape[1], b.signatures.shape[1], 1)
 
     a_sig = _widen(a.signatures, width, is_wl)
-    b_sig = _widen(_translate(b.signatures, remap_prev, n_bond, is_wl), width, is_wl)
+    b_sig = _widen(
+        _translate(b.signatures, remap_prev, n_edge_types, is_wl), width, is_wl
+    )
     m = a.n_classes
 
     found = _lookup_rows(b_sig, a_sig, is_wl)  # -1 where B's row is new to A
@@ -223,7 +225,7 @@ def merge_models(a, b):
     levels, remap = [], None
     for k in range(cfg.n_levels):
         lvl, remap = merge_level(
-            a.levels[k], b.levels[k], remap, cfg.n_bond, is_wl=k >= n_attr_levels
+            a.levels[k], b.levels[k], remap, cfg.n_edge_types, is_wl=k >= n_attr_levels
         )
         levels.append(lvl)
 
