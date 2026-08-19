@@ -83,8 +83,14 @@ class AtomBatch:
                 f"edge index out of range: endpoints span [{lo}, {hi}], "
                 f"but the batch has {n} atoms"
             )
-        fwd = np.unique(self.edge_src * n + self.edge_dst)
-        rev = np.unique(self.edge_dst * n + self.edge_src)
+        # In int64. Computed in a narrower input dtype the product wraps and
+        # the key stops being a bijection: at n - 1 == 2**16 the edge (65536, 0)
+        # collides with its own reverse under int32, so a one-way corpus would
+        # pass the one check that exists to catch it.
+        src = self.edge_src.astype(np.int64, copy=False)
+        dst = self.edge_dst.astype(np.int64, copy=False)
+        fwd = np.unique(src * n + dst)
+        rev = np.unique(dst * n + src)
         if not np.array_equal(fwd, rev):
             raise ValueError("edges must be stored in both directions")
 
@@ -96,9 +102,11 @@ class AtomBatch:
         way that provably preserves the invariant -- see ``__getitem__``. Shape
         checks still run; it is the O(edges) edge check that is skipped.
         """
-        missing = {f.name for f in fields(cls)} - set(kw)
-        if missing:
+        names = {f.name for f in fields(cls)}
+        if missing := names - set(kw):
             raise TypeError(f"_with_trusted_edges is missing {sorted(missing)}")
+        if unexpected := set(kw) - names:
+            raise TypeError(f"_with_trusted_edges got unexpected {sorted(unexpected)}")
         obj = cls.__new__(cls)
         for name, value in kw.items():
             object.__setattr__(obj, name, value)

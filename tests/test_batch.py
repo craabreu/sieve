@@ -93,6 +93,33 @@ def test_negative_edge_index_is_rejected():
         )
 
 
+def test_one_way_edges_are_caught_with_narrow_integer_dtypes():
+    """The ``src * n + dst`` key is only a bijection when it cannot wrap.
+
+    Computed in the array's own dtype it wraps mod 2**32 for int32 inputs, and
+    then distinct edges can share a key. With ``n - 1 == 2**16`` the edge
+    (65536, 0) collides with its own reverse, so a corpus missing that reverse
+    passes a check whose entire job is to catch exactly that.
+    """
+    n = 65537
+    with pytest.raises(ValueError, match="both directions"):
+        AtomBatch(
+            node_attrs=np.zeros((n, 1), np.int64),
+            edge_src=np.array([65536], np.int32),
+            edge_dst=np.array([0], np.int32),
+            edge_attr=np.ones(1, np.int64),
+            graph_id=np.zeros(n, np.int64),
+            y=None,
+        )
+
+
+def test_trusted_constructor_rejects_unknown_fields():
+    """It bypasses __init__, so an unrecognized name would otherwise be set as
+    a stray attribute rather than rejected."""
+    with pytest.raises(TypeError, match="unexpected"):
+        AtomBatch._with_trusted_edges(**{**ring(4), "elements": None, "bogus": 1})
+
+
 def test_validation_does_not_build_a_python_set():
     """The both-direction check used to cost more than an entire fit: it built
     a Python set of every edge tuple. It must be vectorized, so constructing a
