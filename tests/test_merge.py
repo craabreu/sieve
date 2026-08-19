@@ -2,8 +2,78 @@ import numpy as np
 import pytest
 
 import sieve
-from sieve.merge import fold
+import sieve.dedupe
+import sieve.merge
+from sieve.merge import _lookup_rows, fold
 from tests.helpers import chain_batch, simple_config, split_batch, star_batch
+
+
+def brute_force_lookup(sig, table):
+    """Row-wise membership, the obvious slow way, as an oracle."""
+    index = {tuple(r): i for i, r in enumerate(table.tolist())}
+    return np.array([index.get(tuple(r), -1) for r in sig.tolist()], np.int64)
+
+
+def test_a_pickled_shard_merges_identically_to_a_local_one():
+    """Parallel fitting hands shards back from workers by pickle, and merging
+    matches signature rows against each other. A shard whose ids or keys did
+    not survive transport would mint duplicate classes instead of merging,
+    which shows up as a silently larger vocabulary rather than an error.
+    """
+    import pickle
+
+    b = chain_batch(6, graphs=8)
+    cfg = simple_config()
+    first = b.graph_id < 4
+    a, c = sieve.fit(b[first], cfg), sieve.fit(b[~first], cfg)
+
+    local = a.merge(c)
+    transported = pickle.loads(pickle.dumps(a)).merge(pickle.loads(pickle.dumps(c)))
+    whole = sieve.fit(b, cfg)
+
+    counts = [lv.n_classes for lv in whole.levels]
+    assert [lv.n_classes for lv in local.levels] == counts
+    assert [lv.n_classes for lv in transported.levels] == counts
+    np.testing.assert_allclose(preds(transported, b), preds(whole, b))
+
+
+def test_lookup_matches_a_brute_force_oracle():
+    rng = np.random.default_rng(4)
+    table = np.unique(rng.integers(0, 8, size=(400, 3)).astype(np.int64), axis=0)
+    sig = rng.integers(0, 8, size=(500, 3)).astype(np.int64)
+    got = _lookup_rows(sig, table, is_wl=False)
+    assert np.array_equal(got, brute_force_lookup(sig, table))
+
+
+def test_lookup_falls_back_when_the_vocabulary_has_a_key_collision(monkeypatch):
+    """Two *distinct* vocabulary rows sharing a key would make searchsorted land
+    on the wrong one, and the row check would then reject a match that really
+    does exist -- splitting a class that must stay unified. The vocabulary is
+    already deduplicated, so any repeated key is a collision and forces the
+    exact path."""
+    monkeypatch.setattr(
+        sieve.merge, "_row_keys", lambda m: np.zeros(m.shape[0], np.uint64)
+    )
+    table = np.array([[1, 2], [3, 4], [5, 6]], np.int64)
+    sig = np.array([[3, 4], [9, 9], [1, 2]], np.int64)
+    got = _lookup_rows(sig, table, is_wl=False)
+    assert got.tolist() == [1, -1, 0]
+
+
+def test_a_query_colliding_with_a_vocabulary_row_is_not_a_false_match(monkeypatch):
+    """The dangerous direction: a query claiming to be a class it is not."""
+    real = sieve.dedupe._row_keys
+
+    def collide_query(m):
+        keys = real(m).copy()
+        target = (m[:, 0] == 9) & (m[:, 1] == 9)
+        keys[target] = real(np.array([[1, 2]], np.int64))[0]
+        return keys
+
+    monkeypatch.setattr(sieve.merge, "_row_keys", collide_query)
+    table = np.array([[1, 2], [3, 4]], np.int64)
+    got = _lookup_rows(np.array([[9, 9], [1, 2]], np.int64), table, is_wl=False)
+    assert got.tolist() == [-1, 0]
 
 
 def preds(model, batch):
@@ -118,20 +188,16 @@ def test_merge_across_differing_max_degree_shards():
     cfg = simple_config()
     star = star_batch(4, graphs=2)  # max degree 4
     chain = chain_batch(3, graphs=2, seed=1)  # max degree 2
-    chain = AtomBatch(
-        node_attrs=chain.node_attrs,
-        edge_src=chain.edge_src + star.n_atoms,
-        edge_dst=chain.edge_dst + star.n_atoms,
-        edge_attr=chain.edge_attr,
-        graph_id=chain.graph_id + 2,
-        y=chain.y,
-    )
+    # The chain's node indices are shifted into the combined batch's range as
+    # the two are concatenated. Shifting them inside a standalone AtomBatch
+    # first would build one whose edges point past its own last atom.
+    off = star.n_atoms
     whole = AtomBatch(
         node_attrs=np.concatenate([star.node_attrs, chain.node_attrs]),
-        edge_src=np.concatenate([star.edge_src, chain.edge_src]),
-        edge_dst=np.concatenate([star.edge_dst, chain.edge_dst]),
+        edge_src=np.concatenate([star.edge_src, chain.edge_src + off]),
+        edge_dst=np.concatenate([star.edge_dst, chain.edge_dst + off]),
         edge_attr=np.concatenate([star.edge_attr, chain.edge_attr]),
-        graph_id=np.concatenate([star.graph_id, chain.graph_id]),
+        graph_id=np.concatenate([star.graph_id, chain.graph_id + 2]),
         y=np.concatenate([star.y, chain.y]),
     )
 

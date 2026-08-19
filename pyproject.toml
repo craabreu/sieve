@@ -18,6 +18,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
 line-length = 88

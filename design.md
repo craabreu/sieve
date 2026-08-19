@@ -965,6 +965,18 @@ class AtomBatch:
 
 Edges are stored **both directions** for undirected graphs; §7.1's CSR construction assumes it.
 
+Both that and the in-range endpoint requirement are checked on construction, and both checks are
+vectorized: an edge is encoded as `src * n_atoms + dst`, which is a bijection once endpoints are
+known to be in `[0, n_atoms)`, so comparing the edge set against its own reverse is exact. The
+obvious spelling — a Python set of `(int(src), int(dst))` tuples — measured 330 ms on a
+227k-atom corpus, more than an entire `fit()`, and was paid again on every sub-batch.
+
+Sub-batches skip the edge check entirely rather than repeating it. `__getitem__` keeps an edge only
+when *both* endpoints are selected, so `(a,b)` survives exactly when `(b,a)` does and the remap is
+injective on the selection: bidirectionality and in-range endpoints are inherited, not re-derived.
+This is what keeps §10.2's splitting, `chunk_size` fitting and sharded fitting from paying an O(edges)
+Python-level tax per shard — slicing the 227k-atom corpus went from 164 ms to 2.9 ms.
+
 `graph_id` is not optional. It is what makes graph-level splitting possible (§10.2), and a batch that
 loses it cannot be validated correctly no matter what the splitter does.
 

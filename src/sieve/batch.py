@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import numpy as np
 
@@ -41,6 +41,10 @@ class AtomBatch:
     elements: np.ndarray | None = None  # (n_atoms,) int64, for the alignment guard
 
     def __post_init__(self) -> None:
+        self._check_shapes()
+        self._check_edges()
+
+    def _check_shapes(self) -> None:
         n = self.node_attrs.shape[0]
         if self.graph_id.shape != (n,):
             raise ValueError(
@@ -52,15 +56,62 @@ class AtomBatch:
                 raise ValueError(f"{name} must have shape ({e},)")
         if self.y is not None and self.y.shape[0] != n:
             raise ValueError(f"y must have {n} rows, got {self.y.shape[0]}")
-        if e:
-            # Undirected graphs must carry both directions; the CSR construction
-            # assumes it, and a one-way corpus silently halves every neighborhood.
-            fwd = {
-                (int(a), int(b))
-                for a, b in zip(self.edge_src, self.edge_dst, strict=True)
-            }
-            if any((b, a) not in fwd for a, b in fwd):
-                raise ValueError("edges must be stored in both directions")
+
+    def _check_edges(self) -> None:
+        """Endpoints are in range, and every edge carries its reverse.
+
+        Undirected graphs must carry both directions; the CSR construction
+        assumes it, and a one-way corpus silently halves every neighborhood.
+
+        Both halves are vectorized. The obvious spelling -- a Python set of
+        ``(int(src), int(dst))`` tuples -- cost more than an entire ``fit()``
+        on a 227k-atom corpus and was paid again on every sub-batch, so it
+        dominated anything that slices (``GraphKFold``, ``chunk_size``,
+        sharded fitting). Encoding an edge as ``src * n + dst`` is a bijection
+        once the endpoints are known to be in ``[0, n)``, which is what makes
+        comparing the edge set against its own reverse exact here; ``np.unique``
+        rather than a plain sort because the check has always compared edge
+        *sets*, so a repeated edge is not by itself a missing reverse.
+        """
+        if not self.edge_src.shape[0]:
+            return
+        n = self.node_attrs.shape[0]
+        lo = min(int(self.edge_src.min()), int(self.edge_dst.min()))
+        hi = max(int(self.edge_src.max()), int(self.edge_dst.max()))
+        if lo < 0 or hi >= n:
+            raise ValueError(
+                f"edge index out of range: endpoints span [{lo}, {hi}], "
+                f"but the batch has {n} atoms"
+            )
+        # In int64. Computed in a narrower input dtype the product wraps and
+        # the key stops being a bijection: at n - 1 == 2**16 the edge (65536, 0)
+        # collides with its own reverse under int32, so a one-way corpus would
+        # pass the one check that exists to catch it.
+        src = self.edge_src.astype(np.int64, copy=False)
+        dst = self.edge_dst.astype(np.int64, copy=False)
+        fwd = np.unique(src * n + dst)
+        rev = np.unique(dst * n + src)
+        if not np.array_equal(fwd, rev):
+            raise ValueError("edges must be stored in both directions")
+
+    @classmethod
+    def _with_trusted_edges(cls, **kw) -> AtomBatch:
+        """Build a batch whose edges are already known to satisfy `_check_edges`.
+
+        Only for callers that *derive* a batch from an already-valid one in a
+        way that provably preserves the invariant -- see ``__getitem__``. Shape
+        checks still run; it is the O(edges) edge check that is skipped.
+        """
+        names = {f.name for f in fields(cls)}
+        if missing := names - set(kw):
+            raise TypeError(f"_with_trusted_edges is missing {sorted(missing)}")
+        if unexpected := set(kw) - names:
+            raise TypeError(f"_with_trusted_edges got unexpected {sorted(unexpected)}")
+        obj = cls.__new__(cls)
+        for name, value in kw.items():
+            object.__setattr__(obj, name, value)
+        obj._check_shapes()
+        return obj
 
     @property
     def n_atoms(self) -> int:
@@ -110,7 +161,12 @@ class AtomBatch:
         remap = np.full(self.n_atoms, -1, np.int64)
         remap[sel] = np.arange(sel.size)
         keep = mask[self.edge_src] & mask[self.edge_dst]
-        return AtomBatch(
+        # An edge is kept only when *both* endpoints are selected, so (a,b)
+        # survives exactly when (b,a) does, and `remap` is injective on the
+        # selection: the sub-batch inherits bidirectionality and in-range
+        # endpoints from a parent that already had them. Re-deriving that is
+        # the single most expensive thing this class does, so it is skipped.
+        return AtomBatch._with_trusted_edges(
             node_attrs=self.node_attrs[sel],
             edge_src=remap[self.edge_src[keep]],
             edge_dst=remap[self.edge_dst[keep]],

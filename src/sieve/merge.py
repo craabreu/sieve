@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 
 from sieve.config import SieveConfig, check_mergeable
-from sieve.dedupe import dense_rows
+from sieve.dedupe import _row_keys, dense_rows
 from sieve.level import FrozenLevel
 
 _OOV_NEIGHBOR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
@@ -77,24 +77,60 @@ def _widen(sig: np.ndarray, width: int, is_wl: bool) -> np.ndarray:
     return out
 
 
+def _probe(sv: np.ndarray, ts: np.ndarray, order: np.ndarray) -> np.ndarray:
+    """Index into the unsorted table of each `sv` value's candidate row."""
+    pos = np.clip(np.searchsorted(ts, sv), 0, order.size - 1)
+    return order[pos]
+
+
+def _lookup_rows_exact(s: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Membership by comparing raw row bytes. Exact, and slower."""
+    dt = np.dtype((np.void, s.dtype.itemsize * s.shape[1]))
+    sv, tv = s.view(dt).ravel(), t.view(dt).ravel()
+    order = np.argsort(tv)
+    cand = _probe(sv, tv[order], order)
+    return np.where(tv[cand] == sv, cand, -1).astype(np.int64)
+
+
 def _lookup_rows(sig: np.ndarray, table: np.ndarray, is_wl: bool) -> np.ndarray:
     """Row-wise membership: index of each `sig` row in `table`, or -1.
 
     Shared with ``predict.py``'s lookup -- same problem (find a signature row
     in a sorted vocabulary), so it must not grow a second implementation.
+
+    Rows are located by the same 64-bit key ``dedupe`` groups on, for the same
+    reason: sorting one ``uint64`` per row beats sorting the row bytes. It also
+    restores an accident the byte version relied on -- ``dense_rows`` hands back
+    rows in ascending *key* order, so a freshly fitted vocabulary arrives here
+    already sorted and ``argsort`` costs a quarter of what it does on arbitrary
+    order.
+
+    Two collision directions, and they are not symmetric:
+
+    * A query colliding with a vocabulary row would be a **false match** -- a
+      row claiming a class it does not belong to. Every claimed hit is checked
+      against the actual bytes, so this cannot survive.
+    * Two *distinct vocabulary rows* sharing a key is worse: ``searchsorted``
+      would land on one of them and the row check would then reject a match
+      that genuinely exists, splitting a class that must stay unified. No
+      per-row check can repair that, so it is detected up front -- the
+      vocabulary is already deduplicated, so a repeated key can only be a
+      collision -- and the exact path takes over.
     """
     if table.shape[0] == 0 or sig.shape[0] == 0:
         return np.full(sig.shape[0], -1, np.int64)
     width = max(sig.shape[1], table.shape[1])
     s, t = _widen(sig, width, is_wl), _widen(table, width, is_wl)
-    dt = np.dtype((np.void, s.dtype.itemsize * width))
-    sv = s.view(dt).ravel()
-    tv = t.view(dt).ravel()
+    if s.dtype.itemsize != 8:
+        return _lookup_rows_exact(s, t)  # the key mixer reads 8-byte lanes
+    tv = _row_keys(t)
     order = np.argsort(tv)
-    pos = np.searchsorted(tv, sv, sorter=order)
-    pos = np.clip(pos, 0, order.size - 1)
-    cand = order[pos]
-    hit = tv[cand] == sv
+    ts = tv[order]
+    if ts.size > 1 and np.any(ts[1:] == ts[:-1]):
+        return _lookup_rows_exact(s, t)
+    sv = _row_keys(s)
+    cand = _probe(sv, ts, order)
+    hit = (tv[cand] == sv) & np.all(s == t[cand], axis=1)
     return np.where(hit, cand, -1).astype(np.int64)
 
 
@@ -111,11 +147,11 @@ def merge_level(
     B's, carried forward across levels by ``remap_prev``.
 
     A's rows are matched against B's by *lookup*, not by re-deduplicating the
-    concatenation: ``dense_rows`` numbers by sorted order, so stacking A ahead
-    of B and re-running it does **not** keep A's original ids when the two
-    value ranges interleave -- despite reading that way from the "A comes
-    first" framing. Looking B's rows up in A's table instead leaves A's ids
-    untouched and only mints new ones for what A truly lacks.
+    concatenation: ``dense_rows`` numbers by row key, in no order a caller can
+    predict, so stacking A ahead of B and re-running it does **not** keep A's
+    original ids -- despite reading that way from the "A comes first" framing.
+    Looking B's rows up in A's table instead leaves A's ids untouched and only
+    mints new ones for what A truly lacks.
     """
     d = a.mean.shape[1] if a.n_classes else b.mean.shape[1]
     width = max(a.signatures.shape[1], b.signatures.shape[1], 1)
