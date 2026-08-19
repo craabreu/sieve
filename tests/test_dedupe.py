@@ -49,6 +49,36 @@ def _same_partition(a, b):
     )
 
 
+def test_output_is_bit_identical_to_the_recorded_baseline():
+    """Characterization guard for changes to how deduplication is *computed*.
+
+    The partition is what callers rely on, but ids and representative rows are
+    pinned here too, so a change to the internals has to be a deliberate one:
+    this test failing means the numbering moved, not that the answer is wrong.
+    """
+    rng = np.random.default_rng(7)
+    m = rng.integers(0, 4, size=(40, 3)).astype(np.int64)
+    labels, uniq = dense_rows(m)
+    assert labels.tolist() == [
+        28, 29, 22, 9, 23, 24, 2, 7, 16, 8, 19, 30, 18, 25, 24, 11, 6, 21,
+        30, 15, 7, 5, 1, 20, 14, 4, 12, 10, 4, 28, 3, 0, 19, 27, 17, 3, 13,
+        2, 8, 26,
+    ]  # fmt: skip
+    assert uniq.shape[0] == 31
+    # ids ascend with row content: class 0 is the lexicographically smallest row
+    assert all(list(uniq[i]) < list(uniq[i + 1]) for i in range(uniq.shape[0] - 1))
+
+
+def test_a_heavily_duplicated_row_keeps_its_representative():
+    """Every row of a class is byte-identical, so recovering representatives by
+    scattering all of them must land the same values as picking the first."""
+    m = np.tile(np.array([[7, 7, 7]], np.int64), (1000, 1))
+    m[500] = [1, 2, 3]
+    labels, uniq = dense_rows(m)
+    assert uniq.shape[0] == 2
+    assert np.array_equal(uniq[labels], m)
+
+
 def test_handles_non_contiguous_input():
     m = np.arange(40, dtype=np.int64).reshape(10, 4)[:, ::2]
     labels, uniq = dense_rows(m)

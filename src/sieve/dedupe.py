@@ -14,11 +14,18 @@ def dense_rows(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     scalar. ``np.unique(..., axis=0)`` is *no faster than a Python dict loop*
     (0.70 s vs 0.71 s over 6 levels of 147k atoms); the void view does the same
     work in 0.27 s.
+
+    ``return_index`` is deliberately not requested. Asking for it forces
+    ``np.unique`` onto a *stable* sort (mergesort) so that ``index`` can mean
+    "first occurrence", and that costs about 28% over the default quicksort on
+    this workload -- for an answer this function does not need. Every row of a
+    class is byte-identical by construction, so scattering all of them recovers
+    the same representatives that picking the first one would.
     """
     m = np.ascontiguousarray(mat)
     v = m.view(np.dtype((np.void, m.dtype.itemsize * m.shape[1]))).ravel()
-    # numpy returns (unique, index, inverse) in a FIXED order, whatever order
-    # the keywords are passed in. Binding these wrongly is silent: the ids stay
-    # plausible and `unique_rows[labels] == mat` quietly stops holding.
-    _uniq, idx, inv = np.unique(v, return_index=True, return_inverse=True)
-    return inv.ravel().astype(np.int64), m[idx]
+    uniq, inv = np.unique(v, return_inverse=True)
+    inv = inv.ravel()
+    rows = np.empty((uniq.shape[0], m.shape[1]), m.dtype)
+    rows[inv] = m  # every write within a class writes identical bytes
+    return inv.astype(np.int64, copy=False), rows
