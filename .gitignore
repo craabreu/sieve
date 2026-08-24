@@ -1,5 +1,19 @@
 # COSMO segment stores
 stores/
+
+# Draft markdown files
+drafts/
+
+# Jupyter notebook for experimenting with sieve
+sieve_*.ipynb
+
+# VSCode
+.vscode/
+
+# UV lock files
+uv.lock
+
+# Python
 .venv/
 .venv311/
 __pycache__/
