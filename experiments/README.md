@@ -38,7 +38,7 @@ Sieve's own `biased_split` extrapolation split. Design doc:
   download (Zenodo record 22050672 now resolves — see "Known external gap"
   below, updated). Verifies both Zenodo's published md5 and a
   trust-on-first-download sha256.
-- 211 tests passing (`uv run pytest -q`) against a fully-populated local
+- 215 tests passing (`uv run pytest -q`) against a fully-populated local
   environment (real `stores/chaos-store/` + the pinned DASH-tree clone under
   `experiments/external/`); 7 skipped are unrelated (`test_benchmark.py`'s
   own separate benchmark store, not chaos-store). Without those two present,
