@@ -8,14 +8,29 @@ or predictor.
 The Wasserstein-1 and regression-metric formulas are promoted, unchanged, from
 scripts/train_chaos_sigma_profile.py (wasserstein1_per_row, regression_metrics),
 which were themselves adapted from Chemprop's ProfileWasserstein /
-AreaWeightedProfileWasserstein. Two things are fixed here, deliberately, versus
-that script:
+AreaWeightedProfileWasserstein. Three things are fixed here, deliberately,
+versus that script:
 
 - Metric keys are ASCII ("r2", not "R²") because MLflow rejects non-ASCII keys.
 - ``normalize_rows`` masks a zero/negative row sum explicitly rather than
   dividing and suppressing the warning: pyproject.toml promotes
   ``RuntimeWarning`` to an error, so a bare ``p / p.sum(1, keepdims=True)``
   would fail the test suite on any degenerate row.
+- ``molecule_metrics`` never reports W1/MAE/RMSE/R² on *unnormalized*
+  profiles (the old script's "w1_abs_mean"/"profile/mae" etc.) -- that
+  conflates shape error with total-area error into one number, and was
+  only ever kept for continuity with the old script's numbers, never as
+  the metric to actually reason about a predictor by. The normalized W1
+  (``profile/w1_norm_*``) is the only profile-shape metric reported;
+  ``area/*`` already covers total-area error on its own.
+- ``wasserstein1`` no longer scales by a grid ``bin_width``. The scaled
+  version turns the CDF-gap sum into a distance in sigma's own physical
+  unit (e/A^2); dropped since this project's sigma grid is fixed everywhere
+  it matters (chaos-store, DASH, and -- per design.md -- COSMO-NET all
+  share it), so that scaling was only ever a constant rescale of every
+  number, never something that changed a relative comparison between
+  predictors or runs. What's reported now is W1 in units of bin-width
+  ("how many bins apart"), not an absolute sigma-space distance.
 """
 
 from __future__ import annotations
@@ -25,9 +40,11 @@ from numpy.typing import NDArray
 
 
 def wasserstein1(
-    y_true: NDArray[np.floating], y_pred: NDArray[np.floating], *, bin_width: float
+    y_true: NDArray[np.floating], y_pred: NDArray[np.floating]
 ) -> NDArray[np.float64]:
-    """Per-row Wasserstein-1 distance between two 1D-histogram rows.
+    """Per-row Wasserstein-1 distance between two 1D-histogram rows, in
+    units of bin-width (see module docstring for why there's no bin_width
+    scaling here).
 
     Both inputs are read directly off their CDFs: this is the standard
     1D-histogram W1 formula, valid whether the rows are normalized (sum to 1)
@@ -36,7 +53,7 @@ def wasserstein1(
     y_true = np.asarray(y_true, dtype=np.float64)
     y_pred = np.asarray(y_pred, dtype=np.float64)
     cdf_gap = np.cumsum(y_true, axis=1) - np.cumsum(y_pred, axis=1)
-    return np.abs(cdf_gap).sum(1) * bin_width
+    return np.abs(cdf_gap).sum(1)
 
 
 def normalize_rows(p: NDArray[np.floating]) -> NDArray[np.float64]:
@@ -112,7 +129,6 @@ def molecule_metrics(
     *,
     profile_true: NDArray[np.floating],
     profile_pred: NDArray[np.floating],
-    bin_width: float,
     area_true: NDArray[np.floating] | None = None,
     area_pred: NDArray[np.floating] | None = None,
     charge_true: NDArray[np.floating] | None = None,
@@ -134,7 +150,7 @@ def molecule_metrics(
     degenerate = np.isnan(norm_true).any(axis=1) | np.isnan(norm_pred).any(axis=1)
     keep = ~degenerate
 
-    w1_norm = wasserstein1(norm_true[keep], norm_pred[keep], bin_width=bin_width)
+    w1_norm = wasserstein1(norm_true[keep], norm_pred[keep])
     true_area = profile_true.sum(axis=1)
 
     out: dict[str, float] = {
@@ -151,9 +167,6 @@ def molecule_metrics(
         ),
         "profile/w1_norm_area_weighted": weighted_mean(w1_norm, true_area[keep]),
     }
-    w1_abs = wasserstein1(profile_true, profile_pred, bin_width=bin_width)
-    out["profile/w1_abs_mean"] = float(np.mean(w1_abs)) if len(w1_abs) else float("nan")
-    out.update(_prefixed("profile", regression_metrics(profile_true, profile_pred)))
 
     if area_true is not None and area_pred is not None:
         out.update(_prefixed("area", regression_metrics(area_true, area_pred)))

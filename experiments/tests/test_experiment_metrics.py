@@ -19,7 +19,6 @@ from sieve_experiments.metrics import (
 )
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-BIN_WIDTH = 0.001
 N_BINS = 51
 
 
@@ -30,24 +29,30 @@ def one_hot(index: int, n: int = N_BINS) -> np.ndarray:
 
 
 # --- wasserstein1 -----------------------------------------------------------
+#
+# Dimensionless (in units of bin-width, i.e. "how many bins apart"), not
+# scaled to the sigma grid's own physical unit: this project's grid is fixed
+# everywhere it matters, so that scaling was only ever a constant rescale,
+# never something that changed a relative comparison -- see
+# metrics.py's module docstring.
 
 
 def test_wasserstein1_two_point_masses_exact():
-    """W1 between two one-hot rows is exactly the bin distance times width.
+    """W1 between two one-hot rows is exactly the bin distance between them.
 
-    This is the test that pins the metric's units: a missing bin_width
-    factor, a transposed axis, or an accidental normalization all break it.
+    This is the test that pins the metric's units: a transposed axis or an
+    accidental normalization both break it.
     """
     y_true = np.stack([one_hot(5), one_hot(0)])
     y_pred = np.stack([one_hot(20), one_hot(10)])
-    w1 = wasserstein1(y_true, y_pred, bin_width=BIN_WIDTH)
-    np.testing.assert_allclose(w1, [15 * BIN_WIDTH, 10 * BIN_WIDTH])
+    w1 = wasserstein1(y_true, y_pred)
+    np.testing.assert_allclose(w1, [15, 10])
 
 
 def test_wasserstein1_self_is_zero():
     rng = np.random.default_rng(0)
     y = rng.random((4, N_BINS))
-    w1 = wasserstein1(y, y, bin_width=BIN_WIDTH)
+    w1 = wasserstein1(y, y)
     np.testing.assert_allclose(w1, 0.0, atol=1e-12)
 
 
@@ -55,28 +60,25 @@ def test_wasserstein1_symmetric():
     rng = np.random.default_rng(1)
     a = rng.random((6, N_BINS))
     b = rng.random((6, N_BINS))
-    np.testing.assert_allclose(
-        wasserstein1(a, b, bin_width=BIN_WIDTH),
-        wasserstein1(b, a, bin_width=BIN_WIDTH),
-    )
+    np.testing.assert_allclose(wasserstein1(a, b), wasserstein1(b, a))
 
 
 def test_wasserstein1_homogeneous():
     """W1(c*p, c*q) == c * W1(p, q) for the unnormalized form."""
     y_true = np.stack([one_hot(5)])
     y_pred = np.stack([one_hot(20)])
-    base = wasserstein1(y_true, y_pred, bin_width=BIN_WIDTH)
-    scaled = wasserstein1(3.0 * y_true, 3.0 * y_pred, bin_width=BIN_WIDTH)
+    base = wasserstein1(y_true, y_pred)
+    scaled = wasserstein1(3.0 * y_true, 3.0 * y_pred)
     np.testing.assert_allclose(scaled, 3.0 * base)
 
 
 def test_wasserstein1_shift_on_uniform_ladder():
     """Shifting a 3-point-mass distribution by 3 bins moves each unit mass
-    3 bins, so the total cost is 3 masses * 3 bins * bin_width."""
+    3 bins, so the total cost is 3 masses * 3 bins."""
     base = one_hot(10) + one_hot(11) + one_hot(12)
     shifted = one_hot(13) + one_hot(14) + one_hot(15)
-    w1 = wasserstein1(base[None, :], shifted[None, :], bin_width=BIN_WIDTH)
-    np.testing.assert_allclose(w1, [3 * 3 * BIN_WIDTH])
+    w1 = wasserstein1(base[None, :], shifted[None, :])
+    np.testing.assert_allclose(w1, [3 * 3])
 
 
 # --- normalize_rows -----------------------------------------------------
@@ -95,13 +97,11 @@ def test_normalize_rows_scale_invariance_of_w1():
     rng = np.random.default_rng(3)
     true = rng.random((4, N_BINS)) + 0.1
     pred = rng.random((4, N_BINS)) + 0.1
-    base = wasserstein1(normalize_rows(true), normalize_rows(pred), bin_width=BIN_WIDTH)
+    base = wasserstein1(normalize_rows(true), normalize_rows(pred))
 
     c = np.array([1.0, 2.5, 0.1, 10.0])[:, None]
     d = np.array([3.0, 0.5, 7.0, 1.0])[:, None]
-    scaled = wasserstein1(
-        normalize_rows(c * true), normalize_rows(d * pred), bin_width=BIN_WIDTH
-    )
+    scaled = wasserstein1(normalize_rows(c * true), normalize_rows(d * pred))
     np.testing.assert_allclose(scaled, base, rtol=1e-10)
 
 
@@ -170,13 +170,28 @@ def test_molecule_metrics_profile_only():
     rng = np.random.default_rng(5)
     true = rng.random((10, N_BINS)) + 0.1
     pred = true + rng.normal(scale=0.01, size=true.shape)
-    out = molecule_metrics(profile_true=true, profile_pred=pred, bin_width=BIN_WIDTH)
+    out = molecule_metrics(profile_true=true, profile_pred=pred)
     assert "profile/w1_norm_mean" in out
     assert "profile/w1_norm_area_weighted" in out
-    assert "profile/w1_abs_mean" in out
     assert not any(k.startswith("area/") for k in out)
     assert not any(k.startswith("charge/") for k in out)
     assert out["n_test"] == 10
+
+
+def test_molecule_metrics_drops_the_unnormalized_profile_block():
+    """w1_abs_mean/profile-mae/rmse/r2 (on unnormalized profiles) conflate
+    shape error with total-area error into one number and were only ever
+    kept for continuity with pre-harness scripts -- never the metric to
+    actually reason about a predictor by. w1_norm_* (normalized, pure
+    shape) is the only profile W1 this harness reports."""
+    rng = np.random.default_rng(5)
+    true = rng.random((10, N_BINS)) + 0.1
+    pred = true + rng.normal(scale=0.01, size=true.shape)
+    out = molecule_metrics(profile_true=true, profile_pred=pred)
+    assert "profile/w1_abs_mean" not in out
+    assert "profile/mae" not in out
+    assert "profile/rmse" not in out
+    assert "profile/r2" not in out
 
 
 def test_molecule_metrics_charge_has_no_r2():
@@ -186,7 +201,6 @@ def test_molecule_metrics_charge_has_no_r2():
     out = molecule_metrics(
         profile_true=true,
         profile_pred=pred,
-        bin_width=BIN_WIDTH,
         charge_true=np.array([0.0, 0.0, 1.0, -1.0, 0.0]),
         charge_pred=np.array([0.01, -0.02, 0.9, -1.1, 0.0]),
     )
@@ -205,7 +219,6 @@ def test_molecule_metrics_area_has_r2():
     out = molecule_metrics(
         profile_true=true,
         profile_pred=pred,
-        bin_width=BIN_WIDTH,
         area_true=area_true,
         area_pred=area_pred,
     )
@@ -216,7 +229,7 @@ def test_molecule_metrics_area_has_r2():
 def test_molecule_metrics_excludes_degenerate_rows_from_normalized_w1():
     true = np.stack([one_hot(5), np.zeros(N_BINS)])
     pred = np.stack([one_hot(5), one_hot(10)])
-    out = molecule_metrics(profile_true=true, profile_pred=pred, bin_width=BIN_WIDTH)
+    out = molecule_metrics(profile_true=true, profile_pred=pred)
     assert out["n_degenerate"] == 1
     # only the non-degenerate row (perfect match) contributes -> exactly 0
     assert out["profile/w1_norm_mean"] == pytest.approx(0.0, abs=1e-12)
@@ -229,10 +242,10 @@ def test_molecule_metrics_handles_an_empty_test_split_without_warning(recwarn):
     0-row arrays -- np.mean of an empty slice must not raise (pyproject.toml
     promotes RuntimeWarning to an error), and n_test must read 0."""
     empty = np.zeros((0, N_BINS))
-    out = molecule_metrics(profile_true=empty, profile_pred=empty, bin_width=BIN_WIDTH)
+    out = molecule_metrics(profile_true=empty, profile_pred=empty)
     assert not recwarn.list
     assert out["n_test"] == 0
-    assert np.isnan(out["profile/w1_abs_mean"])
+    assert np.isnan(out["profile/w1_norm_mean"])
 
 
 def test_charge_metrics_standalone_has_no_r2():

@@ -22,7 +22,6 @@ SUMMARY_COLUMNS = [
     "n_test",
     "profile/w1_norm_mean",
     "profile/w1_norm_area_weighted",
-    "profile/w1_abs_mean",
     "area/mae",
     "area/r2",
     "charge/mae",

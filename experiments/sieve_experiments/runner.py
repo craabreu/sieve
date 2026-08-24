@@ -201,7 +201,6 @@ def _compute_atom_metrics(
     return metrics_mod.molecule_metrics(
         profile_true=atom_profile_true,
         profile_pred=pred.atom_profile,
-        bin_width=test.grid.bin_width,
         area_true=atom_area_true if pred.atom_area is not None else None,
         area_pred=pred.atom_area,
         charge_true=atom_charge_true if pred.atom_charge is not None else None,
@@ -247,7 +246,6 @@ def _execute_inner(
     run_metrics = metrics_mod.molecule_metrics(
         profile_true=test.mol_profile,
         profile_pred=pred.mol_profile,
-        bin_width=test.grid.bin_width,
         area_true=area_true,
         area_pred=area_pred,
         charge_true=charge_true,

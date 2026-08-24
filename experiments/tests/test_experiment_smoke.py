@@ -124,7 +124,7 @@ def test_smoke_handles_an_empty_test_split(tmp_path):
         cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )
     assert result.metrics["n_test"] == 0
-    assert np.isnan(result.metrics["profile/w1_abs_mean"])
+    assert np.isnan(result.metrics["profile/w1_norm_mean"])
     manifest = json.loads((result.run_dir / "manifest.json").read_text())
     assert manifest["data"]["test_mean_num_atoms"] is None
 
