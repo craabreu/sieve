@@ -51,11 +51,15 @@ if _DASH_TREE_ROOT.exists() and str(_DASH_TREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASH_TREE_ROOT))
 
 
+VALID_LOCATION_MODES = ("sigma", "charge")
+
+
 @dataclass(frozen=True)
 class NodeStat:
     count: int
-    profile: NDArray[np.float64]
+    shape: NDArray[np.float64]
     area: float
+    location: float
     charge: float
     charge_std: float
 
@@ -64,6 +68,31 @@ class NodeStat:
 class BackoffStats:
     nodes: dict[PathKey, NodeStat]
     fallback: NodeStat
+    sigma_values: NDArray[np.float64]
+
+
+def _atom_location(charge: float, area: float) -> float:
+    """The sigma-centroid of an atom's own profile: Sigma(sigma*profile)/area,
+    computed as charge/area since ``load_atom_truth``'s (scheme-averaged)
+    atom_charge already *is* that integral exactly -- see
+    data.py::load_atom_truth and
+    experiments/tests/test_experiment_store.py::
+    test_load_atom_truth_charge_is_scheme_consistent_not_raw."""
+    return charge / area if area > 0 else 0.0
+
+
+def _shift(
+    values: NDArray[np.float64], sigma_values: NDArray[np.float64], delta: float
+) -> NDArray[np.float64]:
+    """``values`` (as a function of ``sigma_values``) shifted right by
+    ``delta``, via linear interpolation; zero outside the grid's range.
+
+    Used in both directions: a negative delta re-centers an atom's own
+    profile onto zero before it's averaged into a node's shape template (fit
+    time); a positive delta shifts the averaged template back out to a
+    predicted location (predict time).
+    """
+    return np.interp(sigma_values - delta, sigma_values, values, left=0.0, right=0.0)
 
 
 def fit_backoff(
@@ -73,12 +102,29 @@ def fit_backoff(
     atom_charge: NDArray[np.floating],
     *,
     minimum_support: int,
+    sigma_values: NDArray[np.floating],
 ) -> BackoffStats:
     """Accumulate count/mean per ``(branch_idx, node_id)`` over every node on
     every atom's path (not just the leaf), pruning nodes with fewer than
     ``minimum_support`` supporting atoms. ``fallback`` is the unconditional
     mean over all training atoms -- always available, used when an atom's
-    path retains no node at all (a fresh branch, or every node pruned)."""
+    path retains no node at all (a fresh branch, or every node pruned).
+
+    Decomposes each atom into shape/location/magnitude before averaging,
+    rather than bin-wise-averaging raw unnormalized profiles directly:
+    atoms sharing a tree node rarely sit at exactly the same sigma-centroid
+    ("location"), and averaging their raw profiles as-is smears/widens the
+    result by however much those locations spread (measured ~5-35% width
+    inflation on real chaos-store tree-node groups). Instead, each atom's
+    own profile is shifted so its own centroid sits at zero and divided by
+    its own area (a "shape" -- location- and scale-invariant), *then*
+    averaged; ``NodeStat.location``/``.charge``/``.area`` are the plain
+    means of each atom's own (location, charge, area), aggregated
+    separately. ``predict_backoff`` reconstructs a prediction by shifting
+    the averaged shape back out to a predicted location and scaling by a
+    predicted area -- see its docstring for the sigma-vs-charge location
+    choice.
+    """
     n = len(paths)
     if not (len(atom_profile) == len(atom_area) == len(atom_charge) == n):
         raise ValueError(
@@ -88,26 +134,45 @@ def fit_backoff(
     atom_profile = np.asarray(atom_profile, dtype=np.float64)
     atom_area = np.asarray(atom_area, dtype=np.float64)
     atom_charge = np.asarray(atom_charge, dtype=np.float64)
+    sigma_values = np.asarray(sigma_values, dtype=np.float64)
+    if atom_profile.shape[1] != len(sigma_values):
+        raise ValueError(
+            f"atom_profile has {atom_profile.shape[1]} bins but sigma_values "
+            f"has {len(sigma_values)}"
+        )
 
-    profile_sum: dict[PathKey, NDArray[np.float64]] = {}
+    locations = np.array(
+        [_atom_location(c, a) for c, a in zip(atom_charge, atom_area, strict=True)]
+    )
+    shapes = np.stack(
+        [
+            _shift(p, sigma_values, -loc) / a if a > 0 else np.zeros_like(p)
+            for p, a, loc in zip(atom_profile, atom_area, locations, strict=True)
+        ]
+    )
+
+    shape_sum: dict[PathKey, NDArray[np.float64]] = {}
     area_sum: dict[PathKey, float] = {}
+    location_sum: dict[PathKey, float] = {}
     charge_sum: dict[PathKey, float] = {}
     charge_sq_sum: dict[PathKey, float] = {}
     count: dict[PathKey, int] = {}
 
-    for path, profile, area, charge in zip(
-        paths, atom_profile, atom_area, atom_charge, strict=True
+    for path, shape, area, loc, charge in zip(
+        paths, shapes, atom_area, locations, atom_charge, strict=True
     ):
         for key in path:
             if key not in count:
                 count[key] = 0
-                profile_sum[key] = np.zeros_like(profile)
+                shape_sum[key] = np.zeros_like(shape)
                 area_sum[key] = 0.0
+                location_sum[key] = 0.0
                 charge_sum[key] = 0.0
                 charge_sq_sum[key] = 0.0
             count[key] += 1
-            profile_sum[key] += profile
+            shape_sum[key] += shape
             area_sum[key] += area
+            location_sum[key] += loc
             charge_sum[key] += charge
             charge_sq_sum[key] += charge * charge
 
@@ -119,28 +184,54 @@ def fit_backoff(
         variance = max(charge_sq_sum[key] / c - mean_charge * mean_charge, 0.0)
         nodes[key] = NodeStat(
             count=c,
-            profile=profile_sum[key] / c,
+            shape=shape_sum[key] / c,
             area=area_sum[key] / c,
+            location=location_sum[key] / c,
             charge=mean_charge,
             charge_std=max(np.sqrt(variance), 1e-6),
         )
 
-    global_mean_charge = float(np.mean(atom_charge))
     fallback = NodeStat(
         count=n,
-        profile=atom_profile.mean(axis=0),
+        shape=shapes.mean(axis=0),
         area=float(np.mean(atom_area)),
-        charge=global_mean_charge,
+        location=float(np.mean(locations)),
+        charge=float(np.mean(atom_charge)),
         charge_std=max(float(np.std(atom_charge)), 1e-6),
     )
-    return BackoffStats(nodes=nodes, fallback=fallback)
+    return BackoffStats(nodes=nodes, fallback=fallback, sigma_values=sigma_values)
 
 
-def predict_backoff(paths: list[NodePath], stats: BackoffStats) -> AtomPrediction:
+def predict_backoff(
+    paths: list[NodePath], stats: BackoffStats, *, location_mode: str = "charge"
+) -> AtomPrediction:
     """Walk each atom's path deepest -> shallowest, use the first retained
-    node's stats, else ``stats.fallback``."""
+    node's stats, else ``stats.fallback``; reconstruct a profile by shifting
+    that node's shape template out to a predicted location and scaling by
+    its predicted area.
+
+    ``location_mode`` picks how the scalar location is obtained from the
+    chosen ``NodeStat`` (both keep ``area`` as the plain mean of atom
+    areas):
+
+    - ``"charge"`` (default): ``location = charge / area``, both means of
+      the *same* additive quantities charge reconciliation already relies
+      on (``roll_up``/``reconcile_charge``) -- the natural way to combine
+      an intensive quantity (sigma is a density) across a heterogeneous
+      population is total/total, not an average of ratios.
+    - ``"sigma"``: ``location`` is the plain mean of each atom's own
+      sigma-centroid, computed independently of area. Differs from
+      ``"charge"`` whenever areas and locations both vary within a node
+      (mean(charge)/mean(area) != mean(charge/area) in general) -- see
+      test_location_mode_charge_vs_sigma_diverge_on_heterogeneous_areas.
+    """
+    if location_mode not in VALID_LOCATION_MODES:
+        raise ValueError(
+            f"location_mode must be one of {VALID_LOCATION_MODES}, "
+            f"got {location_mode!r}"
+        )
     n = len(paths)
-    profile_dim = stats.fallback.profile.shape[0]
+    profile_dim = stats.fallback.shape.shape[0]
     atom_profile = np.empty((n, profile_dim), dtype=np.float64)
     atom_area = np.empty(n, dtype=np.float64)
     atom_charge = np.empty(n, dtype=np.float64)
@@ -152,9 +243,18 @@ def predict_backoff(paths: list[NodePath], stats: BackoffStats) -> AtomPredictio
             if key in stats.nodes:
                 chosen = stats.nodes[key]
                 break
-        atom_profile[i] = chosen.profile
-        atom_area[i] = chosen.area
-        atom_charge[i] = chosen.charge
+
+        area = chosen.area
+        if location_mode == "charge":
+            location = chosen.charge / area if area > 0 else 0.0
+            charge = chosen.charge
+        else:  # "sigma"
+            location = chosen.location
+            charge = location * area
+
+        atom_profile[i] = area * _shift(chosen.shape, stats.sigma_values, location)
+        atom_area[i] = area
+        atom_charge[i] = charge
         atom_charge_std[i] = chosen.charge_std
 
     return AtomPrediction(
@@ -286,6 +386,10 @@ class DASHBackoffPredictor(AtomPredictor):
     ``fit_atoms``/``predict_atoms`` call. The runner copies them into the run
     manifest, so how much of a split fell back to the global mean is always
     on the record -- see ``_atom_paths`` for the two failure modes.
+
+    ``location_mode`` picks how ``predict_backoff`` derives a predicted
+    atom's sigma-location -- ``"charge"`` (default) or ``"sigma"``. See
+    ``predict_backoff``'s docstring.
     """
 
     name = "dash_backoff"
@@ -299,6 +403,7 @@ class DASHBackoffPredictor(AtomPredictor):
         attention_threshold: float = 10,
         minimum_support: int = 5,
         charge_reconciliation: str = "std_weighted",
+        location_mode: str = "charge",
         stores_root: str | None = None,
         tree_folder_path: str | None = None,
         preload: bool = True,
@@ -309,6 +414,7 @@ class DASHBackoffPredictor(AtomPredictor):
         self.attention_threshold = attention_threshold
         self.minimum_support = minimum_support
         self.charge_reconciliation = charge_reconciliation
+        self.location_mode = location_mode
         self.stores_root = stores_root
         self.tree_folder_path = tree_folder_path
         self.preload = preload
@@ -368,13 +474,14 @@ class DASHBackoffPredictor(AtomPredictor):
             atom_area,
             atom_charge,
             minimum_support=self.minimum_support,
+            sigma_values=train.grid.values,
         )
 
     def predict_atoms(self, test: MoleculeSet) -> AtomPrediction:
         if self._stats is None:
             raise RuntimeError("fit_atoms must be called before predict_atoms")
         paths = self._paths_for(test, split="test")
-        return predict_backoff(paths, self._stats)
+        return predict_backoff(paths, self._stats, location_mode=self.location_mode)
 
 
 def _build(params: Mapping[str, Any]) -> DASHBackoffPredictor:

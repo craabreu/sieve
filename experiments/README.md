@@ -52,11 +52,33 @@ and the real pinned DASH-tree clone
 
 - `fit_backoff`/`predict_backoff` — pure numpy over pre-computed
   `(branch_idx, node_id)` tree paths, no optional deps, fast-suite tested
-  (`experiments/tests/test_experiment_predictor_dash.py`). Walk training atoms to their
-  paths, accumulate count/mean per node (prune below `minimum_support`), then
-  at predict time walk the path deepest→shallowest and take the first
-  retained node, else the unconditional global mean. Sieve's own back-off
-  algorithm, applied to DASH's published tree shape.
+  (`experiments/tests/test_experiment_predictor_dash.py`). Walk training
+  atoms to their paths and accumulate per node (prune below
+  `minimum_support`), then at predict time walk the path deepest→shallowest,
+  take the first retained node (else the unconditional global mean), and
+  reconstruct a profile from it. Sieve's own back-off algorithm, applied to
+  DASH's published tree shape.
+
+  Each atom is decomposed into **shape** (its profile, shifted so its own
+  sigma-centroid sits at zero and divided by its own area — location- and
+  scale-invariant) / **location** (that sigma-centroid) / **magnitude**
+  (area) *before* averaging within a node, not averaged as raw unnormalized
+  vectors — atoms sharing a tree node rarely sit at the same sigma-centroid,
+  and bin-wise-averaging their raw profiles smears/widens the result by
+  however much those locations spread (measured 5–35% width inflation on
+  real chaos-store tree-node groups). `predict_backoff` reconstructs a
+  prediction by shifting the averaged shape template back out to a
+  predicted location and scaling by a predicted area.
+
+  `location_mode` (predictor param, default `"charge"`) picks how that
+  scalar location comes out of a node's stats: `"charge"` divides the mean
+  charge by the mean area (the natural way to combine an intensive quantity
+  across a heterogeneous population — total/total, using the same additive
+  charge the reconciliation machinery already relies on); `"sigma"` instead
+  averages each atom's own sigma-centroid directly. The two differ whenever
+  areas and locations both vary within a node (mean(charge)/mean(area) ≠
+  mean(charge/area) in general) — kept as a config option rather than
+  picking one, since it's a genuine, undecided modeling choice.
 - `DASHBackoffPredictor` — wires that onto real atoms: RDKit for the
   atom-index mapping (`src/sieve/io/cosmolayer_adapter.py`'s
   atom-mapped-SMILES convention, reused verbatim) and
@@ -67,10 +89,11 @@ and the real pinned DASH-tree clone
   (`data.load_atom_truth`; `load_molecule_set` never populates it).
 
 A real CLI run (`--config configs/dash-biased.yaml --limit 300`) beats the
-`global_mean` floor on the same slice: `profile/w1_norm_mean` 0.00055 vs.
-0.00079, `area/r2` 0.96 vs. 0.69. `fit_s` ≈11s at this size, ~10s of which
-is the one-time DASHTree preload; `predict_s` is 0.05s. Re-check with
-`--limit` timing probes before committing to a full run (design.md risk #1).
+`global_mean` floor on the same slice: `profile/w1_norm_mean` 0.00054
+(`location_mode="charge"`, the default) vs. 0.00079, `area/r2` 0.96 vs. 0.69.
+`fit_s` ≈11s at this size, ~10s of which is the one-time DASHTree preload;
+`predict_s` is 0.05s. Re-check with `--limit` timing probes before
+committing to a full run (design.md risk #1).
 
 **Coverage caveat — read before quoting any DASH number.** DASH cannot match
 every chaos-store atom: `init_neighbor_dict` rejects atoms whose feature
