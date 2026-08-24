@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from sieve_experiments.data import DEFAULT_GRID, MoleculeSet, molecule_sum
 
 from tests.helpers import synthetic_molecule_set
@@ -123,3 +124,83 @@ def test_synthetic_molecule_set_reproducible_with_seed():
     b = synthetic_molecule_set(n_mol=6, seed=0)
     np.testing.assert_array_equal(a.num_atoms, b.num_atoms)
     np.testing.assert_allclose(a.atom_profile, b.atom_profile)
+
+
+# --- select_atoms_by_smiles -----------------------------------------------
+#
+# The join DASH (and later Sieve) uses to recover atom-level truth for a
+# split: load_molecule_set never populates atom_* (design.md), so a predictor
+# that needs it loads the full store's atom truth itself and joins back onto
+# its train/test MoleculeSet by SMILES -- never by position, same idiom the
+# design doc calls for on COSMO-NET's output join (risk #4).
+
+
+def _full_store():
+    full_smiles = ["A", "B", "C", "D"]
+    full_num_atoms = np.array([2, 1, 3, 2])
+    # atom arrays laid out in full-store order, values chosen so each atom's
+    # value is easy to trace back to its (molecule, position).
+    atom_profile = np.arange(8, dtype=np.float64)[:, None]
+    atom_area = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0])
+    arrays = {"atom_profile": atom_profile, "atom_area": atom_area}
+    return full_smiles, full_num_atoms, arrays
+
+
+def test_select_atoms_by_smiles_reorders_and_subsets():
+    from sieve_experiments.data import select_atoms_by_smiles
+
+    full_smiles, full_num_atoms, arrays = _full_store()
+    # wanted order: C then A (subset, reversed relative to store order)
+    out = select_atoms_by_smiles(
+        full_smiles,
+        full_num_atoms,
+        arrays,
+        wanted_smiles=["C", "A"],
+        wanted_num_atoms=np.array([3, 2]),
+    )
+    # C's atoms are 40,50,60 (offset 3:6); A's are 10,20 (offset 0:2)
+    np.testing.assert_allclose(out["atom_area"], [40.0, 50.0, 60.0, 10.0, 20.0])
+
+
+def test_select_atoms_by_smiles_rejects_atom_count_mismatch():
+    from sieve_experiments.data import select_atoms_by_smiles
+
+    full_smiles, full_num_atoms, arrays = _full_store()
+    with pytest.raises(ValueError, match="atom count"):
+        select_atoms_by_smiles(
+            full_smiles,
+            full_num_atoms,
+            arrays,
+            wanted_smiles=["A"],
+            wanted_num_atoms=np.array([99]),
+        )
+
+
+def test_select_atoms_by_smiles_rejects_unknown_smiles():
+    from sieve_experiments.data import select_atoms_by_smiles
+
+    full_smiles, full_num_atoms, arrays = _full_store()
+    with pytest.raises(KeyError, match="not found"):
+        select_atoms_by_smiles(
+            full_smiles,
+            full_num_atoms,
+            arrays,
+            wanted_smiles=["Z"],
+            wanted_num_atoms=np.array([1]),
+        )
+
+
+def test_select_atoms_by_smiles_rejects_duplicate_smiles_in_store():
+    from sieve_experiments.data import select_atoms_by_smiles
+
+    full_smiles = ["A", "A"]
+    full_num_atoms = np.array([1, 1])
+    arrays = {"atom_area": np.array([1.0, 2.0])}
+    with pytest.raises(ValueError, match="duplicate"):
+        select_atoms_by_smiles(
+            full_smiles,
+            full_num_atoms,
+            arrays,
+            wanted_smiles=["A"],
+            wanted_num_atoms=np.array([1]),
+        )

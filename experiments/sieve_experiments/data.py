@@ -137,6 +137,50 @@ class MoleculeSet:
         )
 
 
+def select_atoms_by_smiles(
+    full_smiles: list[str],
+    full_num_atoms: NDArray[np.int64],
+    atom_arrays: dict[str, NDArray],
+    *,
+    wanted_smiles: list[str],
+    wanted_num_atoms: NDArray[np.int64],
+) -> dict[str, NDArray]:
+    """Join per-atom arrays (laid out in full-store order) onto a wanted
+    molecule order/subset, by SMILES -- never by position.
+
+    ``load_molecule_set`` never populates ``MoleculeSet.atom_*`` (atom-level
+    truth is deliberately not cached, per data.py's module docstring), so a
+    predictor that needs it (DASH, later Sieve) loads the full store's atom
+    truth itself and re-aligns it onto its own train/test split this way --
+    the same "join by SMILES, not by position" idiom the design doc calls
+    for on COSMO-NET's output (design.md risk #4).
+    """
+    index_by_smiles: dict[str, int] = {}
+    for i, smi in enumerate(full_smiles):
+        if smi in index_by_smiles:
+            raise ValueError(
+                f"duplicate SMILES in store, cannot join safely: {smi[:60]}"
+            )
+        index_by_smiles[smi] = i
+
+    offsets = np.concatenate([[0], np.cumsum(full_num_atoms)])
+    out_parts: dict[str, list[NDArray]] = {k: [] for k in atom_arrays}
+    for smi, n in zip(wanted_smiles, wanted_num_atoms, strict=True):
+        if smi not in index_by_smiles:
+            raise KeyError(f"SMILES not found in store: {smi[:60]}")
+        i = index_by_smiles[smi]
+        if full_num_atoms[i] != n:
+            raise ValueError(
+                f"atom count mismatch for {smi[:60]}: store has "
+                f"{full_num_atoms[i]}, expected {n}"
+            )
+        start, end = offsets[i], offsets[i + 1]
+        for k, arr in atom_arrays.items():
+            out_parts[k].append(arr[start:end])
+
+    return {k: np.concatenate(parts, axis=0) for k, parts in out_parts.items()}
+
+
 def _cache_key(store_dir: Path, scheme: str) -> str:
     import cosmolayer
 
@@ -233,3 +277,52 @@ def load_molecule_set(
     )
     masks = {name: (df[split_column] == name).to_numpy() for name in splits}
     return mset, masks
+
+
+def load_atom_truth(
+    store_name: str,
+    *,
+    scheme: str,
+    smiles: list[str],
+    num_atoms: NDArray[np.int64],
+    stores_root: Path = DEFAULT_STORES_ROOT,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Atom-level truth (profile, area, charge) for exactly the molecules in
+    ``smiles``/``num_atoms`` (typically a ``MoleculeSet.select()`` split),
+    aligned to that order.
+
+    Deliberately not cached (~400 MB full-store; see design.md's Data
+    section) -- recomputed from the store every call. This is what an
+    ``AtomPredictor`` (DASH, later Sieve) calls itself in ``fit_atoms`` /
+    ``predict_atoms`` when it needs atom-level truth, since
+    ``load_molecule_set`` never populates it.
+    """
+    from cosmolayer.store import SegmentStore
+
+    store = SegmentStore.load(stores_root / store_name)
+    df = store.molecules_df
+    full_num_atoms = df.num_atoms.to_numpy()
+
+    atom_table = store.compute_atom_sigma_profiles(scheme=scheme)
+    atom_area = np.asarray(atom_table.areas, dtype=np.float64)
+    atom_profile = (
+        np.asarray(atom_table.profiles, dtype=np.float64) * atom_area[:, None]
+    )
+
+    ai = np.asarray(store.atom_indices)
+    n_nodes = int(np.max(ai)) + 1
+    atom_charge = np.bincount(ai, weights=np.asarray(store.charges), minlength=n_nodes)
+
+    full_atom_arrays = {
+        "atom_profile": atom_profile,
+        "atom_area": atom_area,
+        "atom_charge": atom_charge,
+    }
+    selected = select_atoms_by_smiles(
+        list(df.smiles),
+        full_num_atoms,
+        full_atom_arrays,
+        wanted_smiles=smiles,
+        wanted_num_atoms=num_atoms,
+    )
+    return selected["atom_profile"], selected["atom_area"], selected["atom_charge"]

@@ -28,6 +28,39 @@ and install "serenityff" into this project's venv/lockfile on every `uv
 sync`/`uv lock`/`uv run`. Fixed via `[tool.uv.workspace] exclude =
 ["experiments/external/*"]` in the root pyproject.toml. If that exclusion
 is ever removed, this problem comes back immediately.
+
+GOTCHA 1 (hit and fixed 2026-08-24): at this pinned commit,
+`DASHTree(preload=False)` (the on-demand-load mode originally planned, since
+it needs no network access) raises `KeyError` on every hydrogen atom:
+`_get_init_layer`'s H special-case needs `self.tree_storage[branch_idx]` for
+the H-connected heavy atom's own branch before `match_new_atom`'s own
+lazy-load runs. Since chaos-store SMILES carry explicit hydrogens
+(cosmolayer_adapter's `removeHs=False` convention), this would fall back
+every H atom to the global mean. Fixed by defaulting
+`DASHBackoffPredictor(preload=True)` (~10s, ~300MB into memory once, still
+no network -- the data ships in the clone).
+
+GOTCHA 2 (measured 2026-08-24, NOT fixable on our side): even with
+preload=True, ~5% of chaos-store atoms cannot be matched -- but the cause is
+NOT gotcha 1. `init_neighbor_dict` raises `KeyError` on any atom whose
+feature tuple is outside DASH's published vocabulary (e.g. `(5, 3, 0, False,
+3)` = 3-connected boron; Si, Ge, Sb and Te also appear in chaos-store). It
+runs over the WHOLE molecule, so one such atom takes every atom in that
+molecule down with it -- which is why ordinary H and C dominate the raw
+failure counts. Measured on the first 300 chaos-store molecules: 554/11000
+atoms, from 13/300 molecules rejected outright. predictors/dash.py counts
+these (per split, into the run manifest's `match_stats` and a WARNING) so a
+run always records how much of a split fell back to the global mean rather
+than being genuinely matched -- this is a baseline-fairness matter, not just
+tidiness.
+
+GOTCHA 3 (perf, fixed 2026-08-24): `match_new_atom` rebuilds the entire
+molecule's neighbor dict on every call unless one is passed via its
+`neighbor_dict=` kwarg -- i.e. O(n_atoms^2) work per molecule. DASH's own
+`_get_allAtoms_nodePaths` hoists it per molecule; predictors/dash.py's
+`_atom_paths` now does the same, measured 8.5x faster on chaos-store with
+bit-identical metrics. This is design.md risk #1's main lever; re-check it
+with a `--limit` timing probe before committing to a full-store run.
 """
 
 [cosmonet]

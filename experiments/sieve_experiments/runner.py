@@ -249,7 +249,9 @@ def _execute_inner(
             "val_mean_num_atoms": float(np.mean(val.num_atoms))
             if val.n_molecules
             else None,
-            "test_mean_num_atoms": float(np.mean(test.num_atoms)),
+            "test_mean_num_atoms": float(np.mean(test.num_atoms))
+            if test.n_molecules
+            else None,
             "grid": {
                 "max_abs_sigma": test.grid.max_abs_sigma,
                 "num_points": test.grid.num_points,
@@ -258,6 +260,15 @@ def _execute_inner(
         },
         "config": to_dict(cfg),
     }
+
+    # Optional, duck-typed: a predictor that can only partially cover a split
+    # (DASH cannot match atoms outside its published feature vocabulary, and
+    # falls back to a global mean for those) reports the counts here, so how
+    # much of a split the model actually covered is always on the record and
+    # never has to be inferred from the metrics.
+    match_stats = getattr(predictor, "match_stats", None)
+    if match_stats:
+        manifest["match_stats"] = match_stats
 
     (run_dir / "config.resolved.yaml").write_text(yaml.safe_dump(to_dict(cfg)))
     (run_dir / "metrics.json").write_text(
@@ -287,6 +298,9 @@ def _write_plots(
         return  # nothing to plot without ground truth; execute() already
         # rejects this case before calling us, this is just for the type
         # checker's benefit.
+    if test.n_molecules == 0:
+        return  # nothing to plot on an empty eval split (e.g. a small
+        # --limit run whose split happens to land entirely in train)
     try:
         plots.parity_hexbin(
             test.mol_profile,

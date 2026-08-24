@@ -222,7 +222,26 @@ def test_molecule_metrics_excludes_degenerate_rows_from_normalized_w1():
     assert out["profile/w1_norm_mean"] == pytest.approx(0.0, abs=1e-12)
 
 
+def test_molecule_metrics_handles_an_empty_test_split_without_warning(recwarn):
+    """A tiny --limit run can land zero molecules in the eval split (e.g. the
+    real chaos-store's biased_split with --limit 50: every one of the first
+    50 rows falls in train). ``profile_true``/``profile_pred`` are then
+    0-row arrays -- np.mean of an empty slice must not raise (pyproject.toml
+    promotes RuntimeWarning to an error), and n_test must read 0."""
+    empty = np.zeros((0, N_BINS))
+    out = molecule_metrics(profile_true=empty, profile_pred=empty, bin_width=BIN_WIDTH)
+    assert not recwarn.list
+    assert out["n_test"] == 0
+    assert np.isnan(out["profile/w1_abs_mean"])
+
+
 def test_charge_metrics_standalone_has_no_r2():
     out = charge_metrics(np.array([0.0, 1.0]), np.array([0.1, 0.9]))
     assert "r2" not in out
     assert "max_abs_residual" in out
+
+
+def test_charge_metrics_empty_input_is_nan_not_an_error():
+    out = charge_metrics(np.zeros(0), np.zeros(0))
+    assert np.isnan(out["max_abs_residual"])
+    assert np.isnan(out["mae"])

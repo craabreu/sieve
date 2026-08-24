@@ -15,6 +15,11 @@ data:
 predictor:
   name: dash_backoff
   params:
+    # store/scheme duplicate data.* above -- DASHBackoffPredictor loads
+    # atom-level truth itself (load_molecule_set never populates it; see
+    # data.py's module docstring), so it needs its own store/scheme handle.
+    store: chaos-store
+    scheme: cosmo-sac-2010
     max_depth: 16
     attention_threshold: 10
     minimum_support: 5

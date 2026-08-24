@@ -64,9 +64,20 @@ def weighted_mean(values: NDArray[np.floating], weights: NDArray[np.floating]) -
 def regression_metrics(
     y_true: NDArray[np.floating], y_pred: NDArray[np.floating], *, with_r2: bool = True
 ) -> dict[str, float]:
-    """MAE/RMSE (and, unless with_r2=False, R²) flattened over all elements."""
+    """MAE/RMSE (and, unless with_r2=False, R²) flattened over all elements.
+
+    NaN for every key on empty input (e.g. a --limit run whose eval split
+    happens to be empty) rather than a RuntimeWarning-turned-error from
+    averaging zero elements -- pyproject.toml promotes RuntimeWarning to an
+    error, so a bare np.mean(empty) would fail the run, not just look odd.
+    """
     y_true = np.asarray(y_true, dtype=np.float64).ravel()
     y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
+    if y_true.size == 0:
+        out = {"mae": float("nan"), "rmse": float("nan")}
+        if with_r2:
+            out["r2"] = float("nan")
+        return out
     err = y_pred - y_true
     out = {
         "mae": float(np.mean(np.abs(err))),
@@ -87,9 +98,8 @@ def charge_metrics(
     near-zero and R² is either NaN or amplified noise, not a useful number.
     """
     out = regression_metrics(charge_true, charge_pred, with_r2=False)
-    out["max_abs_residual"] = float(
-        np.max(np.abs(np.asarray(charge_pred) - np.asarray(charge_true)))
-    )
+    residual = np.abs(np.asarray(charge_pred) - np.asarray(charge_true))
+    out["max_abs_residual"] = float(np.max(residual)) if residual.size else float("nan")
     return out
 
 
@@ -141,7 +151,7 @@ def molecule_metrics(
         "profile/w1_norm_area_weighted": weighted_mean(w1_norm, true_area[keep]),
     }
     w1_abs = wasserstein1(profile_true, profile_pred, bin_width=bin_width)
-    out["profile/w1_abs_mean"] = float(np.mean(w1_abs))
+    out["profile/w1_abs_mean"] = float(np.mean(w1_abs)) if len(w1_abs) else float("nan")
     out.update(_prefixed("profile", regression_metrics(profile_true, profile_pred)))
 
     if area_true is not None and area_pred is not None:

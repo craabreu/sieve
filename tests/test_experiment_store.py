@@ -164,10 +164,64 @@ def test_limit_matches_full_load_on_the_first_n_molecules():
     np.testing.assert_allclose(limited.mol_area, full.mol_area[:10])
 
 
+def test_load_atom_truth_rolls_up_to_the_same_molecule_profile(loaded):
+    """load_atom_truth (used by DASH's fit_atoms) is a completely separate
+    code path from load_molecule_set -- check the two agree via the atom ->
+    molecule rollup, not against themselves."""
+    from sieve_experiments.data import load_atom_truth, molecule_sum
+
+    mset, _ = loaded
+    atom_profile, atom_area, atom_charge = load_atom_truth(
+        STORE_NAME,
+        scheme="cosmo-sac-2010",
+        smiles=mset.smiles,
+        num_atoms=mset.num_atoms,
+        stores_root=STORES_ROOT,
+    )
+    mol_id = mset.atom_mol_id
+    assert mset.mol_profile is not None
+    assert mset.mol_area is not None
+    np.testing.assert_allclose(
+        molecule_sum(atom_profile, mol_id, mset.n_molecules),
+        mset.mol_profile,
+        rtol=1e-4,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        molecule_sum(atom_area, mol_id, mset.n_molecules),
+        mset.mol_area,
+        rtol=1e-4,
+        atol=1e-6,
+    )
+    assert atom_charge.shape == (mset.n_atoms,)
+
+
+def test_load_atom_truth_rejects_a_smiles_not_in_the_store(loaded):
+    from sieve_experiments.data import load_atom_truth
+
+    mset, _ = loaded
+    with pytest.raises(KeyError, match="not found"):
+        load_atom_truth(
+            STORE_NAME,
+            scheme="cosmo-sac-2010",
+            smiles=[*mset.smiles[:3], "not-a-real-smiles"],
+            num_atoms=np.concatenate([mset.num_atoms[:3], [1]]),
+            stores_root=STORES_ROOT,
+        )
+
+
 def test_end_to_end_run_on_real_store_limit_50(tmp_path):
-    """A real (small, --limit 50) run of the global_mean floor predictor
-    against the real store, through the same execute() path a real
-    experiment uses -- not a synthetic fixture."""
+    """A real, small (--limit LIMIT, i.e. 200) run of the global_mean floor
+    predictor against the real store, through the same execute() path a real
+    experiment uses -- not a synthetic fixture.
+
+    Named "_limit_50" for history; the limit itself is LIMIT (200), not 50:
+    biased_split's train fraction is 80%, and on this store the first 50
+    rows (in store order) land entirely in train -- an empty val/test would
+    make ``np.isfinite(w1_norm_mean)`` below false by construction, not a
+    real check. LIMIT=200 (already used by the ``loaded`` fixture above) is
+    the smallest round number confirmed to give a non-empty val and test.
+    """
     from sieve_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
     from sieve_experiments.data import load_molecule_set
     from sieve_experiments.runner import execute
@@ -183,9 +237,10 @@ def test_end_to_end_run_on_real_store_limit_50(tmp_path):
         STORE_NAME,
         scheme=cfg.data.scheme,
         split_column=cfg.data.split_column,
-        limit=50,
+        limit=LIMIT,
         stores_root=STORES_ROOT,
     )
+    assert masks["val"].sum() > 0 and masks["test"].sum() > 0  # guard the premise
     result = execute(
         cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )

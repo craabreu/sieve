@@ -108,6 +108,26 @@ def test_smoke_rejects_dirty_tree_by_default(tmp_path, monkeypatch):
         execute(cfg, mset, masks, runs_root=tmp_path, allow_dirty=False, tracking=None)
 
 
+def test_smoke_handles_an_empty_test_split(tmp_path):
+    """A tiny --limit run can land zero molecules in the eval split (e.g. the
+    real chaos-store's biased_split with --limit 50, where the first 50
+    rows are all train). This must not crash -- pyproject.toml promotes
+    RuntimeWarning to an error, so an unguarded np.mean(empty) would."""
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    all_train = np.ones(10, dtype=bool)
+    none = np.zeros(10, dtype=bool)
+    masks = {"train": all_train, "val": none, "test": none}
+    cfg = _tiny_cfg()
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert result.metrics["n_test"] == 0
+    assert np.isnan(result.metrics["profile/w1_abs_mean"])
+    manifest = json.loads((result.run_dir / "manifest.json").read_text())
+    assert manifest["data"]["test_mean_num_atoms"] is None
+
+
 def test_smoke_metrics_json_matches_returned_metrics(tmp_path):
     mset = synthetic_molecule_set(n_mol=15, seed=2)
     masks = _synthetic_masks(15, seed=3)

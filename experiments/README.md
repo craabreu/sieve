@@ -5,73 +5,118 @@ COSMO-NET) on the chaos-store sigma-profile prediction task, evaluated on
 Sieve's own `biased_split` extrapolation split. Design doc:
 `docs/superpowers/specs/2026-08-24-baseline-experiment-harness-design.md`.
 
-## Status (2026-08-24) — read this before continuing the work
+## Status (2026-08-24, updated) — read this before continuing the work
 
-**Done and verified (T0–T7 of the design doc's task table):**
+**Done and verified (T0–T8 of the design doc's task table):**
 
-- `sieve_experiments/metrics.py` — Wasserstein-1 + regression metrics, 18 unit
-  tests with hand-computed expected values.
+- `sieve_experiments/metrics.py` — Wasserstein-1 + regression metrics, hand-
+  computed expected values, including empty-eval-split edge cases (a tiny
+  `--limit` run can land zero molecules in val/test; every mean/max here is
+  now guarded rather than raising, since `pyproject.toml` promotes
+  `RuntimeWarning` to an error).
 - `sieve_experiments/config.py` — YAML config, rejects unknown keys, 5 tracked
   configs in `configs/`.
 - `sieve_experiments/data.py` — `MoleculeSet`, `molecule_sum`, `select`,
-  `load_molecule_set` (real-store loader with a molecule-truth cache).
+  `load_molecule_set` (real-store loader with a molecule-truth cache),
+  `select_atoms_by_smiles` + `load_atom_truth` (atom-level truth for a split,
+  joined back onto it by SMILES — never by position — since
+  `load_molecule_set` never populates `MoleculeSet.atom_*`; see the module
+  docstring).
 - `sieve_experiments/predictors/base.py` — the `Predictor` seam
   (`AtomPredictor`/`MoleculePredictor`), charge reconciliation, `roll_up`.
   `predictors/global_mean.py` is the floor predictor and the smoke-test
-  fixture.
+  fixture. `predictors/dash.py` is DASH Stage A (below).
 - `sieve_experiments/runner.py`, `cli.py`, `plots.py`, `__main__.py` — the
   full pipeline: `python -m sieve_experiments run --config <path>` writes a
   run directory (`config.resolved.yaml`, `metrics.json`, `manifest.json`,
   `predictions.npz`, `plots/`, `stdout.log`) and optionally logs to a local
   MLflow store. Verified end-to-end against the **real** local chaos-store
   (not just synthetic data): `global_mean` on `biased_split` correctly shows
-  `test_mean_num_atoms (50.9) > val (40.0) > train (31.0)` in its manifest —
-  proof the extrapolation split works as intended.
-- `sieve_experiments/prepare_store.py` — idempotent; verified against the
-  already-prepared local `stores/chaos-store/`.
-- 183 fast tests passing (`uv run pytest -q`, no optional deps needed) + 8
-  optional-data tests passing against the real store (need `cosmolayer` +
-  `stores/chaos-store/` present — see "Running against real data" below).
+  `test_mean_num_atoms > val > train` in its manifest — proof the
+  extrapolation split works as intended.
+- `sieve_experiments/prepare_store.py` — idempotent; verified against a fresh
+  download (Zenodo record 22050672 now resolves — see "Known external gap"
+  below, updated). Verifies both Zenodo's published md5 and a
+  trust-on-first-download sha256.
+- 211 tests passing (`uv run pytest -q`) against a fully-populated local
+  environment (real `stores/chaos-store/` + the pinned DASH-tree clone under
+  `experiments/external/`); 7 skipped are unrelated (`test_benchmark.py`'s
+  own separate benchmark store, not chaos-store). Without those two present,
+  the suite gracefully skips the optional-data tests instead of failing.
 
-**In progress — DASH-tree predictor (T8), stopped mid-implementation:**
+**Done and verified — DASH-tree predictor (T8):**
 
-The DASH-tree API has been fully researched (see `pins.toml`'s `[dash_tree]`
-notes and the design doc) but `predictors/dash.py` has **not been written
-yet**. What's known and ready to use:
+`predictors/dash.py` is written and end-to-end tested against the real store
+and the real pinned DASH-tree clone
+(`tests/test_experiment_predictor_dash_optional.py`). Two layers:
 
-- DASH-tree is pinned at `experiments/pins.toml`'s `[dash_tree]` commit.
-  Clone it with `git clone https://github.com/rinikerlab/DASH-tree.git
-  experiments/external/DASH-tree && cd experiments/external/DASH-tree &&
-  git checkout <pinned commit>`.
-- **Do not `pip install` it** — use a `sys.path.insert(0, ...)` shim in
-  `predictors/dash.py` instead (see `pins.toml` for why).
-- `DASHTree(preload=False)` needs no network access — the default
-  MBIS-charge tree topology ships inside the clone
-  (`serenityff/charge/data/default_dash_tree/`, ~300MB, 122 branch files).
-- Matching API: `tree.match_new_atom(rdkit_atom_idx, mol, max_depth=...,
-  attention_threshold=..., attention_increment_threshold=...)` returns a
-  `list[int]`: `[branch_idx, 0, node_id_1, node_id_2, ...]` (deepest last).
-  `(branch_idx, node_id)` is the unique key to fit our own per-node
-  statistics against — that IS "Stage A": walk training atoms to their paths,
-  accumulate count/mean per `(branch_idx, node_id)` (prune below
-  `minimum_support`), then at predict time walk the path deepest→shallowest
-  and take the first retained key, else a global fallback mean. This is
-  Sieve's own back-off algorithm applied to DASH's published tree shape.
-- **Atom index mapping**: the chaos-store's SMILES are atom-mapped in COSMO
-  file order. To get the RDKit atom index matching flat position `j` within
-  a molecule, parse with `Chem.SmilesParserParams(); params.removeHs =
-  False`, then `order = np.argsort([a.GetAtomMapNum() for a in
-  mol.GetAtoms()])`; the RDKit index is `order[j]`. This mirrors
-  `src/sieve/io/cosmolayer_adapter.py`'s exact convention — reuse it rather
-  than re-deriving it.
-- Runtime deps for matching-only (no torch): `numpy`, `pandas`, `rdkit`,
-  `tables`, `tqdm`, `pillow` — already declared in pyproject.toml's
-  `experiments` extra.
-- **Important gotcha already hit and fixed**: cloning any repo with its own
-  `pyproject.toml` under `experiments/` gets silently absorbed by `uv` as an
-  implicit workspace member unless excluded. This repo's root
-  `pyproject.toml` already has `[tool.uv.workspace] exclude =
-  ["experiments/external/*"]` — keep it if you ever move that path.
+- `fit_backoff`/`predict_backoff` — pure numpy over pre-computed
+  `(branch_idx, node_id)` tree paths, no optional deps, fast-suite tested
+  (`tests/test_experiment_predictor_dash.py`). Walk training atoms to their
+  paths, accumulate count/mean per node (prune below `minimum_support`), then
+  at predict time walk the path deepest→shallowest and take the first
+  retained node, else the unconditional global mean. Sieve's own back-off
+  algorithm, applied to DASH's published tree shape.
+- `DASHBackoffPredictor` — wires that onto real atoms: RDKit for the
+  atom-index mapping (`src/sieve/io/cosmolayer_adapter.py`'s
+  atom-mapped-SMILES convention, reused verbatim) and
+  `DASHTree.match_new_atom` for the tree path. Needs `store`/`scheme` in its
+  own `predictor.params` (see `configs/dash-{biased,random}.yaml`) —
+  duplicating `data.store`/`data.scheme` — because atom-level truth for the
+  training split has to be loaded independently
+  (`data.load_atom_truth`; `load_molecule_set` never populates it).
+
+A real CLI run (`--config configs/dash-biased.yaml --limit 300`) beats the
+`global_mean` floor on the same slice: `profile/w1_norm_mean` 0.00055 vs.
+0.00079, `area/r2` 0.96 vs. 0.69. `fit_s` ≈11s at this size, ~10s of which
+is the one-time DASHTree preload; `predict_s` is 0.05s. Re-check with
+`--limit` timing probes before committing to a full run (design.md risk #1).
+
+**Coverage caveat — read before quoting any DASH number.** DASH cannot match
+every chaos-store atom: `init_neighbor_dict` rejects atoms whose feature
+tuple is outside DASH's published vocabulary (boron, Si, Ge, Sb, Te), and it
+runs over the whole molecule, so one such atom disqualifies **all** of that
+molecule's atoms. Measured: **554/11000 atoms from 13/300 molecules (~4%)**.
+Those atoms fall back to the unconditional global mean — i.e. part of any
+DASH score is really the floor predictor's score. Every run records this per
+split in its manifest's `match_stats` and logs a WARNING; the results table
+should carry it alongside the metrics rather than quoting DASH numbers as if
+coverage were 100%.
+
+**Gotchas hit while building T8** (full detail in `pins.toml`'s
+`[dash_tree]` notes):
+
+- At the pinned commit, `DASHTree(preload=False)` (the on-demand-load mode
+  originally planned, since it needs no network access) raises `KeyError` on
+  every hydrogen atom — an ordering bug in `_get_init_layer`'s H-atom
+  special case. Fixed by defaulting `DASHBackoffPredictor(preload=True)`
+  (~10s, ~300MB into memory once, still no network). Note this is a
+  *different* failure from the coverage caveat above — an early draft of
+  this README conflated the two.
+- `match_new_atom` rebuilds the whole molecule's neighbor dict on every call
+  unless one is passed via `neighbor_dict=` — O(n_atoms²) per molecule.
+  `_atom_paths` hoists it per molecule (as DASH's own
+  `_get_allAtoms_nodePaths` does): **8.5× faster, bit-identical metrics**.
+- The atom-index mapping (flat store position `j` → RDKit index `order[j]`)
+  is guarded by a real alignment test against the store's own `element`
+  column, mirroring `cosmolayer_adapter.py`'s `check_alignment`. A
+  transposed mapping still produces perfectly finite metrics, so nothing
+  else in the suite would catch it; the inverse convention mismatches ~36%
+  of atoms, so the guard genuinely discriminates.
+- `fit_backoff`/`predict_backoff` live in a module (`dash.py`) that also
+  defines a `Path` type alias for tree paths — that shadowed
+  `pathlib.Path`'s import; renamed the alias to `NodePath`. Worth watching
+  for in any module that both imports `pathlib.Path` and wants a short type
+  alias name.
+- Two pre-existing "empty eval split" crashes surfaced by exercising a real
+  small `--limit` run end-to-end: `metrics.regression_metrics`/
+  `charge_metrics` raised on 0-row input (now return NaN), and
+  `runner._write_plots` crashed on an empty test set via
+  `plots.parity_hexbin`'s `min()`/`max()` (now skips plotting when
+  `test.n_molecules == 0`). Neither is DASH-specific — any predictor hits
+  these on a `--limit` small enough that `biased_split`'s val/test land
+  empty (e.g. `--limit 50` on chaos-store, still exercised as a regression
+  test in `test_experiment_smoke.py`/`test_experiment_metrics.py`).
 
 **Not started — COSMO-NET predictor (T9):**
 
@@ -90,26 +135,41 @@ yet**. What's known and ready to use:
 **Not started — T10** (`summarize` polish, results table, this README's
 final form).
 
-**Known external gap:** Zenodo record 22050672 (the chaos-store's official
-source, used by `prepare_store.download_chaos_store`) returned HTTP 404
-("not registered") from this dev machine on 2026-08-24 — not a rate limit.
-`prepare_store.py` handles this by trust-on-first-download hashing rather
-than checking a published checksum (see its module docstring). Check whether
-the record resolves from wherever you're running next; if so, consider
-filling in `EXPECTED_ZIP_SHA256` in `prepare_store.py` from Zenodo's
-published checksum.
+**Known external gap, resolved 2026-08-24:** Zenodo record 22050672 (the
+chaos-store's official source) returned HTTP 404 on an earlier dev machine;
+it resolves normally now. `prepare_store.py` now verifies both Zenodo's
+published md5 (`EXPECTED_ZIP_MD5`, filled in from
+`curl -s https://zenodo.org/api/records/22050672`) and a
+trust-on-first-download sha256, recorded at `stores/chaos-store/
+.download.sha256` and re-verified on every later run that finds the store
+already present.
 
 ## Running today's working pieces
 
 ```bash
 uv sync --locked --extra dev --extra chem --extra experiments   # heavy: pulls cosmolayer, torch (via cosmolayer), rdkit, pandas, mlflow
+uv run python -m sieve_experiments prepare-store                # downloads + splits chaos-store into stores/ (git-ignored, ~8GB)
 uv run pytest -q                                                 # fast suite + optional-data suite (skips gracefully without the store)
 
-# a real run against the local store (already present at stores/chaos-store/):
+# DASH-tree clone, needed for predictors/dash.py's optional-data tests and
+# real dash_backoff runs (see pins.toml's [dash_tree] for the pinned commit):
+git clone https://github.com/rinikerlab/DASH-tree.git experiments/external/DASH-tree
+git -C experiments/external/DASH-tree checkout 6cf1b2351c4674e602153dd493c06d9c020fc9ce
+
+# a real run against the local store:
 uv run python -m sieve_experiments run \
     --config experiments/configs/global-mean-biased.yaml \
+    --allow-dirty --no-tracking --limit 500
+
+# DASH Stage A, once the clone above is present:
+uv run python -m sieve_experiments run \
+    --config experiments/configs/dash-biased.yaml \
     --allow-dirty --no-tracking --limit 500
 ```
 
 `--allow-dirty` is needed on an uncommitted tree; drop it once committed.
-Runs land in `experiments/runs/` (git-ignored).
+Runs land in `experiments/runs/` (git-ignored). A small `--limit` (e.g. 50)
+can land zero molecules in val/test on `biased_split` — metrics/plots handle
+that gracefully (NaN, no plot) rather than crashing, but the run then has no
+real signal in it; `--limit 200`+ reliably gives a non-empty val/test on
+chaos-store.

@@ -7,13 +7,12 @@ that script, all reproducibility-motivated:
 
 - Streams the zip in chunks via urllib instead of buffering the whole
   response through `requests`, dropping an otherwise-undeclared dependency.
-- Verifies the download's integrity. Zenodo record 22050672's file listing
-  was unreachable (HTTP 404, "not registered") when this module was written,
-  so there is no published checksum to check against yet -- this verifies
-  trust-on-first-download instead: the sha256 of a fresh download is
-  recorded next to the store, and re-verified (not re-trusted) on every
-  later run that finds the store already present. Swap in Zenodo's
-  published checksum in ``EXPECTED_ZIP_SHA256`` once the record resolves.
+- Verifies the download's integrity two ways. Zenodo's own record (record
+  22050672, resolved 2026-08-24 after an earlier HTTP 404) publishes an md5
+  checksum per file -- ``EXPECTED_ZIP_MD5`` is checked against that. A sha256
+  is also computed and recorded next to the store on first download, then
+  re-verified (not re-trusted) on every later run that finds the store
+  already present -- belt-and-suspenders since Zenodo publishes only md5.
 - Idempotent: if the store already has a ``biased_split`` column, does
   nothing and says so, rather than recomputing every run.
 - Also writes split_summary.txt next to the store, so a run manifest can
@@ -37,23 +36,27 @@ ZENODO_RECORD = "22050672"
 DOWNLOAD_URL = (
     f"https://zenodo.org/records/{ZENODO_RECORD}/files/chaos-store.zip?download=1"
 )
-# Not yet available -- see module docstring. None disables published-hash
-# verification (trust-on-first-download is still applied).
-EXPECTED_ZIP_SHA256: str | None = None
+# Zenodo record 22050672's published per-file checksum (md5, Zenodo's own
+# scheme -- see `curl -s https://zenodo.org/api/records/22050672` -> files[].
+# checksum). None disables published-hash verification (the sha256
+# trust-on-first-download check below is still applied regardless).
+EXPECTED_ZIP_MD5: str | None = "8d01a192e068e569484cd444c7264da7"
 
 CHUNK_SIZE = 1 << 20  # 1 MiB
 
 logger = logging.getLogger("sieve_experiments")
 
 
-def _download_zip(url: str, dest: Path) -> str:
-    """Stream ``url`` to ``dest``, returning its sha256 hex digest."""
-    digest = hashlib.sha256()
+def _download_zip(url: str, dest: Path) -> tuple[str, str]:
+    """Stream ``url`` to ``dest``, returning (sha256, md5) hex digests."""
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5()
     with urllib.request.urlopen(url) as response, dest.open("wb") as f:
         while chunk := response.read(CHUNK_SIZE):
             f.write(chunk)
-            digest.update(chunk)
-    return digest.hexdigest()
+            sha256.update(chunk)
+            md5.update(chunk)
+    return sha256.hexdigest(), md5.hexdigest()
 
 
 def download_chaos_store(
@@ -63,13 +66,13 @@ def download_chaos_store(
     zip_path = stores_root / f"{store_dirname}.zip"
     sha_path = store_dir / ".download.sha256"
 
-    sha256 = _download_zip(DOWNLOAD_URL, zip_path)
+    sha256, md5 = _download_zip(DOWNLOAD_URL, zip_path)
 
-    if EXPECTED_ZIP_SHA256 is not None and sha256 != EXPECTED_ZIP_SHA256:
+    if EXPECTED_ZIP_MD5 is not None and md5 != EXPECTED_ZIP_MD5:
         zip_path.unlink(missing_ok=True)
         raise ValueError(
-            f"downloaded {store_dirname}.zip sha256 {sha256} != expected "
-            f"{EXPECTED_ZIP_SHA256}; download corrupted or record changed"
+            f"downloaded {store_dirname}.zip md5 {md5} != Zenodo-published "
+            f"{EXPECTED_ZIP_MD5}; download corrupted or record changed"
         )
 
     with zipfile.ZipFile(zip_path, "r") as zf:

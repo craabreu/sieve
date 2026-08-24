@@ -115,6 +115,17 @@ def test_build_unknown_predictor_raises():
         build("not_a_real_predictor", {})
 
 
+def test_dash_backoff_is_lazily_registered_by_build():
+    from sieve_experiments.predictors.dash import DASHBackoffPredictor
+
+    predictor = build(
+        "dash_backoff", {"store": "chaos-store", "scheme": "cosmo-sac-2010"}
+    )
+    assert isinstance(predictor, DASHBackoffPredictor)
+    assert predictor.name == "dash_backoff"
+    assert "dash_backoff" in REGISTRY
+
+
 # --- GlobalMeanPredictor -------------------------------------------------
 
 

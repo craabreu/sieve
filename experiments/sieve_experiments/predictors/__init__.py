@@ -36,6 +36,8 @@ def build(name: str, params: Mapping[str, Any]) -> Predictor:
     # Add one branch per optional-dependency predictor module as it is built
     # (predictors/dash.py -> "dash_backoff", predictors/cosmonet.py ->
     # "cosmonet"); each module calls register() on import.
+    if name == "dash_backoff" and name not in REGISTRY:
+        import sieve_experiments.predictors.dash  # noqa: F401
     if name not in REGISTRY:
         raise ValueError(f"unknown predictor {name!r}; known: {sorted(REGISTRY)}")
     return REGISTRY[name](params)
