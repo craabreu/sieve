@@ -1,0 +1,19 @@
+# COSMO-NET (D-MPNN), retrained on our train/val/test splits in its own venv.
+# Run 3 times with different run.seed (the Makefile's cosmonet-random target
+# does this) -- training is stochastic, one seed is not a result.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: split
+
+predictor:
+  name: cosmonet
+  params:
+    n_epochs: 100
+    batch_size: 64

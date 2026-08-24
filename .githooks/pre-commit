@@ -17,7 +17,8 @@ if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.py$'; then
   ty="$repo/.venv/bin/ty"; command -v ty >/dev/null 2>&1 && ty=ty
 
   if [[ -x "$ruff" ]] || command -v "$ruff" >/dev/null 2>&1; then
-    "$ruff" check "$repo/src" "$repo/tests" && "$ruff" format --check "$repo/src" "$repo/tests"
+    "$ruff" check "$repo/src" "$repo/tests" "$repo/experiments" \
+      && "$ruff" format --check "$repo/src" "$repo/tests" "$repo/experiments"
     status=$?
     if [[ $status -ne 0 ]]; then
       echo "pre-commit: ruff failed — commit aborted." >&2
@@ -26,7 +27,7 @@ if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.py$'; then
   fi
 
   if [[ -x "$ty" ]] || command -v "$ty" >/dev/null 2>&1; then
-    (cd "$repo" && VIRTUAL_ENV="$repo/.venv" "$ty" check "$repo/src" "$repo/tests")
+    (cd "$repo" && VIRTUAL_ENV="$repo/.venv" "$ty" check "$repo/src" "$repo/tests" "$repo/experiments")
     status=$?
     if [[ $status -ne 0 ]]; then
       echo "pre-commit: ty failed — commit aborted." >&2

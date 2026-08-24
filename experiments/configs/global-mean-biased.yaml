@@ -1,0 +1,17 @@
+# The floor predictor: every molecule's profile is the training mean, scaled
+# by its atom count. Also the fixture used by the smoke test (T6) and the
+# real-store smoke run (T7) -- no optional dependency needed to run this one.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: floor
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: global_mean
+  params: {}

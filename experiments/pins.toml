@@ -1,0 +1,51 @@
+# Pinned external repos for the baseline experiments (see predictors/dash.py,
+# predictors/cosmonet.py). `make -C experiments external` clones each at its
+# pinned commit into experiments/external/<name>/ (git-ignored).
+
+[dash_tree]
+url = "https://github.com/rinikerlab/DASH-tree.git"
+commit = "6cf1b2351c4674e602153dd493c06d9c020fc9ce"  # main, 2026-08-24
+license = "MIT"
+notes = """
+Pip-installable (its own pyproject.toml, package name `serenityff`), but
+predictors/dash.py uses a sys.path shim instead of `pip install .`: the
+default MBIS-charge tree topology ships as ~300MB of .gz/.h5 files under
+serenityff/charge/data/default_dash_tree/, and a built wheel is not
+confirmed to carry them (no MANIFEST.in / package_data seen in its
+pyproject.toml). A plain git checkout guarantees the data travels with the
+code; a wheel install might not.
+
+Runtime deps for atom-matching only (confirmed by reading dash_tree.py's
+imports and tree_only_env.yml): numpy, pandas, rdkit, tables (pytables),
+tqdm, Pillow. No torch/pytorch-geometric needed -- those are only pulled in
+by DASH's own GNN-training path (tree_develop/), which Stage A does not use.
+These are declared in pyproject.toml's `experiments` extra.
+
+GOTCHA (hit and fixed 2026-08-24): a git clone of DASH-tree left inside this
+project's directory tree gets silently absorbed by uv as an implicit
+workspace member (it has its own pyproject.toml) -- uv then tries to build
+and install "serenityff" into this project's venv/lockfile on every `uv
+sync`/`uv lock`/`uv run`. Fixed via `[tool.uv.workspace] exclude =
+["experiments/external/*"]` in the root pyproject.toml. If that exclusion
+is ever removed, this problem comes back immediately.
+"""
+
+[cosmonet]
+url = "https://github.com/snaserib/COSMO-NET-Paper.git"
+commit = ""  # NOT YET PINNED. A clone was interrupted by a disk-space
+             # incident (2026-08-24) before `git rev-parse HEAD` could be
+             # recorded. Re-clone and fill this in before first real use.
+license = "MIT"
+notes = """
+~4.8GB checkout (includes the CSAC-2002/2010 data CSVs under Data/) -- make
+sure there is real disk headroom before cloning; running this dev machine's
+disk to zero mid-clone is what interrupted the original pin attempt.
+
+D-MPNN training script: DMPNN-Train-pSigma.py, invoked with `--splitter 4`
+(predefined CATEGORY-column split) to impose our train/val/test labels --
+see the design doc for the intended predictors/cosmonet.py integration.
+Needs its own uv-managed venv (Python 3.10, matching the GPU server) with a
+CUDA-enabled torch build -- see [[gpu-server-estes]] in memory for the
+server's driver CUDA version, and `experiments/cosmonet-requirements.txt`
+(not yet compiled) for the actual pin.
+"""

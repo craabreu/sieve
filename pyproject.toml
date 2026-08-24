@@ -7,14 +7,57 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 [project.optional-dependencies]
 chem = ["rdkit>=2023.3"]
 sklearn = ["scikit-learn>=1.3"]
-dev = ["pytest>=7.4", "ruff>=0.16", "ty==0.0.72", "scikit-learn>=1.3"]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.16",
+    "ty==0.0.72",
+    "scikit-learn>=1.3",
+    # Lightweight (no torch chain) and needed to even load an experiment
+    # config, so it lives in dev, not in the heavy `experiments` extra below
+    # -- CI syncs [dev,chem] and must be able to run the fast experiment
+    # tests (config/metrics/data/smoke) without the heavy extra.
+    "pyyaml>=6",
+]
+# The experiment harness's heavy tail. Kept out of [project.dependencies] and
+# out of `dev` on purpose: cosmolayer pulls in torch, lightning and open3d,
+# which would make a plain `pip install sieve` unusable and CI slow. mlflow
+# and matplotlib are imported lazily (see sieve_experiments.runner) so the
+# fast, CI-safe tests never need them either.
+experiments = [
+    "cosmolayer",
+    "mlflow>=2.14",
+    "matplotlib>=3.8",
+    "pandas>=2",
+    "rdkit>=2023.3",
+    # Runtime deps of the pinned rinikerlab/DASH-tree clone (predictors/dash.py),
+    # which is added to sys.path rather than pip-installed -- see pins.toml.
+    # No torch: DASH-tree's GNN training path is unused (Stage A only fits
+    # per-node statistics against its published tree topology).
+    "tables>=3.9",  # pytables, backs DASHTree's .h5 node data
+    "tqdm>=4.65",
+    "pillow>=10",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "experiments"]
+
+[tool.uv.workspace]
+# Pinned checkouts of DASH-tree/COSMO-NET-Paper live under experiments/external/
+# (git-ignored) and each ships its own pyproject.toml. Without this exclusion
+# uv silently treats them as implicit workspace members and builds/installs
+# them into this project's venv and lockfile -- they are inert clones used via
+# sys.path/subprocess, not dependencies of `sieve`.
+exclude = ["experiments/external/*"]
+
+[tool.uv.sources]
+# The pin is the reproducible path. For day-to-day work against a local
+# checkout, override it with:
+#     uv pip install -e /Users/charlles/MIT/cosmolayer
+cosmolayer = { git = "ssh://git@github.com/craabreu/cosmolayer", rev = "d3c06e3" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -23,17 +66,49 @@ filterwarnings = ["error::RuntimeWarning"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "experiments/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
 ignore = ["E402"]
 
 [tool.ty.analysis]
-allowed-unresolved-imports = ["cosmolayer", "cosmolayer.**"]
+# CI's lint job installs [dev,chem] only, not the heavy `experiments` extra
+# (cosmolayer, mlflow, pandas, matplotlib), so ty cannot resolve these
+# imports there. pyyaml lives in `dev` (see pyproject above) and so is not
+# listed here -- ty can and should resolve it.
+allowed-unresolved-imports = [
+    "cosmolayer",
+    "cosmolayer.**",
+    "mlflow",
+    "mlflow.**",
+    "pandas",
+    "pandas.**",
+    "matplotlib",
+    "matplotlib.**",
+    "pyarrow",
+    "pyarrow.**",
+    # rinikerlab/DASH-tree, sys.path-shimmed from experiments/external/DASH-tree
+    # rather than pip-installed -- see predictors/dash.py.
+    "serenityff",
+    "serenityff.**",
+]
 
 [[tool.ty.overrides]]
 include = ["src/sieve/model.py"]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
+
+[[tool.ty.overrides]]
+# numpy's savez stub interleaves a keyword-only `allow_pickle: bool` between
+# *args and **kwds: ArrayLike, which ty's dict-unpack check misreads as
+# **payload potentially supplying `allow_pickle` -- reproducible on `np.savez`
+# with any `**dict[str, np.ndarray]` spread, independent of this file's logic.
+include = ["experiments/sieve_experiments/runner.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+
+[tool.ty.environment]
+extra-paths = ["experiments"]

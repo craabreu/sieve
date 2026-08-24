@@ -1,0 +1,21 @@
+# DASH Stage A on the headline extrapolation split: train on the smallest
+# molecules, evaluate on the largest. Otherwise identical to dash-random.yaml
+# -- the two files should stay diffable to exactly this one line.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: dash_backoff
+  params:
+    max_depth: 16
+    attention_threshold: 10
+    minimum_support: 5
+    charge_reconciliation: std_weighted

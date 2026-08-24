@@ -1,0 +1,18 @@
+# COSMO-NET on the headline extrapolation split. Otherwise identical to
+# cosmonet-random.yaml.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: cosmonet
+  params:
+    n_epochs: 100
+    batch_size: 64
