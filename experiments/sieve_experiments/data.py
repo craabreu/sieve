@@ -308,10 +308,15 @@ def load_atom_truth(
     atom_profile = (
         np.asarray(atom_table.profiles, dtype=np.float64) * atom_area[:, None]
     )
-
-    ai = np.asarray(store.atom_indices)
-    n_nodes = int(np.max(ai)) + 1
-    atom_charge = np.bincount(ai, weights=np.asarray(store.charges), minlength=n_nodes)
+    # atom_table.charges is area*sigma computed from this SAME averaged
+    # table -- not store.charges/store.atom_indices, which are the raw,
+    # pre-averaging segment charges. cosmo-sac-2010's sigma-averaging kernel
+    # redistributes charge across atom boundaries, so raw per-atom charge
+    # and this averaged-profile-consistent charge are genuinely different
+    # quantities (~60% relative gap on chaos-store), not just noisy
+    # estimates of the same one. See
+    # test_load_atom_truth_charge_is_scheme_consistent_not_raw.
+    atom_charge = np.asarray(atom_table.charges, dtype=np.float64)
 
     full_atom_arrays = {
         "atom_profile": atom_profile,

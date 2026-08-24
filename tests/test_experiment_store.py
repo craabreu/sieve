@@ -196,6 +196,39 @@ def test_load_atom_truth_rolls_up_to_the_same_molecule_profile(loaded):
     assert atom_charge.shape == (mset.n_atoms,)
 
 
+def test_load_atom_truth_charge_is_scheme_consistent_not_raw(loaded):
+    """atom_charge must be the averaged-scheme charge (area * sigma, from the
+    SAME cosmo-sac-2010 profile as atom_profile), not the raw pre-averaging
+    store.charges -- those are different quantities (COSMO-SAC's sigma
+    averaging redistributes charge across atom boundaries, so raw per-atom
+    charge and averaged-profile-consistent per-atom charge disagree by
+    ~0.01 mean abs, a ~60% relative gap on this store). Two independent
+    checks that atom_charge is the averaged one: it integrates to the same
+    value as sigma-weighting atom_profile, and it rolls up to the
+    molecule-level mol_charge already loaded via load_molecule_set (which
+    has always used the correctly-averaged cosmolayer field)."""
+    from sieve_experiments.data import DEFAULT_GRID, load_atom_truth, molecule_sum
+
+    mset, _ = loaded
+    atom_profile, _atom_area, atom_charge = load_atom_truth(
+        STORE_NAME,
+        scheme="cosmo-sac-2010",
+        smiles=mset.smiles,
+        num_atoms=mset.num_atoms,
+        stores_root=STORES_ROOT,
+    )
+    implied_charge = (atom_profile * DEFAULT_GRID.values[None, :]).sum(axis=1)
+    np.testing.assert_allclose(atom_charge, implied_charge, atol=1e-6)
+
+    assert mset.mol_charge is not None
+    np.testing.assert_allclose(
+        molecule_sum(atom_charge, mset.atom_mol_id, mset.n_molecules),
+        mset.mol_charge,
+        rtol=1e-4,
+        atol=1e-6,
+    )
+
+
 def test_load_atom_truth_rejects_a_smiles_not_in_the_store(loaded):
     from sieve_experiments.data import load_atom_truth
 
