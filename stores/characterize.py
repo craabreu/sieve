@@ -25,23 +25,29 @@ STORES_DIR = Path(__file__).resolve().parent
 def _load_molecules(store_dir: Path):
     import pandas as pd
 
+    all_columns = pd.read_parquet(store_dir / "molecules.parquet").columns
+    split_columns = [c for c in all_columns if "split" in c.lower()]
+
     df = pd.read_parquet(
-        store_dir / "molecules.parquet", columns=["smiles", "cluster_id"]
+        store_dir / "molecules.parquet",
+        columns=["smiles", "cluster_id", *split_columns],
     )
-    return df["smiles"].tolist(), df["cluster_id"].to_numpy()
+    splits = {col: df[col].to_numpy() for col in split_columns}
+    return df["smiles"].tolist(), df["cluster_id"].to_numpy(), splits
 
 
-def _descriptors(smiles: list[str], cluster_ids):
+def _descriptors(smiles: list[str], cluster_ids, splits):
     """Compute per-molecule descriptors, element counts, and the cluster id
-    of each molecule, skipping unparseable SMILES."""
+    and split labels of each molecule, skipping unparseable SMILES."""
     from rdkit import Chem
     from rdkit.Chem import Descriptors, rdMolDescriptors
 
     rows = []
     valid_cluster_ids = []
+    valid_splits: dict[str, list] = {col: [] for col in splits}
     elements: Counter[str] = Counter()
     n_bad = 0
-    for s, cid in zip(smiles, cluster_ids, strict=True):
+    for i, (s, cid) in enumerate(zip(smiles, cluster_ids, strict=True)):
         mol = Chem.MolFromSmiles(s)
         if mol is None:
             n_bad += 1
@@ -55,11 +61,14 @@ def _descriptors(smiles: list[str], cluster_ids):
             }
         )
         valid_cluster_ids.append(cid)
+        for col, values in splits.items():
+            valid_splits[col].append(values[i])
         for atom in mol.GetAtoms():
             elements[atom.GetSymbol()] += 1
     if n_bad:
         print(f"warning: skipped {n_bad} unparseable SMILES", file=sys.stderr)
-    return rows, elements, np.array(valid_cluster_ids)
+    valid_splits = {col: np.array(v) for col, v in valid_splits.items()}
+    return rows, elements, np.array(valid_cluster_ids), valid_splits
 
 
 def _weighted_quantiles(values, quantiles, weights=None):
@@ -115,6 +124,32 @@ def _histogram(ax, values, *, title, xlabel, integers=False, weights=None, log=F
     _annotate_quantiles(ax, values, weights)
 
 
+def _split_comparison_histogram(ax, values, split_labels, *, title, xlabel):
+    """Overlaid, density-normalized histograms of `values`, one per distinct
+    label in `split_labels` (e.g. train/val/test), so the distributions can
+    be compared directly."""
+    values = np.asarray(values)
+    lo, hi = np.floor(values.min()) - 0.5, np.ceil(values.max()) + 0.5
+    bins = np.arange(lo, hi + 1)
+    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
+    for label, color in zip(sorted(set(split_labels)), colors, strict=False):
+        mask = split_labels == label
+        ax.hist(
+            values[mask],
+            bins=bins,
+            density=True,
+            weights=None,
+            histtype="bar",
+            alpha=0.5,
+            label=f"{label} (n={mask.sum()})",
+            color=color,
+        )
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("density")
+    ax.legend(fontsize=8)
+
+
 def make_plots(store_name: str) -> list[Path]:
     import matplotlib
 
@@ -125,8 +160,8 @@ def make_plots(store_name: str) -> list[Path]:
     if not store_dir.is_dir():
         raise FileNotFoundError(f"no such store: {store_dir}")
 
-    smiles, cluster_ids = _load_molecules(store_dir)
-    rows, elements, cluster_ids = _descriptors(smiles, cluster_ids)
+    smiles, cluster_ids, splits = _load_molecules(store_dir)
+    rows, elements, cluster_ids, splits = _descriptors(smiles, cluster_ids, splits)
     if not rows:
         raise ValueError(f"no parseable SMILES in {store_dir / 'molecules.parquet'}")
 
@@ -205,6 +240,25 @@ def make_plots(store_name: str) -> list[Path]:
     fig.savefig(out, dpi=150)
     plt.close(fig)
     written.append(out)
+
+    # One plot per split column, comparing heavy-atom-count histograms
+    # across the labels of that split (e.g. train/val/test), since the
+    # splits are built around molecule size.
+    heavy_atoms = np.array([r["heavy_atoms"] for r in rows])
+    for col, labels in splits.items():
+        fig, ax = plt.subplots(figsize=(6, 4))
+        _split_comparison_histogram(
+            ax,
+            heavy_atoms,
+            labels,
+            title=f"{store_name}: heavy-atom count by {col}",
+            xlabel="heavy atoms",
+        )
+        fig.tight_layout()
+        out = store_dir / f"{store_name}-{col.replace('_', '-')}.png"
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
+        written.append(out)
 
     return written
 
