@@ -30,7 +30,7 @@ from numpy.typing import NDArray
 from sieve_experiments import metrics as metrics_mod
 from sieve_experiments import plots
 from sieve_experiments.config import ExperimentCfg, to_dict, to_flat_params
-from sieve_experiments.data import REPO_ROOT, MoleculeSet, molecule_sum
+from sieve_experiments.data import REPO_ROOT, MoleculeSet, load_atom_truth, molecule_sum
 from sieve_experiments.predictors import build
 from sieve_experiments.predictors.base import Prediction
 
@@ -166,6 +166,49 @@ def execute(
         file_handler.close()
 
 
+def _compute_atom_metrics(
+    cfg: ExperimentCfg, test: MoleculeSet, pred: Prediction
+) -> dict[str, float] | None:
+    """Atom-level accuracy metrics, merged into ``run_metrics`` under an
+    ``atom/`` key prefix, for a predictor that supplies atom-level output
+    (an ``AtomPredictor``: DASH, later Sieve). ``molecule_metrics`` is
+    granularity-agnostic (it just operates on rows), so it's reused
+    directly here rather than duplicated for atoms. Returns its keys
+    unprefixed -- the caller adds ``atom/`` when merging, so this stays
+    reusable independent of that naming choice.
+
+    ``load_molecule_set`` never populates atom-level truth for the test
+    split (see data.py's module docstring), so it's loaded here the same
+    way DASH's own ``fit_atoms`` already loads it for train. Returns
+    ``None`` (and logs a warning) rather than raising if that load fails --
+    a predictor's atom_profile output is a metrics-only concern, not a
+    reason to fail the whole run.
+    """
+    try:
+        atom_profile_true, atom_area_true, atom_charge_true = load_atom_truth(
+            cfg.data.store,
+            scheme=cfg.data.scheme,
+            smiles=test.smiles,
+            num_atoms=test.num_atoms,
+        )
+    except Exception:
+        logger.warning(
+            "could not load atom-level truth for atom metrics; skipping",
+            exc_info=True,
+        )
+        return None
+
+    return metrics_mod.molecule_metrics(
+        profile_true=atom_profile_true,
+        profile_pred=pred.atom_profile,
+        bin_width=test.grid.bin_width,
+        area_true=atom_area_true if pred.atom_area is not None else None,
+        area_pred=pred.atom_area,
+        charge_true=atom_charge_true if pred.atom_charge is not None else None,
+        charge_pred=pred.atom_charge,
+    )
+
+
 def _execute_inner(
     cfg: ExperimentCfg,
     train: MoleculeSet,
@@ -217,6 +260,15 @@ def _execute_inner(
         run_metrics["area/self_consistency_mae"] = float(
             np.mean(np.abs(atom_sum - pred.mol_area))
         )
+
+    if pred.atom_profile is not None:
+        atom_metrics = _compute_atom_metrics(cfg, test, pred)
+        if atom_metrics is not None:
+            # atom/-prefixed, flat: molecule-level keys stay exactly as
+            # they are (unprefixed, unchanged -- widely referenced already)
+            # and MLflow's own log_metrics needs flat float values anyway,
+            # not a nested dict.
+            run_metrics.update({f"atom/{k}": v for k, v in atom_metrics.items()})
 
     run_metrics["time/fit_s"] = fit_s
     run_metrics["time/predict_s"] = predict_s

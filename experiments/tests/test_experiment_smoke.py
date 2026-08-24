@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 from sieve_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
 from sieve_experiments.runner import execute
 
@@ -143,3 +144,113 @@ def test_smoke_metrics_json_matches_returned_metrics(tmp_path):
             assert np.isnan(result.metrics[key])
         else:
             assert on_disk[key] == result.metrics[key]
+
+
+# --- atom-level metrics (flat, atom/-prefixed keys) -------------------------
+#
+# DASH's own atom-metrics coverage (real store, real predictions) lives in
+# test_experiment_predictor_dash_optional.py. These stay in the fast suite
+# by faking the predictor and load_atom_truth: what's under test here is
+# execute()'s own wiring (gating, prefixing, graceful failure), not DASH.
+# Molecule-level keys stay unprefixed and unchanged; only the new atom
+# metrics get an "atom/" prefix -- flat, not nested, so they're plain floats
+# MLflow's log_metrics can take directly, same as everything else already.
+
+
+class _FakeAtomPredictor:
+    """An AtomPredictor stand-in that just echoes ground truth back as its
+    own prediction -- perfect atom-level accuracy, so the resulting metrics
+    have simple, known values (~0 error) without needing real numerics."""
+
+    name = "fake_atom"
+
+    def fit(self, train, val, *, rng):
+        del train, val, rng
+
+    def predict(self, test):
+        from sieve_experiments.predictors.base import Prediction
+
+        return Prediction(
+            mol_profile=test.mol_profile,
+            atom_profile=test.atom_profile,
+            atom_area=test.atom_area,
+            atom_charge=test.atom_charge,
+        )
+
+
+def test_smoke_metrics_have_no_atom_keys_for_a_molecule_level_predictor(tmp_path):
+    """global_mean is a MoleculePredictor -- no atom_profile output, so
+    there is nothing to compute atom-level metrics from."""
+    mset = synthetic_molecule_set(n_mol=15, seed=2)
+    masks = _synthetic_masks(15, seed=3)
+    cfg = _tiny_cfg()
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert not any(k.startswith("atom/") for k in result.metrics)
+
+
+def test_smoke_computes_atom_prefixed_metrics_for_an_atom_level_predictor(
+    tmp_path, monkeypatch
+):
+    import sieve_experiments.runner as runner_mod
+
+    mset = synthetic_molecule_set(n_mol=15, seed=2)
+    masks = _synthetic_masks(15, seed=3)
+    cfg = _tiny_cfg()
+
+    monkeypatch.setattr(runner_mod, "build", lambda name, params: _FakeAtomPredictor())
+
+    test_split = mset.select(masks["test"])
+
+    def fake_load_atom_truth(store, *, scheme, smiles, num_atoms, **kwargs):
+        del store, scheme, smiles, num_atoms, kwargs
+        return test_split.atom_profile, test_split.atom_area, test_split.atom_charge
+
+    monkeypatch.setattr(runner_mod, "load_atom_truth", fake_load_atom_truth)
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    assert result.metrics["atom/n_test"] == test_split.n_atoms
+    # ground truth echoed back as the prediction -> ~perfect atom accuracy
+    assert result.metrics["atom/profile/w1_norm_area_weighted"] == pytest.approx(
+        0.0, abs=1e-9
+    )
+    assert result.metrics["atom/area/mae"] == pytest.approx(0.0, abs=1e-9)
+    assert result.metrics["atom/charge/mae"] == pytest.approx(0.0, abs=1e-9)
+    # molecule-level keys stay unprefixed, unaffected
+    assert "profile/w1_norm_mean" in result.metrics
+
+    on_disk = json.loads((result.run_dir / "metrics.json").read_text())
+    assert on_disk == result.metrics
+
+
+def test_smoke_atom_metrics_skip_gracefully_when_truth_load_fails(
+    tmp_path, monkeypatch
+):
+    """A predictor supplying atom_profile shouldn't crash the whole run if
+    atom-level ground truth can't be loaded (store absent, bad scheme,
+    whatever) -- this is a metrics-only concern, not a fit/predict one."""
+    import sieve_experiments.runner as runner_mod
+
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    masks = _synthetic_masks(10, seed=1)
+    cfg = _tiny_cfg()
+
+    monkeypatch.setattr(runner_mod, "build", lambda name, params: _FakeAtomPredictor())
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("no store here")
+
+    monkeypatch.setattr(runner_mod, "load_atom_truth", boom)
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert not any(k.startswith("atom/") for k in result.metrics)
+    assert np.isfinite(
+        result.metrics["profile/w1_norm_mean"]
+    )  # rest of the run is fine
