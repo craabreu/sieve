@@ -48,11 +48,11 @@ Sieve's own `biased_split` extrapolation split. Design doc:
 
 `predictors/dash.py` is written and end-to-end tested against the real store
 and the real pinned DASH-tree clone
-(`tests/test_experiment_predictor_dash_optional.py`). Two layers:
+(`experiments/tests/test_experiment_predictor_dash_optional.py`). Two layers:
 
 - `fit_backoff`/`predict_backoff` — pure numpy over pre-computed
   `(branch_idx, node_id)` tree paths, no optional deps, fast-suite tested
-  (`tests/test_experiment_predictor_dash.py`). Walk training atoms to their
+  (`experiments/tests/test_experiment_predictor_dash.py`). Walk training atoms to their
   paths, accumulate count/mean per node (prune below `minimum_support`), then
   at predict time walk the path deepest→shallowest and take the first
   retained node, else the unconditional global mean. Sieve's own back-off

@@ -2,8 +2,8 @@
 
 ``MoleculeSet``, ``SigmaGridSpec``, ``molecule_sum`` and ``select`` are pure
 numpy -- no cosmolayer, no rdkit -- so they are importable and testable
-without any optional dependency (see tests/test_experiment_data.py and the
-``synthetic_molecule_set`` fixture in tests/helpers.py).
+without any optional dependency (see experiments/tests/test_experiment_data.py
+and the ``synthetic_molecule_set`` fixture in experiments/tests/helpers.py).
 
 ``load_molecule_set`` is the one function here that touches the real store:
 it imports cosmolayer and rdkit locally, not at module level, so importing

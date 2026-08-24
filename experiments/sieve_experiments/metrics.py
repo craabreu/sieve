@@ -1,8 +1,9 @@
 """Shared metrics for the experiment harness.
 
 Pure numpy: no cosmolayer, no rdkit, no mlflow. That is what makes this module
-unit-testable with hand-computed numbers (see tests/test_experiment_metrics.py)
-independent of any store or predictor.
+unit-testable with hand-computed numbers
+(see experiments/tests/test_experiment_metrics.py) independent of any store
+or predictor.
 
 The Wasserstein-1 and regression-metric formulas are promoted, unchanged, from
 scripts/train_chaos_sigma_profile.py (wasserstein1_per_row, regression_metrics),

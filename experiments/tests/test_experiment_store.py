@@ -6,16 +6,16 @@ pattern as tests/test_benchmark.py.
 
 from __future__ import annotations
 
-import pathlib
-
 import numpy as np
 import pytest
 
 pytest.importorskip("cosmolayer")
 pytest.importorskip("rdkit")
 
+from sieve_experiments.data import DEFAULT_STORES_ROOT
+
 STORE_NAME = "chaos-store"
-STORES_ROOT = pathlib.Path(__file__).resolve().parents[1] / "stores"
+STORES_ROOT = DEFAULT_STORES_ROOT
 STORE = STORES_ROOT / STORE_NAME
 pytestmark = pytest.mark.skipif(not STORE.exists(), reason="chaos-store absent")
 

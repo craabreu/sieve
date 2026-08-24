@@ -2,10 +2,11 @@
 profile, scaled by that molecule's own atom count.
 
 Two jobs: the fixture every real baseline must beat, and the fixture the
-fast, no-optional-dependency smoke test (tests/test_experiment_smoke.py) runs
-end to end. A ``MoleculePredictor`` rather than an ``AtomPredictor`` on
-purpose -- it only needs molecule-level truth (always present), never
-atom-level truth (only present when a predictor computed it itself).
+fast, no-optional-dependency smoke test
+(experiments/tests/test_experiment_smoke.py) runs end to end. A
+``MoleculePredictor`` rather than an ``AtomPredictor`` on purpose -- it only
+needs molecule-level truth (always present), never atom-level truth (only
+present when a predictor computed it itself).
 """
 
 from __future__ import annotations

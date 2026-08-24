@@ -8,7 +8,7 @@ optional dependency:
 
 - ``fit_backoff``/``predict_backoff`` -- pure numpy over pre-computed tree
   paths. No rdkit, no DASH-tree clone. Fast-suite tested
-  (tests/test_experiment_predictor_dash.py).
+  (experiments/tests/test_experiment_predictor_dash.py).
 - ``DASHBackoffPredictor`` -- wires those onto real atoms: RDKit for the
   atom-index mapping (same convention as
   ``src/sieve/io/cosmolayer_adapter.py``) and DASHTree.match_new_atom for the
@@ -186,7 +186,7 @@ def _atom_paths(
     atom-mapped-SMILES convention: atom-mapped SMILES are numbered in COSMO
     file order, so the RDKit index matching flat position ``j`` is
     ``order[j]`` where ``order`` sorts atoms by their map number.
-    ``tests/test_experiment_predictor_dash_optional.py`` checks that mapping
+    ``experiments/tests/test_experiment_predictor_dash_optional.py`` checks that mapping
     against the store's own element column, the way the adapter's
     ``check_alignment`` does -- a transposed mapping still yields finite
     metrics, so it needs a real guard.

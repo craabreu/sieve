@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from sieve_experiments.data import DEFAULT_GRID, MoleculeSet, molecule_sum
 
-from tests.helpers import synthetic_molecule_set
+from experiments.tests.helpers import synthetic_molecule_set
 
 
 def hand_built_set():

@@ -5,7 +5,7 @@ is pure numpy over pre-computed tree paths -- no rdkit, no DASH-tree clone --
 so it runs in the fast suite. The atom-matching path (RDKit + DASHTree) is
 exercised only in the optional-data suite (needs the DASH-tree clone under
 experiments/external/ and the real store), same pattern as
-tests/test_experiment_store.py.
+test_experiment_store.py (this directory).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from sieve_experiments.predictors.dash import fit_backoff, predict_backoff
 
-from tests.helpers import synthetic_molecule_set
+from experiments.tests.helpers import synthetic_molecule_set
 
 # --- fit_backoff / predict_backoff -----------------------------------------
 
@@ -26,9 +26,7 @@ def test_predict_uses_deepest_node_with_enough_support():
     atom_area = np.array([1.0, 3.0])
     atom_charge = np.array([0.1, 0.3])
 
-    stats = fit_backoff(
-        paths, atom_profile, atom_area, atom_charge, minimum_support=2
-    )
+    stats = fit_backoff(paths, atom_profile, atom_area, atom_charge, minimum_support=2)
     pred = predict_backoff([[(0, 0), (0, 1)]], stats)
     assert pred.atom_area is not None
     assert pred.atom_charge is not None
@@ -51,9 +49,7 @@ def test_predict_backs_off_when_deepest_node_lacks_support():
     atom_area = np.array([1.0, 3.0, 10.0])
     atom_charge = np.array([0.1, 0.3, 1.0])
 
-    stats = fit_backoff(
-        paths, atom_profile, atom_area, atom_charge, minimum_support=2
-    )
+    stats = fit_backoff(paths, atom_profile, atom_area, atom_charge, minimum_support=2)
     assert (0, 1) not in stats.nodes  # pruned: only 1 supporting atom
     # a new atom whose deepest match is (0, 1) -- unsupported -- must back
     # off to (0, 0), not use (0, 1)'s single-sample stats.
@@ -93,9 +89,7 @@ def test_predict_falls_back_to_global_mean_for_unseen_branch():
     atom_area = np.array([1.0, 3.0])
     atom_charge = np.array([0.1, 0.3])
 
-    stats = fit_backoff(
-        paths, atom_profile, atom_area, atom_charge, minimum_support=1
-    )
+    stats = fit_backoff(paths, atom_profile, atom_area, atom_charge, minimum_support=1)
     # a path in a branch never seen during fit
     pred = predict_backoff([[(99, 0)]], stats)
 
@@ -108,9 +102,7 @@ def test_charge_std_is_positive_and_finite():
     atom_area = np.array([1.0, 2.0, 3.0])
     atom_charge = np.array([-0.5, 0.0, 0.5])
 
-    stats = fit_backoff(
-        paths, atom_profile, atom_area, atom_charge, minimum_support=1
-    )
+    stats = fit_backoff(paths, atom_profile, atom_area, atom_charge, minimum_support=1)
     pred = predict_backoff([[(0, 0)]], stats)
 
     assert pred.atom_charge_std is not None

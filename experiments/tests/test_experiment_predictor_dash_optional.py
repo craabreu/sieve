@@ -1,12 +1,10 @@
 """End-to-end DASHBackoffPredictor test against the real chaos-store and the
 real DASH-tree clone (pins.toml's ``[dash_tree]``). Skipped unless rdkit,
 cosmolayer, the store, and the clone are all present -- same pattern as
-tests/test_experiment_store.py.
+test_experiment_store.py (this directory).
 """
 
 from __future__ import annotations
-
-import pathlib
 
 import numpy as np
 import pytest
@@ -14,9 +12,10 @@ import pytest
 pytest.importorskip("cosmolayer")
 pytest.importorskip("rdkit")
 
+from sieve_experiments.data import DEFAULT_STORES_ROOT, REPO_ROOT
+
 STORE_NAME = "chaos-store"
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-STORES_ROOT = REPO_ROOT / "stores"
+STORES_ROOT = DEFAULT_STORES_ROOT
 STORE = STORES_ROOT / STORE_NAME
 DASH_TREE_ROOT = REPO_ROOT / "experiments" / "external" / "DASH-tree"
 
@@ -134,6 +133,4 @@ def test_dash_backoff_end_to_end_on_real_store(tmp_path):
     for split in ("train", "test"):
         assert stats[split]["n_atoms"] > 0
         assert 0 <= stats[split]["n_unmatched_atoms"] <= stats[split]["n_atoms"]
-        assert (
-            stats[split]["n_unmatched_molecules"] <= stats[split]["n_molecules"]
-        )
+        assert stats[split]["n_unmatched_molecules"] <= stats[split]["n_molecules"]

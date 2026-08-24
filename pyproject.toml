@@ -60,7 +60,12 @@ exclude = ["experiments/external/*"]
 cosmolayer = { git = "ssh://git@github.com/craabreu/cosmolayer", rev = "d3c06e3" }
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# experiments/tests holds every experiment-related test (kept contained
+# under experiments/, per the harness's own design) -- deliberately
+# "experiments/tests", not a broader "experiments" glob, so this never
+# collects the pinned external clones under experiments/external/ (each
+# ships its own, unrelated test suite).
+testpaths = ["tests", "experiments/tests"]
 filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]

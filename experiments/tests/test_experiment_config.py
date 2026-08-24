@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import yaml
 from sieve_experiments.config import (
@@ -12,8 +10,9 @@ from sieve_experiments.config import (
     load_config,
     to_flat_params,
 )
+from sieve_experiments.data import REPO_ROOT
 
-CONFIGS_DIR = Path(__file__).resolve().parents[1] / "experiments" / "configs"
+CONFIGS_DIR = REPO_ROOT / "experiments" / "configs"
 ALL_CONFIGS = sorted(CONFIGS_DIR.glob("*.yaml"))
 
 

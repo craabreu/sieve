@@ -10,7 +10,7 @@ import numpy as np
 from sieve_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
 from sieve_experiments.runner import execute
 
-from tests.helpers import synthetic_molecule_set
+from experiments.tests.helpers import synthetic_molecule_set
 
 
 def _tiny_cfg(**run_overrides) -> ExperimentCfg:

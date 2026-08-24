@@ -13,7 +13,7 @@ from sieve_experiments.predictors.base import (
 )
 from sieve_experiments.predictors.global_mean import GlobalMeanPredictor
 
-from tests.helpers import synthetic_molecule_set
+from experiments.tests.helpers import synthetic_molecule_set
 
 # --- reconcile_charge ------------------------------------------------------
 
