@@ -166,26 +166,23 @@ def execute(
         file_handler.close()
 
 
-def _compute_atom_metrics(
-    cfg: ExperimentCfg, test: MoleculeSet, pred: Prediction
-) -> dict[str, float] | None:
-    """Atom-level accuracy metrics, merged into ``run_metrics`` under an
-    ``atom/`` key prefix, for a predictor that supplies atom-level output
-    (an ``AtomPredictor``: DASH, later Sieve). ``molecule_metrics`` is
-    granularity-agnostic (it just operates on rows), so it's reused
-    directly here rather than duplicated for atoms. Returns its keys
-    unprefixed -- the caller adds ``atom/`` when merging, so this stays
-    reusable independent of that naming choice.
+AtomTruth = tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
 
-    ``load_molecule_set`` never populates atom-level truth for the test
-    split (see data.py's module docstring), so it's loaded here the same
-    way DASH's own ``fit_atoms`` already loads it for train. Returns
-    ``None`` (and logs a warning) rather than raising if that load fails --
-    a predictor's atom_profile output is a metrics-only concern, not a
-    reason to fail the whole run.
+
+def _load_atom_truth_or_none(cfg: ExperimentCfg, test: MoleculeSet) -> AtomTruth | None:
+    """Atom-level ground truth (profile, area, charge) for the test split,
+    used for both atom-level metrics and atom-level parity plots.
+    ``load_molecule_set`` never populates it (see data.py's module
+    docstring), so it's loaded here the same way DASH's own ``fit_atoms``
+    already loads it for train -- once, reused for both purposes rather
+    than hitting the store twice.
+
+    Returns ``None`` (and logs a warning) rather than raising if the load
+    fails -- a predictor's atom_profile output is a metrics/plots-only
+    concern, not a reason to fail the whole run.
     """
     try:
-        atom_profile_true, atom_area_true, atom_charge_true = load_atom_truth(
+        return load_atom_truth(
             cfg.data.store,
             scheme=cfg.data.scheme,
             smiles=test.smiles,
@@ -193,11 +190,22 @@ def _compute_atom_metrics(
         )
     except Exception:
         logger.warning(
-            "could not load atom-level truth for atom metrics; skipping",
+            "could not load atom-level truth for atom metrics/plots; skipping",
             exc_info=True,
         )
         return None
 
+
+def _atom_metrics_from_truth(
+    atom_truth: AtomTruth, pred: Prediction
+) -> dict[str, float]:
+    """Atom-level accuracy metrics from already-loaded ``atom_truth``,
+    merged into ``run_metrics`` under an ``atom/`` key prefix by the
+    caller. ``molecule_metrics`` is granularity-agnostic (it just operates
+    on rows), so it's reused directly here rather than duplicated for
+    atoms. Returns its keys unprefixed -- the caller adds ``atom/`` when
+    merging, so this stays reusable independent of that naming choice."""
+    atom_profile_true, atom_area_true, atom_charge_true = atom_truth
     return metrics_mod.molecule_metrics(
         profile_true=atom_profile_true,
         profile_pred=pred.atom_profile,
@@ -259,14 +267,16 @@ def _execute_inner(
             np.mean(np.abs(atom_sum - pred.mol_area))
         )
 
-    if pred.atom_profile is not None:
-        atom_metrics = _compute_atom_metrics(cfg, test, pred)
-        if atom_metrics is not None:
-            # atom/-prefixed, flat: molecule-level keys stay exactly as
-            # they are (unprefixed, unchanged -- widely referenced already)
-            # and MLflow's own log_metrics needs flat float values anyway,
-            # not a nested dict.
-            run_metrics.update({f"atom/{k}": v for k, v in atom_metrics.items()})
+    atom_truth = (
+        _load_atom_truth_or_none(cfg, test) if pred.atom_profile is not None else None
+    )
+    if atom_truth is not None:
+        atom_metrics = _atom_metrics_from_truth(atom_truth, pred)
+        # atom/-prefixed, flat: molecule-level keys stay exactly as they
+        # are (unprefixed, unchanged -- widely referenced already) and
+        # MLflow's own log_metrics needs flat float values anyway, not a
+        # nested dict.
+        run_metrics.update({f"atom/{k}": v for k, v in atom_metrics.items()})
 
     run_metrics["time/fit_s"] = fit_s
     run_metrics["time/predict_s"] = predict_s
@@ -329,12 +339,161 @@ def _execute_inner(
     )
     _savez_run(run_dir / "predictions.npz", test, pred)
 
-    _write_plots(run_dir, test, pred, run_metrics, cfg)
+    _write_plots(
+        run_dir,
+        test,
+        pred,
+        run_metrics,
+        cfg,
+        area_true=area_true,
+        area_pred=area_pred,
+        charge_true=charge_true,
+        charge_pred=charge_pred,
+        atom_truth=atom_truth,
+    )
 
     if tracking is not None:
         _log_mlflow(cfg, run_metrics, run_dir, tracking)
 
     return RunResult(run_dir=run_dir, metrics=run_metrics, manifest=manifest)
+
+
+def _normalized_profile_rows(
+    profile_true: NDArray[np.float64], profile_pred: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_]]:
+    """Row-normalize a true/pred profile pair and report which rows are
+    degenerate (sum <= 0 on either side, per normalize_rows -- the same
+    rows molecule_metrics already excludes from profile/w1_norm_*). A plot
+    of raw, area-scaled profile values would show a quantity nothing else
+    in a run's output describes any more -- see plots.py's module
+    docstring -- and a NaN row can't be plotted meaningfully either way."""
+    norm_true = metrics_mod.normalize_rows(profile_true)
+    norm_pred = metrics_mod.normalize_rows(profile_pred)
+    keep = ~(np.isnan(norm_true).any(axis=1) | np.isnan(norm_pred).any(axis=1))
+    return norm_true, norm_pred, keep
+
+
+def _build_parity_panels(
+    test: MoleculeSet,
+    pred: Prediction,
+    run_metrics: dict[str, float],
+    *,
+    area_true: NDArray[np.float64] | None,
+    area_pred: NDArray[np.float64] | None,
+    charge_true: NDArray[np.float64] | None,
+    charge_pred: NDArray[np.float64] | None,
+    atom_truth: AtomTruth | None,
+) -> list[dict[str, Any]]:
+    """Which hexbin parity panels this run has data for, and what feeds
+    each one: molecule profile always (assuming a non-degenerate row
+    exists); molecule area/charge and atom profile/area/charge only when
+    the predictor and run actually supply them. Pure numpy -- no
+    matplotlib -- so this is testable independent of plots.py actually
+    rendering anything.
+    """
+    panels: list[dict[str, Any]] = []
+
+    norm_true, norm_pred, keep = _normalized_profile_rows(
+        test.mol_profile, pred.mol_profile
+    )
+    if keep.any():
+        panels.append(
+            {
+                "y_true": norm_true[keep],
+                "y_pred": norm_pred[keep],
+                "quantity": "normalized sigma-profile (per bin)",
+                "title": "molecule profile",
+                "metrics": {
+                    k.removeprefix("profile/"): v
+                    for k, v in run_metrics.items()
+                    if k.startswith("profile/")
+                },
+            }
+        )
+
+    if area_true is not None and area_pred is not None:
+        panels.append(
+            {
+                "y_true": area_true,
+                "y_pred": area_pred,
+                "quantity": "area (A²)",
+                "title": "molecule area",
+                "metrics": {
+                    k.removeprefix("area/"): v
+                    for k, v in run_metrics.items()
+                    if k.startswith("area/")
+                },
+            }
+        )
+
+    if charge_true is not None and charge_pred is not None:
+        panels.append(
+            {
+                "y_true": charge_true,
+                "y_pred": charge_pred,
+                "quantity": "charge (e)",
+                "title": "molecule charge",
+                "metrics": {
+                    k.removeprefix("charge/"): v
+                    for k, v in run_metrics.items()
+                    if k.startswith("charge/")
+                },
+            }
+        )
+
+    if atom_truth is not None:
+        atom_profile_true, atom_area_true, atom_charge_true = atom_truth
+
+        if pred.atom_profile is not None:
+            a_norm_true, a_norm_pred, a_keep = _normalized_profile_rows(
+                atom_profile_true, pred.atom_profile
+            )
+            if a_keep.any():
+                panels.append(
+                    {
+                        "y_true": a_norm_true[a_keep],
+                        "y_pred": a_norm_pred[a_keep],
+                        "quantity": "normalized sigma-profile (per bin)",
+                        "title": "atom profile",
+                        "metrics": {
+                            k.removeprefix("atom/profile/"): v
+                            for k, v in run_metrics.items()
+                            if k.startswith("atom/profile/")
+                        },
+                    }
+                )
+
+        if pred.atom_area is not None:
+            panels.append(
+                {
+                    "y_true": atom_area_true,
+                    "y_pred": pred.atom_area,
+                    "quantity": "area (A²)",
+                    "title": "atom area",
+                    "metrics": {
+                        k.removeprefix("atom/area/"): v
+                        for k, v in run_metrics.items()
+                        if k.startswith("atom/area/")
+                    },
+                }
+            )
+
+        if pred.atom_charge is not None:
+            panels.append(
+                {
+                    "y_true": atom_charge_true,
+                    "y_pred": pred.atom_charge,
+                    "quantity": "charge (e)",
+                    "title": "atom charge",
+                    "metrics": {
+                        k.removeprefix("atom/charge/"): v
+                        for k, v in run_metrics.items()
+                        if k.startswith("atom/charge/")
+                    },
+                }
+            )
+
+    return panels
 
 
 def _write_plots(
@@ -343,6 +502,12 @@ def _write_plots(
     pred: Prediction,
     run_metrics: dict[str, float],
     cfg: ExperimentCfg,
+    *,
+    area_true: NDArray[np.float64] | None,
+    area_pred: NDArray[np.float64] | None,
+    charge_true: NDArray[np.float64] | None,
+    charge_pred: NDArray[np.float64] | None,
+    atom_truth: AtomTruth | None,
 ) -> None:
     if test.mol_profile is None:
         return  # nothing to plot without ground truth; execute() already
@@ -351,25 +516,38 @@ def _write_plots(
     if test.n_molecules == 0:
         return  # nothing to plot on an empty eval split (e.g. a small
         # --limit run whose split happens to land entirely in train)
+
+    norm_true, norm_pred, keep = _normalized_profile_rows(
+        test.mol_profile, pred.mol_profile
+    )
+    if not keep.any():
+        return  # every test molecule degenerate -- nothing plottable
+    norm_true, norm_pred = norm_true[keep], norm_pred[keep]
+    kept_smiles = [s for s, k in zip(test.smiles, keep, strict=True) if k]
+
     try:
-        plots.parity_hexbin(
-            test.mol_profile,
-            pred.mol_profile,
-            run_dir / "plots" / "parity_molecule.png",
-            {
-                k.split("/", 1)[1]: v
-                for k, v in run_metrics.items()
-                if k.startswith("profile/")
-            },
-            level="molecule",
-            title=f"{cfg.predictor.name} ({cfg.data.split_column}, {cfg.data.scheme})",
+        panels = _build_parity_panels(
+            test,
+            pred,
+            run_metrics,
+            area_true=area_true,
+            area_pred=area_pred,
+            charge_true=charge_true,
+            charge_pred=charge_pred,
+            atom_truth=atom_truth,
         )
-        profile_index = np.argsort(-pred.mol_profile.sum(axis=1))[:16]
+        plots.parity_panel(
+            panels,
+            run_dir / "plots" / "parity_panel.png",
+            suptitle=(
+                f"{cfg.predictor.name} ({cfg.data.split_column}, {cfg.data.scheme})"
+            ),
+        )
         plots.profile_panel(
             test.grid.values,
-            test.mol_profile[profile_index],
-            pred.mol_profile[profile_index],
-            [test.smiles[i] for i in profile_index],
+            norm_true,
+            norm_pred,
+            kept_smiles,
             run_dir / "plots" / "profile_panel.png",
         )
     except ImportError:

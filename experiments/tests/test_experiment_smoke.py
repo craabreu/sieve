@@ -254,3 +254,127 @@ def test_smoke_atom_metrics_skip_gracefully_when_truth_load_fails(
     assert np.isfinite(
         result.metrics["profile/w1_norm_mean"]
     )  # rest of the run is fine
+
+
+# --- _build_parity_panels ---------------------------------------------------
+#
+# Which hexbin panels a run's parity_panel.png gets, and what data/metrics
+# feed each one. Pure numpy -- no matplotlib, no rdkit -- so this is fast-
+# suite tested independently of plots.py actually rendering anything (that
+# needs matplotlib/rdkit: see test_experiment_plots.py).
+
+
+def _panel_titles(panels):
+    return [p["title"] for p in panels]
+
+
+def test_build_parity_panels_molecule_profile_only():
+    """No area/charge/atom output at all (e.g. a bare MoleculePredictor
+    supplying only mol_profile) -> exactly one panel."""
+    import sieve_experiments.runner as runner_mod
+    from sieve_experiments.predictors.base import Prediction
+
+    ms = synthetic_molecule_set(n_mol=6, seed=0)
+    pred = Prediction(mol_profile=ms.mol_profile)
+
+    panels = runner_mod._build_parity_panels(
+        ms,
+        pred,
+        {"profile/w1_norm_mean": 0.01},
+        area_true=None,
+        area_pred=None,
+        charge_true=None,
+        charge_pred=None,
+        atom_truth=None,
+    )
+    assert _panel_titles(panels) == ["molecule profile"]
+    assert panels[0]["metrics"] == {"w1_norm_mean": 0.01}
+
+
+def test_build_parity_panels_includes_area_and_charge_when_supplied():
+    import sieve_experiments.runner as runner_mod
+    from sieve_experiments.predictors.base import Prediction
+
+    ms = synthetic_molecule_set(n_mol=6, seed=0)
+    pred = Prediction(
+        mol_profile=ms.mol_profile, mol_area=ms.mol_area, mol_charge_raw=ms.mol_charge
+    )
+
+    panels = runner_mod._build_parity_panels(
+        ms,
+        pred,
+        {"area/mae": 1.0, "charge/mae": 2.0},
+        area_true=ms.mol_area,
+        area_pred=pred.mol_area,
+        charge_true=ms.net_charge,
+        charge_pred=pred.mol_charge_raw,
+        atom_truth=None,
+    )
+    assert _panel_titles(panels) == [
+        "molecule profile",
+        "molecule area",
+        "molecule charge",
+    ]
+    assert panels[1]["metrics"] == {"mae": 1.0}
+    assert panels[2]["metrics"] == {"mae": 2.0}
+
+
+def test_build_parity_panels_includes_atom_panels_when_atom_truth_and_pred_supplied():
+    import sieve_experiments.runner as runner_mod
+    from sieve_experiments.predictors.base import Prediction
+
+    ms = synthetic_molecule_set(n_mol=6, seed=0)
+    pred = Prediction(
+        mol_profile=ms.mol_profile,
+        atom_profile=ms.atom_profile,
+        atom_area=ms.atom_area,
+        atom_charge=ms.atom_charge,
+    )
+    atom_truth = (ms.atom_profile, ms.atom_area, ms.atom_charge)
+
+    panels = runner_mod._build_parity_panels(
+        ms,
+        pred,
+        {
+            "atom/profile/w1_norm_mean": 0.02,
+            "atom/area/mae": 0.3,
+            "atom/charge/mae": 0.4,
+        },
+        area_true=None,
+        area_pred=None,
+        charge_true=None,
+        charge_pred=None,
+        atom_truth=atom_truth,
+    )
+    assert _panel_titles(panels) == [
+        "molecule profile",
+        "atom profile",
+        "atom area",
+        "atom charge",
+    ]
+    assert panels[1]["metrics"] == {"w1_norm_mean": 0.02}
+    assert panels[2]["metrics"] == {"mae": 0.3}
+    assert panels[3]["metrics"] == {"mae": 0.4}
+
+
+def test_build_parity_panels_excludes_atom_panels_when_atom_truth_load_failed():
+    """pred.atom_profile is set (the predictor is an AtomPredictor), but
+    atom_truth is None (the store load failed) -- no atom panels, not a
+    crash. Mirrors _execute_inner's own graceful-degradation path."""
+    import sieve_experiments.runner as runner_mod
+    from sieve_experiments.predictors.base import Prediction
+
+    ms = synthetic_molecule_set(n_mol=6, seed=0)
+    pred = Prediction(mol_profile=ms.mol_profile, atom_profile=ms.atom_profile)
+
+    panels = runner_mod._build_parity_panels(
+        ms,
+        pred,
+        {},
+        area_true=None,
+        area_pred=None,
+        charge_true=None,
+        charge_pred=None,
+        atom_truth=None,
+    )
+    assert _panel_titles(panels) == ["molecule profile"]
