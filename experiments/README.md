@@ -267,7 +267,48 @@ full run" (design.md risk #1).
   here. `cosmonet-random.yaml` (the sanity split) has no trained checkpoint
   yet — only `biased_split` has been trained so far.
 
-**Not started — T10** (`summarize` polish, results table, this README's
+**Not started — Chemprop reimplementation of COSMO-NET (T10), 2026-08-25.**
+Replaces what was originally planned as T10 (renumbered to T11, below).
+
+COSMO-NET-Paper's own repo has **three independently-confirmed
+reproducibility gaps**, found while investigating T9's negative-sigma-bin
+issue, that make it unsuitable as the sole D-MPNN sigma-profile baseline
+going forward:
+
+1. The shipped `Sigma_saved_model/StratifiedCATEGORY_CV5/` checkpoint's own
+   weights don't match the hyperparameters printed in its own committed
+   training log (log: `hidden_size=51, ffn_num_layers=1`; checkpoint
+   state_dict: `hidden_size=300, ffn_num_layers=3`) — the `.pt` files were
+   added in a *later*, separate commit ("Updating the checkpoints.", 44 min
+   after "Comitting the results of training.") without updating the log or
+   results CSV to match.
+2. The atom featurizer needed to reproduce that checkpoint's actual input
+   dimension (`atom_fdim=35`, not deepchem's stock 133-dim) was never
+   published — independently confirmed by a second party in the repo's own
+   GitHub issue #1 (opened 2026-08-09, still unanswered).
+3. The published training script (`DMPNN-Train-pSigma.py`) has **no**
+   non-negativity enforcement anywhere in its prediction path (no
+   softplus/clamp/clip between `model.predict()` and the CSV write), yet
+   its own README claims a softplus-patched FFN was used, and its own
+   published `Results/pSigma-DMPNN.csv` has exactly 0% negative
+   sigma-profile bins across all 5 folds — the published script cannot
+   reproduce its own repo's published results.
+
+T9 (COSMO-NET, above) stays as-is: a real, honestly-documented baseline
+trained with what's actually publishable in that repo (stock deepchem, no
+softplus) — its negative-bin issue (19.6% of test-set bins, confirmed) is
+now a known, explained limitation, not silently swept under the rug.
+
+T10 is a from-scratch D-MPNN sigma-profile predictor built on
+[Chemprop](https://github.com/chemprop/chemprop) (the actively-maintained,
+standard open-source D-MPNN implementation) instead of the
+deepchem-wrapped DMPNN stack, following the architecture the COSMO-NET
+paper *describes* (D-MPNN message passing, softplus-constrained
+non-negative output) without depending on that paper's own unreproducible
+artifacts. Not started — no commit pinned, no dependency resolution done,
+no predictor written.
+
+**Not started — T11** (`summarize` polish, results table, this README's
 final form).
 
 **Known external gap, resolved 2026-08-24:** Zenodo record 22050672 (the
