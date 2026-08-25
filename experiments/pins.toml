@@ -241,3 +241,70 @@ biased_split has been trained) -- its predictions_csv points at a
 not-yet-created file by design, so the CATEGORY guard above would reject a
 biased_split CSV if someone pointed it there by mistake.
 """
+
+[chemprop]
+# A PyPI version pin, not a git SHA -- chemprop is a real pip dependency
+# (pyproject.toml's `chemprop` extra), unlike DASH-tree/COSMO-NET-Paper's
+# sys.path/subprocess clones. Installed via `uv sync --extra chemprop`.
+version = "2.3.1"  # requires-python >=3.11,<3.15
+license = "MIT"
+notes = """
+T10: a from-scratch D-MPNN sigma-profile predictor reproducing COSMO-NET's
+published architecture (Naseri Boroujeni et al., Mol. Syst. Des. Eng., 2026,
+DOI 10.1039/d6me00088f) directly from the paper's Tables 1-2 and Section
+2.2.2 -- not from COSMO-NET-Paper's own repo (snaserib/COSMO-NET-Paper,
+pinned above), which has three independently-confirmed reproducibility gaps
+found while investigating T9's negative-sigma-bin issue:
+  1. the shipped StratifiedCATEGORY_CV5 checkpoint's weights (hidden_size=
+     300, ffn_num_layers=3) contradict the hyperparameters printed in its
+     own committed training log (hidden_size=51, ffn_num_layers=1) -- the
+     .pt files were added in a later commit than the log/results beside them;
+  2. the atom featurizer needed to reproduce that checkpoint (atom_fdim=35
+     vs deepchem's stock 133) was never published -- independently confirmed
+     in that repo's own GitHub issue #1, unanswered since 2026-08-09;
+  3. the published training script has no non-negativity enforcement
+     anywhere in its prediction path, yet its own published results CSV has
+     exactly 0% negative bins across all 5 folds.
+See README.md's T10 section for the full account.
+
+Dependency resolution (2026-08-25) into the MAIN venv (not a separate one,
+unlike T9's cosmonet venv): `uv sync --extra chemprop` resolved cleanly on
+the first try, no conflicts. rdkit stayed at 2026.03.5 (chemprop's own
+transitive pin `cuik_molmaker_pin==2026.3.5` requires exactly that rdkit
+version, and it happened to already match -- a future rdkit bump could
+require watching this). torch (2.13.0+cu130, CUDA available) and lightning
+(2.6.5) were already present transitively via cosmolayer's `experiments`
+extra, so this added no new heavy stack, just chemprop itself plus its own
+tail (myerson, descriptastorus, astartes, cuik_molmaker_pin, padelpy,
+mordredcommunity, aimsim-core, xarray -- none of which this predictor
+actually uses; they come along with the `chemprop` import regardless).
+
+Architecture notes (see predictors/chemprop_dmpnn.py's module docstring for
+the full reasoning):
+- Two real gotchas found while building this, beyond ordinary API mapping:
+  (a) chemprop's `MLP.build(n_layers=...)` counts *additional* hidden layers
+  beyond the direct input->output projection -- the paper's "ffn_num_layers
+  =1" (one FFN layer, no hidden layer) is chemprop's `n_layers=0`, confirmed
+  by inspecting `MLP.build` directly (n_layers=0 -> one Linear; n_layers=1
+  -> two). Using chemprop's n_layers=1 would silently build a deeper FFN
+  than the paper describes.
+  (b) `pl.Trainer(accelerator="auto")` alone silently launched multi-GPU DDP
+  on this machine's 2 GPUs, splitting the val/test batch across ranks --
+  caught as a metrics shape mismatch in the first end-to-end test run
+  (profile_true had 10 rows, profile_pred had 5, half lost to the other
+  rank). Fixed with an explicit `devices=1`.
+- chemprop's built-in featurizers cannot hit the paper's exact 35/12
+  dimensions (mandatory "unknown" pad bits push atoms to 41, bonds to 14),
+  so PaperAtomFeaturizer/PaperBondFeaturizer are custom, duck-typed classes
+  (not chemprop.featurizers.base.VectorFeaturizer subclasses, so they stay
+  importable and unit-testable without chemprop -- confirmed empirically
+  that chemprop accepts plain duck-typed featurizers with no isinstance
+  check anywhere in the call path).
+- Non-negativity is structural, not a post-hoc clip: softplus sits on the
+  FFN's raw scaled-space output, before UnscaleTransform (min-max, built
+  manually since chemprop's own normalize_targets() is z-score only). Since
+  min-max scaling's y_min >= 0 for every profile bin, softplus(x) > 0
+  composed with unscaling guarantees p(sigma) > 0 for every prediction --
+  verified end to end: the first real fit/predict run through the harness
+  (--limit 40, max_epochs=1) produced zero negative bins.
+"""

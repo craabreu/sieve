@@ -7,9 +7,11 @@ or predictor.
 
 The Wasserstein-1 and regression-metric formulas are promoted, unchanged, from
 scripts/train_chaos_sigma_profile.py (wasserstein1_per_row, regression_metrics),
-which were themselves adapted from Chemprop's ProfileWasserstein /
-AreaWeightedProfileWasserstein. Three things are fixed here, deliberately,
-versus that script:
+which were themselves adapted from the user's own ProfileWasserstein /
+AreaWeightedProfileWasserstein (~/data/cosmo/sigma-prediction/sigma_nn.py,
+a ``ChempropMetric`` subclass defined there -- not part of Chemprop itself,
+despite the name). Three things are fixed here, deliberately, versus that
+script:
 
 - Metric keys are ASCII ("r2", not "R²") because MLflow rejects non-ASCII keys.
 - ``normalize_rows`` masks a zero/negative row sum explicitly rather than

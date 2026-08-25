@@ -39,7 +39,9 @@ def build(name: str, params: Mapping[str, Any]) -> Predictor:
     if name == "dash_backoff" and name not in REGISTRY:
         import sieve_experiments.predictors.dash
     if name == "cosmonet" and name not in REGISTRY:
-        import sieve_experiments.predictors.cosmonet  # noqa: F401
+        import sieve_experiments.predictors.cosmonet
+    if name == "chemprop_dmpnn" and name not in REGISTRY:
+        import sieve_experiments.predictors.chemprop_dmpnn  # noqa: F401
     if name not in REGISTRY:
         raise ValueError(f"unknown predictor {name!r}; known: {sorted(REGISTRY)}")
     return REGISTRY[name](params)

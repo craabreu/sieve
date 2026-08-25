@@ -303,6 +303,7 @@ def test_screening_charge_is_the_negated_net_charge_on_real_molecules():
     )
     charged = mset.net_charge != 0
     assert charged.sum() > 0, "expected at least one charged molecule in chaos-store"
+    assert mset.mol_profile is not None
 
     sigma_charge = mset.mol_profile @ DEFAULT_GRID.values
     correlation = np.corrcoef(mset.net_charge[charged], sigma_charge[charged])[0, 1]

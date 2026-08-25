@@ -1,0 +1,31 @@
+# T10: a from-scratch D-MPNN sigma-profile predictor on Chemprop, reproducing
+# COSMO-NET's published architecture -- see predictors/chemprop_dmpnn.py's
+# module docstring and pins.toml's [chemprop] notes for why this exists
+# instead of reusing COSMO-NET-Paper's own repo. Headline extrapolation
+# split. Otherwise identical to chemprop-random.yaml.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: chemprop_dmpnn
+  params:
+    # store/scheme duplicate data.* above -- the runner's own
+    # _check_predictor_store_scheme cross-check reads these. hidden_size/
+    # depth/dropout/batch_size/max_epochs are the paper's own values
+    # (Section 2.2.2); see the predictor module for why hidden_size=51 with
+    # ffn_num_layers=1 needs chemprop's own n_layers=0, not 1.
+    store: chaos-store
+    scheme: cosmo-sac-2010
+    hidden_size: 51
+    depth: 3
+    dropout: 0.1
+    batch_size: 64
+    max_epochs: 100

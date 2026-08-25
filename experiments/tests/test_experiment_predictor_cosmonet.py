@@ -57,6 +57,9 @@ def test_fit_then_predict_looks_up_by_smiles(tmp_path):
     predictor.fit_molecules(train, val, rng=np.random.default_rng(0))
     pred = predictor.predict_molecules(test)
 
+    assert pred.mol_area is not None
+    assert pred.mol_charge_raw is not None
+    assert test.mol_profile is not None
     np.testing.assert_allclose(pred.mol_profile, test.mol_profile, rtol=1e-6)
     np.testing.assert_allclose(pred.mol_area, test.mol_profile.sum(axis=1), rtol=1e-6)
     expected_charge = test.mol_profile @ test.grid.values
@@ -81,6 +84,7 @@ def test_predict_is_smiles_keyed_not_positional(tmp_path):
         mol_profile=test.mol_profile[::-1],
     )
     pred = predictor.predict_molecules(reversed_test)
+    assert reversed_test.mol_profile is not None
     np.testing.assert_allclose(pred.mol_profile, reversed_test.mol_profile, rtol=1e-6)
 
 

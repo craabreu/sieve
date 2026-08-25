@@ -37,6 +37,12 @@ experiments = [
     "tqdm>=4.65",
     "pillow>=10",
 ]
+# T10's from-scratch D-MPNN baseline (predictors/chemprop_dmpnn.py). Separate
+# from `experiments` on purpose: it pulls torch/lightning (already present
+# transitively via cosmolayer, so no new heavy stack) plus its own tail
+# (myerson, descriptastorus, astartes, cuik_molmaker_pin) -- opt in only when
+# actually running this predictor. See pins.toml's [chemprop] notes.
+chemprop = ["chemprop>=2.3,<3"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -97,6 +103,15 @@ allowed-unresolved-imports = [
     # rather than pip-installed -- see predictors/dash.py.
     "serenityff",
     "serenityff.**",
+    # T10's `chemprop` extra (predictors/chemprop_dmpnn.py) -- torch/lightning
+    # are transitively present via cosmolayer's `experiments` extra too, but
+    # CI's lint job installs [dev,chem] only, so neither is resolvable there.
+    "chemprop",
+    "chemprop.**",
+    "torch",
+    "torch.**",
+    "lightning",
+    "lightning.**",
 ]
 
 [[tool.ty.overrides]]
@@ -111,6 +126,19 @@ invalid-argument-type = "ignore"
 # **payload potentially supplying `allow_pickle` -- reproducible on `np.savez`
 # with any `**dict[str, np.ndarray]` spread, independent of this file's logic.
 include = ["experiments/sieve_experiments/runner.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+
+[[tool.ty.overrides]]
+# chemprop.featurizers.base.VectorFeaturizer is Generic+Sized, not a
+# typing.Protocol -- ty checks it nominally, but SimpleMoleculeMolGraphFeaturizer
+# actually takes it structurally (a dataclass field with no isinstance check;
+# confirmed empirically: a plain __call__+__len__ class with no inheritance
+# works at runtime). PaperAtomFeaturizer/PaperBondFeaturizer deliberately don't
+# inherit VectorFeaturizer so they stay importable without chemprop -- see
+# predictors/chemprop_dmpnn.py's module docstring.
+include = ["experiments/sieve_experiments/predictors/chemprop_dmpnn.py"]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"

@@ -267,7 +267,7 @@ full run" (design.md risk #1).
   here. `cosmonet-random.yaml` (the sanity split) has no trained checkpoint
   yet — only `biased_split` has been trained so far.
 
-**Not started — Chemprop reimplementation of COSMO-NET (T10), 2026-08-25.**
+**Done and verified — Chemprop reimplementation of COSMO-NET (T10), 2026-08-25.**
 Replaces what was originally planned as T10 (renumbered to T11, below).
 
 COSMO-NET-Paper's own repo has **three independently-confirmed
@@ -302,11 +302,70 @@ now a known, explained limitation, not silently swept under the rug.
 T10 is a from-scratch D-MPNN sigma-profile predictor built on
 [Chemprop](https://github.com/chemprop/chemprop) (the actively-maintained,
 standard open-source D-MPNN implementation) instead of the
-deepchem-wrapped DMPNN stack, following the architecture the COSMO-NET
-paper *describes* (D-MPNN message passing, softplus-constrained
-non-negative output) without depending on that paper's own unreproducible
-artifacts. Not started — no commit pinned, no dependency resolution done,
-no predictor written.
+deepchem-wrapped DMPNN stack, following the architecture the peer-reviewed
+paper itself specifies (Naseri Boroujeni et al., *Mol. Syst. Des. Eng.*,
+2026, DOI 10.1039/d6me00088f — Tables 1–2 and Section 2.2.2, read directly
+rather than trusted from the repo) without depending on that repo's own
+unreproducible artifacts:
+
+- Dependency resolution (`uv sync --extra chemprop`, a new opt-in extra)
+  was clean on the first try — chemprop 2.3.1 is compatible with the main
+  venv's existing torch 2.13.0+cu130 (CUDA available) and lightning 2.6.5,
+  both already present transitively via `cosmolayer`. No separate venv,
+  unlike T9 — training runs in-process.
+- `sieve_experiments/predictors/chemprop_dmpnn.py` reproduces the paper's
+  atom/bond features **exactly** (35/12-dim, Tables 1–2 — chemprop's own
+  built-in featurizers cannot hit these widths, they always reserve
+  "unknown"-value pad bits, landing at 41/14) via two small duck-typed
+  classes that stay importable and unit-tested without chemprop installed.
+  `message_passing_steps=3`, `hidden_size=51`, `ffn_num_layers=1` (which is
+  chemprop's own `n_layers=0`, not `1` — confirmed by inspecting
+  `MLP.build`; chemprop's `n_layers` counts *additional* hidden layers
+  beyond the direct projection), `dropout=0.1`, MSE loss, `batch_size=64`,
+  `max_epochs=100`, min-max target scaling from training-set statistics
+  only (chemprop's built-in `normalize_targets()` is z-score-only, so this
+  is built by hand from `UnscaleTransform`).
+- **Non-negativity is structural, not a post-hoc clip**: softplus sits on
+  the FFN's raw output *before* unscaling; since min-max scaling's
+  `y_min ≥ 0` for every profile bin, `softplus(x) > 0` composed with
+  unscaling guarantees `p(σ) > 0` for every prediction, by construction —
+  exactly the demonstration the paper's own repo could not produce (§1's
+  gap 3, above). 15 fast tests + 1 real end-to-end optional test
+  (`--limit 40`, `max_epochs=1`), all passing, including a direct assertion
+  of zero negative bins on real chaos-store predictions.
+- One real bug caught in testing: `pl.Trainer(accelerator="auto")` alone
+  silently launched multi-GPU DDP on this machine's 2 GPUs, splitting the
+  validation/test batch across ranks — surfaced immediately as a metrics
+  shape mismatch (10 true rows vs. 5 predicted). Fixed with an explicit
+  `devices=1`.
+- A `--limit 5000` timing probe (100 real epochs, the paper's own count):
+  127.8s wall — this is a tiny model (12.1K trainable params), an order of
+  magnitude faster than T9's DMPNN-in-deepchem. Full-store training
+  (53,079 molecules, `biased_split`) took **1363.5s (22.7 min)** —
+  extrapolated from the probe almost exactly.
+- **Headline result, verified directly against `predictions.npz` (not just
+  the aggregate metric): 0/271,983 predicted sigma-profile bins are
+  negative — 0.0000%, vs. T9's measured 19.6%.** Structural non-negativity
+  holds at full scale, not just on the small optional test.
+
+  | metric | dash_backoff | global_mean | cosmonet (T9) | **chemprop_dmpnn (T10)** |
+  | --- | --- | --- | --- | --- |
+  | `profile/w1_norm_mean` | 0.449 | 1.024 | 0.224 | **0.397** |
+  | `area/r2` | 0.949 | 0.415 | 0.775 | 0.731 |
+  | `charge/mae` | 0.102 | 0.00694* | 0.00546 | 0.0538 |
+  | negative sigma bins | — | — | 19.6% | **0%** |
+
+  T10 beats DASH on profile shape but sits behind T9's DMPNN-in-deepchem
+  run (0.397 vs. 0.224) despite reproducing the same nominal architecture —
+  plausibly optimizer/init differences between chemprop's and deepchem's
+  Adam defaults and LR schedule (the paper doesn't specify one; see
+  `predictors/chemprop_dmpnn.py`'s deviations), not something resolved here.
+  The point of T10 was never to outscore T9 — it's the only one of the two
+  whose non-negativity is a structural guarantee rather than a discovered
+  gap, which is exactly the property the paper's own repo couldn't
+  demonstrate for either of its published artifacts.
+
+See `pins.toml`'s `[chemprop]` notes for the full gotcha writeup.
 
 **Not started — T11** (`summarize` polish, results table, this README's
 final form).
