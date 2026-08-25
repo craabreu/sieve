@@ -1,8 +1,9 @@
 # T10: a from-scratch D-MPNN sigma-profile predictor on Chemprop, reproducing
-# COSMO-NET's published architecture -- see predictors/chemprop_dmpnn.py's
-# module docstring and pins.toml's [chemprop] notes for why this exists
-# instead of reusing COSMO-NET-Paper's own repo. Headline extrapolation
-# split. Otherwise identical to chemprop-random.yaml.
+# the architecture COSMO-NET-Paper's own script *actually trains* -- not the
+# architecture its paper's text claims. See predictors/chemprop_dmpnn.py's
+# module docstring and pins.toml's [chemprop]/[cosmonet] notes for the full
+# derivation. Headline extrapolation split. Otherwise identical to
+# chemprop-random.yaml.
 run:
   experiment: milestone1-sigma-profile
   seed: 0
@@ -19,13 +20,17 @@ predictor:
   params:
     # store/scheme duplicate data.* above -- the runner's own
     # _check_predictor_store_scheme cross-check reads these. hidden_size/
-    # depth/dropout/batch_size/max_epochs are the paper's own values
-    # (Section 2.2.2); see the predictor module for why hidden_size=51 with
-    # ffn_num_layers=1 needs chemprop's own n_layers=0, not 1.
+    # depth/dropout/ffn_n_layers are deepchem's real (silently-defaulted)
+    # values, confirmed against real trained checkpoint weights -- NOT the
+    # paper's claimed hidden_size=51/ffn_num_layers=1/dropout=0.1. Note
+    # ffn_n_layers=2 here means 3 total FFN layers in deepchem's own
+    # counting convention (chemprop's n_layers counts *additional* hidden
+    # layers beyond the direct projection); see the predictor module.
     store: chaos-store
     scheme: cosmo-sac-2010
-    hidden_size: 51
+    hidden_size: 300
     depth: 3
-    dropout: 0.1
+    dropout: 0.0
+    ffn_n_layers: 2
     batch_size: 64
     max_epochs: 100

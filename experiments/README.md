@@ -319,10 +319,7 @@ now a known, explained limitation, not silently swept under the rug.
 T10 is a from-scratch D-MPNN sigma-profile predictor built on
 [Chemprop](https://github.com/chemprop/chemprop) (the actively-maintained,
 standard open-source D-MPNN implementation) instead of the
-deepchem-wrapped DMPNN stack, following the architecture the peer-reviewed
-paper itself specifies (Naseri Boroujeni et al., *Mol. Syst. Des. Eng.*,
-2026, DOI 10.1039/d6me00088f — Tables 1–2 and Section 2.2.2, read directly
-rather than trusted from the repo) without depending on that repo's own
+deepchem-wrapped DMPNN stack, without depending on COSMO-NET-Paper's own
 unreproducible artifacts:
 
 - Dependency resolution (`uv sync --extra chemprop`, a new opt-in extra)
@@ -330,65 +327,91 @@ unreproducible artifacts:
   venv's existing torch 2.13.0+cu130 (CUDA available) and lightning 2.6.5,
   both already present transitively via `cosmolayer`. No separate venv,
   unlike T9 — training runs in-process.
-- `sieve_experiments/predictors/chemprop_dmpnn.py` reproduces the paper's
-  atom/bond features **exactly** (35/12-dim, Tables 1–2 — chemprop's own
-  built-in featurizers cannot hit these widths, they always reserve
-  "unknown"-value pad bits, landing at 41/14) via two small duck-typed
-  classes that stay importable and unit-tested without chemprop installed.
-  `message_passing_steps=3`, `hidden_size=51`, `ffn_num_layers=1` (which is
-  chemprop's own `n_layers=0`, not `1` — confirmed by inspecting
-  `MLP.build`; chemprop's `n_layers` counts *additional* hidden layers
-  beyond the direct projection), `dropout=0.1`, MSE loss, `batch_size=64`,
-  `max_epochs=100`, min-max target scaling from training-set statistics
-  only (chemprop's built-in `normalize_targets()` is z-score-only, so this
-  is built by hand from `UnscaleTransform`).
+- **Revised 2026-08-25** (prompted by the user pointing out that T10's
+  original W1-vs-T9 comparison "makes no sense"): T10 originally targeted
+  the architecture the peer-reviewed paper's own text specifies (Tables
+  1–2, Section 2.2.2 — `hidden_size=51`, `ffn_num_layers=1`, `dropout=0.1`,
+  sum pooling, 12-dim bond features). Investigating why that scored worse
+  than T9 found T9's actual trained model was never running that
+  architecture at all (see T9's correction note above) — every real run of
+  `DMPNN-Train-pSigma.py`, ours included, silently trains deepchem's own
+  default-shaped DMPNN instead, because most of `MODEL_HPARAMS`'s keys
+  aren't real parameter names on the installed deepchem version. **T10 now
+  targets that real, empirically-verified architecture instead** — the one
+  thing in this whole picture with direct evidence (trained checkpoint
+  weights, from both the paper repo's own shipped one and our independent
+  T9 run) behind it, rather than prose that neither run actually followed:
+
+  | | originally targeted (paper's text) | now targeted (verified real) |
+  | --- | --- | --- |
+  | `hidden_size` | 51 | **300** |
+  | FFN layers (total) | 1 | **3** |
+  | dropout | 0.1 | **0.0** |
+  | bond features | 12-dim (Table 2) | **14-dim** (deepchem's stock, never patched) |
+  | atom features | 35-dim (Table 1) | 35-dim, **unchanged** — the one part of the paper's claim that was genuinely realized |
+  | readout | sum (the paper's own eqn 11) | **mean** — `aggregation` isn't in `MODEL_HPARAMS` at all |
+
+  Getting the FFN layer count right needed tracing *both* frameworks'
+  layer-counting conventions precisely, since they disagree by one:
+  deepchem's `PositionwiseFeedForward` treats its `n_layers` as the total
+  Linear-layer count; chemprop's own `MLP.build(n_layers=N)` instead yields
+  `N+1` total layers. So deepchem's real `ffn_layers=3` needs chemprop's
+  `n_layers=2` — not 3, and not the original 0. Locked in by a dedicated
+  test that counts actual `nn.Linear` submodules rather than trusting
+  either framework's parameter name at face value. The bond side no longer
+  needs a custom featurizer at all: deepchem's real (never-patched) 14-dim
+  bond features turn out to be structurally identical to chemprop's own
+  built-in `MultiHotBondFeaturizer()` default, so that's used directly.
+  Not replicated: the real run's exact optimizer/LR schedule
+  (`ExponentialDecay`, set directly in the script rather than through the
+  broken `MODEL_HPARAMS` path, so genuinely applied) vs. chemprop's own
+  default Adam + Noam-like warmup — a documented, deliberately-deferred
+  remaining deviation.
 - **Non-negativity is structural, not a post-hoc clip**: softplus sits on
   the FFN's raw output *before* unscaling; since min-max scaling's
   `y_min ≥ 0` for every profile bin, `softplus(x) > 0` composed with
   unscaling guarantees `p(σ) > 0` for every prediction, by construction —
   exactly the demonstration the paper's own repo could not produce (§1's
-  gap 3, above). 15 fast tests + 1 real end-to-end optional test
-  (`--limit 40`, `max_epochs=1`), all passing, including a direct assertion
-  of zero negative bins on real chaos-store predictions.
+  gap 3, above). This part of the design is unaffected by the revision
+  above. 10 fast tests + 3 real end-to-end optional tests (bond-featurizer
+  dimension check, FFN layer-count check, and a fit/predict run asserting
+  zero negative bins), all passing.
 - One real bug caught in testing: `pl.Trainer(accelerator="auto")` alone
   silently launched multi-GPU DDP on this machine's 2 GPUs, splitting the
   validation/test batch across ranks — surfaced immediately as a metrics
   shape mismatch (10 true rows vs. 5 predicted). Fixed with an explicit
   `devices=1`.
-- A `--limit 5000` timing probe (100 real epochs, the paper's own count):
-  127.8s wall — this is a tiny model (12.1K trainable params), an order of
-  magnitude faster than T9's DMPNN-in-deepchem. Full-store training
-  (53,079 molecules, `biased_split`) took **1363.5s (22.7 min)** —
-  extrapolated from the probe almost exactly.
-- **Headline result, verified directly against `predictions.npz` (not just
-  the aggregate metric): 0/271,983 predicted sigma-profile bins are
-  negative — 0.0000%, vs. T9's measured 19.6%.** Structural non-negativity
-  holds at full scale, not just on the small optional test.
+- The revised architecture has 401K trainable params (vs. the original's
+  12.1K). A `--limit 5000` timing probe: 122.3s — barely different from
+  the original, much smaller model's 127.8s at the same scale (small-batch
+  GPU training here is overhead-bound, not compute-bound).
+- **Full-store run (revised architecture): 1337.8s (22.3 min)**, matching
+  the probe's extrapolation almost exactly. **T10 now beats T9** on both
+  profile shape and area — unsurprising once the correction above is
+  understood: T10 now runs the real architecture T9 accidentally used,
+  built deliberately (proper softplus, proper min-max scaling, no
+  silently-broken kwargs) rather than by accident.
 
   | metric | dash_backoff | global_mean | cosmonet (T9) | **chemprop_dmpnn (T10)** |
   | --- | --- | --- | --- | --- |
-  | `profile/w1_norm_mean` | 0.449 | 1.024 | 0.224 | **0.397** |
-  | `area/r2` | 0.949 | 0.415 | 0.775 | 0.731 |
-  | `charge/mae` | 0.102 | 0.00694* | 0.00546 | 0.0538 |
+  | `profile/w1_norm_mean` | 0.449 | 1.024 | 0.224 | **0.2194** |
+  | `area/r2` | 0.949 | 0.415 | 0.775 | **0.828** |
+  | `charge/mae` | 0.102 | 0.00694* | 0.00546 | 0.0201 |
   | negative sigma bins | — | — | 19.6% | **0%** |
 
-  T10 beats DASH on profile shape but sits behind T9's DMPNN-in-deepchem
-  run (0.397 vs. 0.224). **This is not a mystery and not an
-  apples-to-apples comparison of "the same nominal architecture," despite
-  an earlier draft of this section saying so** — see T9's correction note
-  above: T9's actual trained model is deepchem's own default DMPNN
-  (`enc_hidden=300`, 3 FFN layers, 133-dim atom features, no dropout),
-  substantially bigger and richer than either the paper describes or than
-  T10 faithfully implements (`hidden_size=51`, 1 FFN layer, 35-dim
-  features). A bigger, richer model fitting real chaos-store data better is
-  the expected outcome, not a puzzle needing an optimizer/init explanation.
-  The point of T10 was never to outscore T9 on size it doesn't have — it's
-  the only one of the two whose non-negativity is a structural guarantee
-  rather than a discovered gap, and the only one that actually implements
-  what the paper describes, which is exactly the property the paper's own
-  repo couldn't demonstrate for either of its published artifacts.
+  The comparison that originally "made no sense" is fully resolved: T10
+  and T9 were never comparable before (different real architectures under
+  an identical-looking config — T9 secretly 300 hidden units/3 FFN
+  layers/mean pooling, T10 faithfully 51/1/sum), and now they are (same
+  real architecture, T10 the deliberate version of it). T10 is still the
+  only one of the two whose non-negativity is a structural guarantee
+  rather than a discovered gap — now it also happens to score better,
+  though that was never the point.
 
-See `pins.toml`'s `[chemprop]` notes for the full gotcha writeup.
+See `pins.toml`'s `[chemprop]` notes for the full gotcha writeup, including
+the first (now-superseded) paper-faithful run's own numbers, kept as the
+record of what "faithfully implementing the paper's own claimed
+hyperparameters" actually produces.
 
 **Not started — T11** (`summarize` polish, results table, this README's
 final form).

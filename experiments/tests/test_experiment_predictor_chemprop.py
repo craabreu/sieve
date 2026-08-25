@@ -1,7 +1,13 @@
 """Fast tests for predictors/chemprop_dmpnn.py's pure, chemprop-free half:
-the paper's exact 35/12 featurizers, min-max helpers, and the profile ->
-Prediction conversion. No chemprop import at module scope (see the module
-docstring) -- these must pass without chemprop installed.
+the atom featurizer that reproduces the paper's Table 1 (the one part of
+its claimed architecture that was genuinely realized -- see the module
+docstring), min-max helpers, and the profile -> Prediction conversion. No
+chemprop import at module scope -- these must pass without chemprop
+installed. Bond featurization now uses chemprop's own built-in
+MultiHotBondFeaturizer directly (matches deepchem's real, never-patched
+14-dim bond features), so there's no custom bond featurizer left to test
+here -- see test_experiment_predictor_chemprop_optional.py for the
+BOND_FDIM/MultiHotBondFeaturizer length assertion.
 """
 
 from __future__ import annotations
@@ -10,24 +16,18 @@ import numpy as np
 from rdkit import Chem
 from sieve_experiments.predictors.chemprop_dmpnn import (
     ATOM_FDIM,
-    BOND_FDIM,
     PaperAtomFeaturizer,
-    PaperBondFeaturizer,
     minmax_apply,
     minmax_fit,
     minmax_invert,
     prediction_from_profile,
 )
 
-# --- featurizer widths -------------------------------------------------
+# --- featurizer width -------------------------------------------------
 
 
 def test_atom_featurizer_width_matches_the_paper():
     assert len(PaperAtomFeaturizer()) == 35 == ATOM_FDIM
-
-
-def test_bond_featurizer_width_matches_the_paper():
-    assert len(PaperBondFeaturizer()) == 12 == BOND_FDIM
 
 
 def test_atom_featurizer_output_has_the_declared_width():
@@ -35,13 +35,6 @@ def test_atom_featurizer_output_has_the_declared_width():
     feat = PaperAtomFeaturizer()
     for atom in mol.GetAtoms():
         assert feat(atom).shape == (35,)
-
-
-def test_bond_featurizer_output_has_the_declared_width():
-    mol = Chem.MolFromSmiles("CCO")
-    feat = PaperBondFeaturizer()
-    for bond in mol.GetBonds():
-        assert feat(bond).shape == (12,)
 
 
 # --- atom featurizer, hand-checked one-hot blocks -----------------------
@@ -98,31 +91,6 @@ def test_element_outside_the_papers_vocabulary_one_hots_to_all_zero():
 
 def test_atom_featurizer_handles_none():
     np.testing.assert_array_equal(PaperAtomFeaturizer()(None), np.zeros(35))
-
-
-# --- bond featurizer -----------------------------------------------------
-
-
-def test_aromatic_conjugated_ring_bond():
-    mol = Chem.MolFromSmiles("c1ccccc1")
-    b = mol.GetBondWithIdx(0)
-    x = PaperBondFeaturizer()(b)
-    np.testing.assert_array_equal(x[0:4], [0, 0, 0, 1])  # AROMATIC
-    assert x[4] == 1.0  # conjugated
-    assert x[5] == 1.0  # in ring
-    np.testing.assert_array_equal(x[6:12], [1, 0, 0, 0, 0, 0])  # stereo none
-
-
-def test_non_ring_single_bond():
-    mol = Chem.MolFromSmiles("CCO")
-    b = mol.GetBondWithIdx(0)
-    x = PaperBondFeaturizer()(b)
-    np.testing.assert_array_equal(x[0:4], [1, 0, 0, 0])  # SINGLE
-    assert x[5] == 0.0  # not in a ring
-
-
-def test_bond_featurizer_handles_none():
-    np.testing.assert_array_equal(PaperBondFeaturizer()(None), np.zeros(12))
 
 
 # --- min-max helpers -------------------------------------------------

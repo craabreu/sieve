@@ -18,8 +18,9 @@ predictor:
   params:
     store: chaos-store
     scheme: cosmo-sac-2010
-    hidden_size: 51
+    hidden_size: 300
     depth: 3
-    dropout: 0.1
+    dropout: 0.0
+    ffn_n_layers: 2
     batch_size: 64
     max_epochs: 100

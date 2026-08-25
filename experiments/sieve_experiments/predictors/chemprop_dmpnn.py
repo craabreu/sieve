@@ -1,62 +1,107 @@
 """T10: a from-scratch D-MPNN sigma-profile predictor on Chemprop, reproducing
-COSMO-NET's published architecture (Naseri Boroujeni et al., *Mol. Syst. Des.
-Eng.*, 2026, DOI 10.1039/d6me00088f) -- not COSMO-NET-Paper's own repo, whose
-training script, published checkpoint, and published results are mutually
-inconsistent (three independently-confirmed gaps; see pins.toml's
-``[chemprop]`` notes and README.md's T10 section for the full account).
+the architecture COSMO-NET-Paper's own script *actually trains* -- not the
+architecture the peer-reviewed paper's text claims (Naseri Boroujeni et al.,
+*Mol. Syst. Des. Eng.*, 2026, DOI 10.1039/d6me00088f, Tables 1-2 and Section
+2.2.2). Those two disagree, and not by a little: see pins.toml's
+``[cosmonet]`` CORRECTION note for the full derivation. In short,
+``DMPNN-Train-pSigma.py``'s ``MODEL_HPARAMS`` dict passes several keys
+(``dropout``, ``message_passing_steps``, ``hidden_size``, ``ffn_num_layers``)
+that are not real ``DMPNNModel.__init__`` parameter names on the installed
+deepchem version -- they get silently absorbed into ``**kwargs`` and never
+reach the encoder, which is built from deepchem's own defaults instead.
+``message_passing_steps=3`` is the one of the four whose failure has no
+visible symptom: deepchem's real parameter (``depth``) also defaults to 3,
+so the "right" value comes out by coincidence, not because the script
+successfully passed it through -- it did not, and a different intended
+value would have silently trained with ``depth=3`` regardless. Confirmed
+directly against real trained checkpoint weights (both the paper
+repo's own shipped one and ours, independently): the model that was *really*
+trained -- and that generated T9's numbers, and plausibly the paper's own
+reported results too -- has `hidden_size=300` (not 51), a 3-layer FFN (not
+1), no dropout (not 0.1), and mean-pooling readout (not the sum pooling the
+paper's own eqn 11 specifies). This module now reproduces *that* real
+architecture, since it is the one thing in this whole picture with direct
+empirical evidence (checkpoint weights) behind it -- the paper's own prose
+does not.
 
 Two layers, deliberately split so the featurization is testable without the
 optional dependency (mirrors predictors/dash.py's ``fit_backoff``/
 ``DASHBackoffPredictor`` split):
 
-- ``PaperAtomFeaturizer``/``PaperBondFeaturizer``, ``minmax_*``,
-  ``prediction_from_profile`` -- pure numpy + rdkit, no chemprop import at
-  module scope. Fast-suite tested
+- ``PaperAtomFeaturizer``, ``minmax_*``, ``prediction_from_profile`` -- pure
+  numpy + rdkit, no chemprop import at module scope. Fast-suite tested
   (experiments/tests/test_experiment_predictor_chemprop.py).
 - ``ChempropDMPNNPredictor`` -- wires those onto a real chemprop ``MPNN`` and
   a lightning ``Trainer``. Needs the ``chemprop`` extra
   (``uv sync --extra chemprop``). Optional-data tested only.
 
-Architecture, from the paper's Table 1/2 and Section 2.2.2 (message_passing_
-steps=3, hidden_size=51, ffn_num_layers=1, dropout=0.1, softplus output,
-MSE loss, batch_size=64, n_epochs=100, per-task min-max target scaling from
-training-set statistics only):
+Architecture:
 
-- Atom features (35-dim, Table 1): element one-hot {C,N,O,S,F,P,Cl,Br} (8),
-  degree one-hot 0-5 (6), formal charge one-hot {-2..2} (5), hybridization
-  one-hot {sp,sp2,sp3,sp3d,sp3d2} (5), aromaticity (1), total-H one-hot 0-4
-  (5), chirality one-hot 0-3 (4), atomic mass x 0.01 (1). No "unknown" pad
-  bit -- the paper's table gives an exact, fixed width, and chemprop's own
-  ``MultiHotAtomFeaturizer`` cannot be parameterized down to 35 (it always
-  reserves one pad slot per one-hot block, landing at 41). An element outside
-  this 8-element vocabulary (chaos-store has B, Si, Ge, Sb, Te too -- the
-  same gap DASH's own vocabulary hits) one-hots to all-zero: a documented
-  deviation, not a crash.
-- Bond features (12-dim, Table 2): bond type one-hot {single,double,triple,
-  aromatic} (4), conjugated (1), in-ring (1), stereo one-hot over RDKit's own
-  6-value ``BondStereo`` enum (6) -- exhaustive, no pad needed here.
-- ``ffn_num_layers=1`` means one FFN layer total (deepchem/paper convention:
-  a single ``Linear(hidden_size, n_tasks)``, no hidden layer at all). This is
-  ``n_layers=0`` in chemprop's own terminology, NOT ``n_layers=1`` --
-  chemprop's ``MLP.build`` treats ``n_layers`` as the count of *additional*
-  hidden layers beyond the direct input->output projection (confirmed by
-  inspecting ``MLP.build``: ``n_layers=0`` yields exactly one ``Linear``,
-  ``n_layers=1`` yields two). Using chemprop's ``n_layers=1`` here would
-  silently build a deeper FFN than the paper describes.
+- Atom features (35-dim, the paper's own Table 1): element one-hot
+  {C,N,O,S,F,P,Cl,Br} (8), degree one-hot 0-5 (6), formal charge one-hot
+  {-2..2} (5), hybridization one-hot {sp,sp2,sp3,sp3d,sp3d2} (5), aromaticity
+  (1), total-H one-hot 0-4 (5), chirality one-hot 0-3 (4), atomic mass x 0.01
+  (1). This is the one part of the paper's own claimed architecture that
+  *was* genuinely realized: the paper repo's own shipped checkpoint has
+  `encoder.W_i.weight` of `(300, 49)` = 35 (patched atom_fdim) + 14 (stock
+  bond_fdim) -- see pins.toml's "WHY THE AUTHORS' OWN CHECKPOINT IS (300,
+  49)" note. chemprop's own built-in ``MultiHotAtomFeaturizer`` cannot be
+  parameterized down to exactly 35 (it always reserves one pad slot per
+  one-hot block, landing at 41), so this stays a custom, duck-typed class.
+  An element outside this 8-element vocabulary (chaos-store has B, Si, Ge,
+  Sb, Te too -- the same gap DASH's own vocabulary hits) one-hots to
+  all-zero: a documented deviation, not a crash.
+- Bond features (14-dim): deepchem's *actual* stock featurization (never
+  patched -- confirmed both checkpoints share the same 14-dim bond side),
+  which is structurally identical to chemprop's own built-in
+  ``MultiHotBondFeaturizer()`` default (null-bit + 4-way bond-type one-hot +
+  conjugated + in-ring + 6-category stereo one-hot with an unknown pad).
+  Used directly -- no custom bond featurizer needed here, unlike the atom
+  side.
+- ``hidden_size=300`` (deepchem's `enc_hidden` default, not the paper's
+  claimed 51).
+- FFN: deepchem's real `ffn_layers=3` means **3 total** Linear layers
+  (confirmed by reading `PositionwiseFeedForward.__init__` directly:
+  `n_layers` there *is* the total layer count). Chemprop's own
+  `MLP.build(n_layers=N)` instead yields **N+1** total layers (an
+  *additional*-hidden-layers count) -- confirmed by inspecting `MLP.build`.
+  So matching deepchem's real 3-layer FFN needs chemprop's `n_layers=2`, not
+  3 and not 1. Getting this wrong in either direction silently builds a
+  different-depth FFN than what was actually trained.
+- `dropout=0.0` (both `enc_dropout_p` and `ffn_dropout_p` default to 0.0 in
+  deepchem; the paper's claimed 0.1 was another silently-ignored
+  `MODEL_HPARAMS` key).
+- Readout: **mean** pooling, not the sum pooling the paper's own eqn 11
+  specifies for the DMPNN -- `aggregation` isn't in `MODEL_HPARAMS` at all
+  (grepped, absent), so deepchem's default `aggregation='mean'` was used.
+  This is the one deviation that isn't just an ignored kwarg landing back on
+  a default that happens to not matter (like `depth=3`, which coincidentally
+  matches the paper's own intent) -- it's the real model doing something the
+  paper's own text says it doesn't do.
 - Softplus sits on the FFN's raw (scaled-space) output, *before*
   ``output_transform`` (min-max unscaling) -- see ``SoftplusRegressionFFN``.
   Since min-max scaling's ``y_min >= 0`` for every profile bin (a real
   physical density), ``softplus(x) > 0`` composed with unscaling guarantees
-  ``p(sigma) > 0`` for every prediction, structurally -- not a post-hoc clip,
-  which is exactly the demonstration COSMO-NET-Paper's own repo could not
-  produce (its published results have 0% negative bins; its published script
-  has no non-negativity enforcement anywhere in its prediction path).
-- chemprop's ``normalize_targets()`` is z-score only; the paper specifies
-  min-max (its eqn 17), so this module bypasses it and builds an
-  ``UnscaleTransform`` directly from training-set min/max
-  (``UnscaleTransform.forward`` is a documented no-op while
-  ``self.training``, so MSE loss is computed in scaled space during training,
-  matching the paper).
+  ``p(sigma) > 0`` for every prediction, structurally -- not a post-hoc
+  clip, which is exactly the demonstration COSMO-NET-Paper's own repo could
+  not produce (its published results have 0% negative bins; its published
+  script has no non-negativity enforcement anywhere in its prediction
+  path). This part of T10's design is unaffected by the architecture
+  correction above -- softplus is our own addition either way, not
+  something deepchem's real run had.
+- chemprop's ``normalize_targets()`` is z-score only; per-task min-max
+  scaling (the paper's eqn 17, and something the real deepchem run's own
+  ``MinMaxTransformer`` did apply, unaffected by the kwarg-passing bug) is
+  built by hand via ``UnscaleTransform`` from training-set statistics only
+  (a documented no-op while ``self.training``, so MSE loss is computed in
+  scaled space during training).
+- Optimizer/LR schedule: deepchem's real run used an explicit
+  `ExponentialDecay(initial_rate=0.001, decay_rate=0.95, decay_steps=1000)`
+  (set directly in the script, not via the broken `MODEL_HPARAMS` dict, so
+  genuinely applied). chemprop's `MPNN` instead defaults to Adam with its
+  own Noam-like warmup schedule. Not replicated here -- would need
+  subclassing `MPNN.configure_optimizers` -- and left as a known,
+  documented remaining deviation.
 """
 
 from __future__ import annotations
@@ -72,7 +117,12 @@ from sieve_experiments.predictors import register
 from sieve_experiments.predictors.base import MoleculePredictor, Prediction
 
 ATOM_FDIM = 35
-BOND_FDIM = 12
+# chemprop's own built-in MultiHotBondFeaturizer() default length -- see the
+# module docstring for why this matches deepchem's real (never-patched)
+# bond featurization exactly. Asserted against the real class in
+# test_experiment_predictor_chemprop_optional.py, since chemprop isn't
+# available to the fast suite.
+BOND_FDIM = 14
 
 _ELEMENTS = ("C", "N", "O", "S", "F", "P", "Cl", "Br")
 _DEGREES = tuple(range(6))
@@ -80,9 +130,6 @@ _FORMAL_CHARGES = (-2, -1, 0, 1, 2)
 _HYBRIDIZATIONS = ("SP", "SP2", "SP3", "SP3D", "SP3D2")
 _TOTAL_HS = tuple(range(5))
 _CHIRAL_TAGS = (0, 1, 2, 3)
-
-_BOND_TYPES = ("SINGLE", "DOUBLE", "TRIPLE", "AROMATIC")
-_STEREO = tuple(range(6))
 
 
 def _one_hot(value: object, choices: tuple) -> NDArray[np.float32]:
@@ -97,7 +144,9 @@ def _one_hot(value: object, choices: tuple) -> NDArray[np.float32]:
 
 
 class PaperAtomFeaturizer:
-    """The 35-dim atom feature vector from COSMO-NET's Table 1, exactly.
+    """The 35-dim atom feature vector from COSMO-NET's Table 1, exactly --
+    the one part of the paper's claimed architecture that was genuinely
+    realized (see the module docstring).
 
     Duck-typed to chemprop's ``VectorFeaturizer`` protocol (``__call__`` +
     ``__len__``) rather than subclassing it, so this class stays importable
@@ -120,25 +169,6 @@ class PaperAtomFeaturizer:
                 _one_hot(a.GetTotalNumHs(), _TOTAL_HS),
                 _one_hot(int(a.GetChiralTag()), _CHIRAL_TAGS),
                 np.array([0.01 * a.GetMass()], dtype=np.float32),
-            ]
-        )
-
-
-class PaperBondFeaturizer:
-    """The 12-dim bond feature vector from COSMO-NET's Table 2, exactly."""
-
-    def __len__(self) -> int:
-        return BOND_FDIM
-
-    def __call__(self, b: Any) -> NDArray[np.float32]:
-        if b is None:
-            return np.zeros(BOND_FDIM, dtype=np.float32)
-        return np.concatenate(
-            [
-                _one_hot(b.GetBondType().name, _BOND_TYPES),
-                np.array([float(b.GetIsConjugated())], dtype=np.float32),
-                np.array([float(b.IsInRing())], dtype=np.float32),
-                _one_hot(int(b.GetStereo()), _STEREO),
             ]
         )
 
@@ -189,12 +219,18 @@ def prediction_from_profile(
 
 
 def _build_model(
-    *, hidden_size: int, depth: int, dropout: float, n_tasks: int, output_transform
+    *,
+    hidden_size: int,
+    depth: int,
+    dropout: float,
+    ffn_n_layers: int,
+    n_tasks: int,
+    output_transform,
 ):
     """Lazy: only imports chemprop when actually called."""
     import torch.nn.functional as F
     from chemprop.models import MPNN
-    from chemprop.nn.agg import SumAggregation
+    from chemprop.nn.agg import MeanAggregation
     from chemprop.nn.message_passing import BondMessagePassing
     from chemprop.nn.predictors import RegressionFFN
 
@@ -212,13 +248,15 @@ def _build_model(
     message_passing = BondMessagePassing(
         d_v=ATOM_FDIM, d_e=BOND_FDIM, d_h=hidden_size, depth=depth, dropout=dropout
     )
-    agg = SumAggregation()
-    # n_layers=0, not 1: chemprop's MLP.build counts *additional* hidden
-    # layers beyond the direct projection -- see the module docstring.
+    # Mean pooling, not sum: deepchem's real (never-overridden) default --
+    # see the module docstring for why this contradicts the paper's own
+    # eqn 11.
+    agg = MeanAggregation()
     predictor = SoftplusRegressionFFN(
         n_tasks=n_tasks,
         input_dim=hidden_size,
-        n_layers=0,
+        hidden_dim=hidden_size,
+        n_layers=ffn_n_layers,
         dropout=dropout,
         output_transform=output_transform,
     )
@@ -226,7 +264,10 @@ def _build_model(
 
 
 class ChempropDMPNNPredictor(MoleculePredictor):
-    """Trains and predicts the paper's D-MPNN architecture in-process."""
+    """Trains and predicts the architecture COSMO-NET-Paper's script
+    actually trains (see the module docstring for why that's the target,
+    not the paper's own claimed hyperparameters).
+    """
 
     name = "chemprop_dmpnn"
 
@@ -235,9 +276,10 @@ class ChempropDMPNNPredictor(MoleculePredictor):
         *,
         store: str,
         scheme: str,
-        hidden_size: int = 51,
+        hidden_size: int = 300,
         depth: int = 3,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
+        ffn_n_layers: int = 2,
         batch_size: int = 64,
         max_epochs: int = 100,
         grid: SigmaGridSpec = DEFAULT_GRID,
@@ -247,16 +289,19 @@ class ChempropDMPNNPredictor(MoleculePredictor):
         self.hidden_size = hidden_size
         self.depth = depth
         self.dropout = dropout
+        self.ffn_n_layers = ffn_n_layers
         self.batch_size = batch_size
         self.max_epochs = max_epochs
         self.grid = grid
         self._model: Any = None
 
     def _featurizer(self):
+        from chemprop.featurizers import MultiHotBondFeaturizer
         from chemprop.featurizers.molgraph import SimpleMoleculeMolGraphFeaturizer
 
         return SimpleMoleculeMolGraphFeaturizer(
-            atom_featurizer=PaperAtomFeaturizer(), bond_featurizer=PaperBondFeaturizer()
+            atom_featurizer=PaperAtomFeaturizer(),
+            bond_featurizer=MultiHotBondFeaturizer(),
         )
 
     def _dataset(self, mset: MoleculeSet, y: NDArray[np.float64] | None):
@@ -306,6 +351,7 @@ class ChempropDMPNNPredictor(MoleculePredictor):
             hidden_size=self.hidden_size,
             depth=self.depth,
             dropout=self.dropout,
+            ffn_n_layers=self.ffn_n_layers,
             n_tasks=self.grid.num_points,
             output_transform=output_transform,
         )

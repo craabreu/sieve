@@ -217,8 +217,22 @@ against MODEL_HPARAMS's own keys: only `n_tasks`, `atom_fdim`, and
 NOT -- DMPNNModel.__init__ forwards any unmatched kwarg straight to
 `TorchModel.__init__` (`super().__init__(model, ..., **kwargs)`), never to
 the `DMPNN` encoder it just built two lines above from its own named
-defaults (`enc_hidden=300`, `depth=3` [coincidentally matches], `ffn_layers=
-3`, `enc_dropout_p=ffn_dropout_p=0.0`). And `atom_fdim=35` alone is also
+defaults (`enc_hidden=300`, `depth=3`, `ffn_layers=3`,
+`enc_dropout_p=ffn_dropout_p=0.0`).
+
+`message_passing_steps=3` deserves its own callout: unlike the other three,
+its silent failure is invisible from the trained model's behavior, because
+deepchem's own unrelated default for `depth` (message-passing steps, its
+real parameter name) also happens to be 3. The script never actually passes
+`message_passing_steps` through *at all* -- if the paper's authors had
+written `message_passing_steps=5` instead, the real model would still have
+silently trained with `depth=3`, and the log would print "5" regardless.
+It's not "deepchem correctly interpreting message_passing_steps=3"; it's
+deepchem never seeing that key, landing on `depth=3` by coincidence. The
+bug is real and identical in kind to the other three -- it just doesn't
+produce a visible symptom for this one specific value.
+
+`atom_fdim=35` alone is also
 ineffective without `use_default_fdim=False` (deepchem's own docstring:
 "if True [the default], self.atom_fdim ... [is] initialized ... from the
 GraphConvConstants class" -- ignoring the passed value). Confirmed directly
@@ -322,12 +336,17 @@ biased_split CSV if someone pointed it there by mistake.
 version = "2.3.1"  # requires-python >=3.11,<3.15
 license = "MIT"
 notes = """
-T10: a from-scratch D-MPNN sigma-profile predictor reproducing COSMO-NET's
-published architecture (Naseri Boroujeni et al., Mol. Syst. Des. Eng., 2026,
-DOI 10.1039/d6me00088f) directly from the paper's Tables 1-2 and Section
-2.2.2 -- not from COSMO-NET-Paper's own repo (snaserib/COSMO-NET-Paper,
-pinned above), which has three independently-confirmed reproducibility gaps
-found while investigating T9's negative-sigma-bin issue:
+T10: a from-scratch D-MPNN sigma-profile predictor. Originally built to
+reproduce COSMO-NET's published architecture (Naseri Boroujeni et al., Mol.
+Syst. Des. Eng., 2026, DOI 10.1039/d6me00088f) directly from the paper's
+Tables 1-2 and Section 2.2.2; REVISED 2026-08-25 (see the "REVISION" note
+near the end) to instead reproduce the architecture COSMO-NET-Paper's own
+script *actually trains* -- confirmed by direct inspection to differ from
+what the paper's own text claims, in several ways beyond what was first
+found. Not from COSMO-NET-Paper's own repo either way (snaserib/
+COSMO-NET-Paper, pinned above), which has three independently-confirmed
+reproducibility gaps found while investigating T9's negative-sigma-bin
+issue:
   1. the shipped StratifiedCATEGORY_CV5 checkpoint's weights (hidden_size=
      300, ffn_num_layers=3) contradict the hyperparameters printed in its
      own committed training log (hidden_size=51, ffn_num_layers=1) -- root
@@ -378,13 +397,17 @@ the full reasoning):
   caught as a metrics shape mismatch in the first end-to-end test run
   (profile_true had 10 rows, profile_pred had 5, half lost to the other
   rank). Fixed with an explicit `devices=1`.
-- chemprop's built-in featurizers cannot hit the paper's exact 35/12
-  dimensions (mandatory "unknown" pad bits push atoms to 41, bonds to 14),
-  so PaperAtomFeaturizer/PaperBondFeaturizer are custom, duck-typed classes
-  (not chemprop.featurizers.base.VectorFeaturizer subclasses, so they stay
+- chemprop's built-in atom featurizer cannot hit the paper's exact 35
+  dimensions (mandatory "unknown" pad bits push it to 41), so
+  PaperAtomFeaturizer is a custom, duck-typed class (not a
+  chemprop.featurizers.base.VectorFeaturizer subclass, so it stays
   importable and unit-testable without chemprop -- confirmed empirically
   that chemprop accepts plain duck-typed featurizers with no isinstance
-  check anywhere in the call path).
+  check anywhere in the call path). The bond side, after the REVISION
+  below, uses chemprop's own built-in MultiHotBondFeaturizer() directly --
+  its 14-dim default turns out to be structurally identical to deepchem's
+  real (never-patched) bond featurization, so no custom class is needed
+  there at all.
 - Non-negativity is structural, not a post-hoc clip: softplus sits on the
   FFN's raw scaled-space output, before UnscaleTransform (min-max, built
   manually since chemprop's own normalize_targets() is z-score only). Since
@@ -393,19 +416,82 @@ the full reasoning):
   verified end to end: the first real fit/predict run through the harness
   (--limit 40, max_epochs=1) produced zero negative bins.
 
-Full-store run (biased_split, 100 epochs): 1363.5s, profile/w1_norm_mean
-0.397, area/r2 0.731, charge/mae 0.0538, 0/271,983 negative bins (0.0000%)
-verified directly against predictions.npz, vs T9's measured 19.6%.
+First full-store run (paper-faithful architecture, hidden_size=51,
+ffn_n_layers=0, dropout=0.1, sum pooling, atom/bond=35/12), 2026-08-25:
+1363.5s, profile/w1_norm_mean 0.397, area/r2 0.731, charge/mae 0.0538,
+0/271,983 negative bins (0.0000%) verified directly against
+predictions.npz, vs T9's measured 19.6%. Superseded by the REVISION below
+-- kept here as the record of what "faithfully implementing the paper's
+own claimed hyperparameters" actually produces, distinct from what the
+REVISION's numbers below now describe.
 
-T9-vs-T10 comparison, corrected 2026-08-25 (see [cosmonet]'s CORRECTION
-note): T10's profile W1 (0.397) is worse than T9's (0.224) not because of
-some unresolved optimizer/init difference -- that was an initial guess,
-now replaced -- but because T9's actual trained model is deepchem's own
-default DMPNN (enc_hidden=300, 3 FFN layers, 133-dim atom features, no
-dropout), not the paper's claimed hidden_size=51/ffn_num_layers=1/dropout=
-0.1/atom_fdim=35 architecture T10 faithfully implements. T9 is a bigger,
-richer, accidentally-untuned model; T10 is the genuinely paper-faithful,
-much smaller one. This is a real, mechanistic explanation, not a guess --
-the comparison in README.md's T9/T10 sections is not apples-to-apples on
-model size, only on task/data, and is now described that way.
+REVISION (2026-08-25, prompted by the user pointing out the W1-vs-T9
+comparison "makes no sense" -- an initial guess of "optimizer/init
+differences" turned out to be wrong; the real explanation, and this
+revision, follow from it): investigating that gap found T9's actual
+trained model was never running the paper's claimed architecture at all
+(see [cosmonet]'s CORRECTION note) -- it is deepchem's own silently-
+defaulted DMPNN. Verified precisely, not by inference:
+- hidden_size: 51 -> 300 (`enc_hidden`'s real default).
+- FFN depth: the paper's "ffn_num_layers=1" -> deepchem's real ffn_layers=3.
+  Getting the chemprop-side count right required tracing BOTH frameworks'
+  layer-counting conventions directly, since they disagree by one:
+  deepchem's PositionwiseFeedForward.__init__ treats n_layers as the TOTAL
+  Linear-layer count (confirmed by reading its source: n_layers=3 builds
+  exactly 3 nn.Linear); chemprop's own MLP.build(n_layers=N) instead yields
+  N+1 total layers (an *additional*-hidden-layers count, confirmed
+  separately for the original, now-superseded ffn_num_layers=1 case). So
+  deepchem's real ffn_layers=3 needs chemprop's n_layers=2, not 3 and not
+  the original 0. Locked in by a dedicated test
+  (test_default_ffn_has_the_deepchem_equivalent_layer_count) that counts
+  actual nn.Linear submodules rather than trusting either framework's
+  parameter name.
+- dropout: 0.1 -> 0.0 (`enc_dropout_p`/`ffn_dropout_p` both default to 0.0).
+- Bond features: the paper's own 12-dim Table 2 -> deepchem's real,
+  never-patched 14-dim stock featurization -- structurally identical to
+  chemprop's own built-in MultiHotBondFeaturizer() default, so that's used
+  directly now instead of a custom PaperBondFeaturizer (removed).
+- Readout: sum -> mean pooling. Not just an ignored kwarg landing back on a
+  default that happens not to matter (like depth=3, which coincidentally
+  matches the paper's own intent) -- `aggregation` isn't in MODEL_HPARAMS
+  at all (grepped, absent), so this is the real model doing something the
+  paper's own eqn 11 explicitly says it doesn't do.
+- Atom features (35-dim, Table 1) are UNCHANGED -- this is the one part of
+  the paper's claimed architecture that genuinely was realized (patched
+  into deepchem's own GraphConvConstants.ATOM_FDIM, per [cosmonet]'s "WHY
+  THE AUTHORS' OWN CHECKPOINT IS (300, 49)" note), so PaperAtomFeaturizer
+  stays exactly as it was.
+- Not replicated: the real run's optimizer/LR schedule
+  (ExponentialDecay(initial_rate=0.001, decay_rate=0.95, decay_steps=1000),
+  set directly in the script rather than via the broken MODEL_HPARAMS dict,
+  so genuinely applied) vs chemprop's own default Adam + Noam-like warmup.
+  Would need subclassing MPNN.configure_optimizers -- a documented,
+  deliberately-deferred remaining deviation.
+
+New architecture: 401K params (vs the original's 12.1K) -- confirmed via
+lightning's own model summary table at fit time. A --limit 5000 timing
+probe (100 real epochs): 122.3s -- barely different from the original,
+much smaller model's 127.8s at the same scale (small-batch GPU training
+here is overhead-bound, not compute-bound, so 33x more parameters barely
+moves wall time), and already promising: profile/w1_norm_mean 0.301 at
+this scale vs the original architecture's 0.577.
+
+Full-store run (biased_split, 100 epochs), revised architecture,
+2026-08-25: 1337.8s (22.3 min, matching the probe's extrapolation almost
+exactly). profile/w1_norm_mean 0.2194, area/r2 0.828, charge/mae 0.0201,
+0/271,983 negative bins (0.0000%) verified directly against
+predictions.npz -- structural non-negativity holds regardless of
+architecture size, exactly as expected (softplus+min-max unscaling
+guarantees it independent of hidden_size/depth/dropout).
+
+T10 now BEATS T9 on both profile shape (0.2194 vs 0.224) and area (0.828
+vs 0.775) -- unsurprising once the architecture correction above is
+understood: T10 now runs the same real architecture T9 accidentally used,
+built cleanly (proper softplus non-negativity, proper min-max scaling from
+train-set stats only, no silently-broken kwargs) rather than by accident.
+The comparison that "made no sense" (T10 worse than T9 despite claimed
+same architecture) is fully resolved: they were never comparable before
+(different real architectures under an identical-looking config), and now
+they are (same real architecture, T10 built deliberately). See README.md's
+T9/T10 sections for the full comparison table.
 """
