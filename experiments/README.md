@@ -260,12 +260,25 @@ full run" (design.md risk #1).
   (`torch.nn.functional.mse_loss`, all 51 sigma bins weighted equally,
   confirmed from `deepchem.models.torch_models.dmpnn`'s source), with no
   explicit shape/location/magnitude decomposition the way DASH Stage A has.
-- **Known limitations, honestly scoped:** the active training used the
-  script's smaller `MODEL_HPARAMS` (`hidden_size=51, ffn_num_layers=1`) —
-  a larger, apparently-tuned block (`hidden_size=512, ffn_num_layers=5,
-  dropout=0.232`) is commented out just above it in the source, unexplored
-  here. `cosmonet-random.yaml` (the sanity split) has no trained checkpoint
-  yet — only `biased_split` has been trained so far.
+- **Correction, 2026-08-25 (found while investigating T10's W1 gap below):**
+  the claim above — that training used `MODEL_HPARAMS`'s smaller block
+  (`hidden_size=51, ffn_num_layers=1, dropout=0.1`) — is **wrong**.
+  `DMPNNModel.__init__`'s real parameter names (checked via
+  `inspect.signature`) are `enc_hidden`, `ffn_layers`, `enc_dropout_p`/
+  `ffn_dropout_p` — not `hidden_size`, `ffn_num_layers`, `dropout`. Those
+  three keys (plus `message_passing_steps`) get silently absorbed into
+  `**kwargs` and forwarded to `TorchModel.__init__`, never reaching the
+  encoder. Confirmed directly against our own trained checkpoint's weights:
+  `encoder.W_i.weight` is `(300, 147)` — deepchem's own defaults
+  (`enc_hidden=300`, `atom_fdim=133 + bond_fdim=14`), not the paper's
+  35/12-dim features either (`atom_fdim=35` alone is also ineffective
+  without `use_default_fdim=False`) — and `ffn.linears.0.weight` is
+  `(300, 300)`, a 3-layer FFN, not the claimed single layer. **T9's actual
+  model is deepchem's own default-sized DMPNN** (bigger and richer than
+  either the paper describes or T10 faithfully implements), not the paper's
+  claimed architecture — the numbers above are real, just mischaracterized
+  until now. `cosmonet-random.yaml` (the sanity split) has no trained
+  checkpoint yet — only `biased_split` has been trained so far.
 
 **Done and verified — Chemprop reimplementation of COSMO-NET (T10), 2026-08-25.**
 Replaces what was originally planned as T10 (renumbered to T11, below).
@@ -278,10 +291,14 @@ going forward:
 1. The shipped `Sigma_saved_model/StratifiedCATEGORY_CV5/` checkpoint's own
    weights don't match the hyperparameters printed in its own committed
    training log (log: `hidden_size=51, ffn_num_layers=1`; checkpoint
-   state_dict: `hidden_size=300, ffn_num_layers=3`) — the `.pt` files were
-   added in a *later*, separate commit ("Updating the checkpoints.", 44 min
-   after "Comitting the results of training.") without updating the log or
-   results CSV to match.
+   state_dict: `hidden_size=300, ffn_num_layers=3`) — root cause found
+   2026-08-25 (see T9's correction note above): `MODEL_HPARAMS`'s keys
+   mostly don't match real `DMPNNModel.__init__` parameter names, so they
+   never reach the encoder and every run silently builds deepchem's own
+   default-shaped model regardless of what the log echoes back. (The
+   commit-timing observation — `.pt` files added in a separate, later
+   commit than the log/results — was real but turned out not to be the
+   cause; it's a coincidence, not a swap between two different runs.)
 2. The atom featurizer needed to reproduce that checkpoint's actual input
    dimension (`atom_fdim=35`, not deepchem's stock 133-dim) was never
    published — independently confirmed by a second party in the repo's own
@@ -356,14 +373,20 @@ unreproducible artifacts:
   | negative sigma bins | — | — | 19.6% | **0%** |
 
   T10 beats DASH on profile shape but sits behind T9's DMPNN-in-deepchem
-  run (0.397 vs. 0.224) despite reproducing the same nominal architecture —
-  plausibly optimizer/init differences between chemprop's and deepchem's
-  Adam defaults and LR schedule (the paper doesn't specify one; see
-  `predictors/chemprop_dmpnn.py`'s deviations), not something resolved here.
-  The point of T10 was never to outscore T9 — it's the only one of the two
-  whose non-negativity is a structural guarantee rather than a discovered
-  gap, which is exactly the property the paper's own repo couldn't
-  demonstrate for either of its published artifacts.
+  run (0.397 vs. 0.224). **This is not a mystery and not an
+  apples-to-apples comparison of "the same nominal architecture," despite
+  an earlier draft of this section saying so** — see T9's correction note
+  above: T9's actual trained model is deepchem's own default DMPNN
+  (`enc_hidden=300`, 3 FFN layers, 133-dim atom features, no dropout),
+  substantially bigger and richer than either the paper describes or than
+  T10 faithfully implements (`hidden_size=51`, 1 FFN layer, 35-dim
+  features). A bigger, richer model fitting real chaos-store data better is
+  the expected outcome, not a puzzle needing an optimizer/init explanation.
+  The point of T10 was never to outscore T9 on size it doesn't have — it's
+  the only one of the two whose non-negativity is a structural guarantee
+  rather than a discovered gap, and the only one that actually implements
+  what the paper describes, which is exactly the property the paper's own
+  repo couldn't demonstrate for either of its published artifacts.
 
 See `pins.toml`'s `[chemprop]` notes for the full gotcha writeup.
 
