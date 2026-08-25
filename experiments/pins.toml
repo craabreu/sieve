@@ -157,4 +157,38 @@ own molecule sigma profile + biased_split-as-CATEGORY), then run a real
 training pass and wire predictors/cosmonet.py against the Predictor seam,
 joining results back by SMILES (design.md risk #4 -- COSMO-NET's row order
 is not guaranteed).
+
+FIRST FULL-DATA PASS (2026-08-25): built the converter
+(sieve_experiments/cosmonet_data.py, `category_labels` +
+`write_cosmonet_csv`, tested in
+experiments/tests/test_experiment_cosmonet_data.py). Wrote the real
+full-store CSV to experiments/external/COSMO-NET-Paper/Data/
+chaos-store-biased.csv (53079 molecules: 42459 Training / 5287 Validation /
+5333 Test, from `biased_split` -- git-ignored, regenerate with the snippet
+below). Confirmed sigma-column magnitudes are sane (each row sums to its
+own `area [A^2]`, same convention as COSMO-NET's own CSAC rows).
+
+A `--n_epochs 1` timing probe on the real full CSV: 4m18s, **Test R2 0.915,
+MAE 1.40** (raw units) -- already strong after a single epoch. The repo's
+own training script default is `--n_epochs 100` (~7.2h at this rate, no
+CV), which is a real time commitment, so it was launched as a detached
+background job rather than run inline:
+
+    cd experiments/external/COSMO-NET-Paper/Training/DMPNN
+    source ../../.venv/bin/activate
+    nohup python DMPNN-Train-pSigma.py --n_epochs 100 \
+        --data_path ../../Data/chaos-store-biased.csv \
+        > ../../../../runs/cosmonet-logs/dmpnn-full-100ep.log 2>&1 < /dev/null &
+    disown
+
+Started 2026-08-25 ~02:37 UTC. This was launched with plain `nohup`/
+`disown`, NOT the harness's own tracked background-Bash mechanism (that
+mechanism re-invokes the session automatically on exit; a manually
+disowned process does not) -- so nothing auto-notifies on completion.
+Check progress with `tail experiments/runs/cosmonet-logs/dmpnn-full-100ep.
+log` (git-ignored) or `pgrep -fa DMPNN-Train-pSigma.py`; it prints Train/
+Valid/Test MAE/RMSE/R2 and a `Sigma_saved_model/<timestamp>_
+StratifiedCATEGORY_single/` checkpoint path when done. Still needed after
+that: wire predictors/cosmonet.py to load the trained checkpoint and
+predict against the Predictor seam.
 """

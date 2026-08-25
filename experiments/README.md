@@ -195,14 +195,25 @@ full run" (design.md risk #1).
   deepchem, torch-geometric, rdkit) smoke-tested end-to-end on "estes"'s
   GPU: the repo's own `DMPNN-Train-pSigma.py --n_epochs 1` featurizes,
   trains, and evaluates on their own CSAC-2002 data without error.
-- **Not yet done:** a chaos-store → CSAC-CSV converter (SMILES + molecule
-  sigma profile + `biased_split`-as-`CATEGORY` — the input schema's 51-point
-  grid already matches our own `DEFAULT_GRID` exactly, so this should be a
-  small join, not a real transform), a real training run on chaos-store
-  data (the pretrained checkpoints already in the clone are trained on
-  COSMO-NET's own split, not ours — not usable as our baseline directly),
-  and `predictors/cosmonet.py` wired against the `Predictor` seam, joining
-  results back by SMILES (design.md risk #4).
+- **Done:** the chaos-store → CSAC-CSV converter
+  (`sieve_experiments/cosmonet_data.py` — `category_labels` +
+  `write_cosmonet_csv`, tested). Confirmed the 51-point grid matches
+  COSMO-NET's own exactly, so it's a small join (SMILES + molecule sigma
+  profile + `biased_split`-as-`CATEGORY`), not a real transform.
+- **First full-data pass, 2026-08-25:** a `--n_epochs 1` timing probe on
+  the real full chaos-store CSV (53,079 molecules) took 4m18s and already
+  reached **Test R² 0.915, MAE 1.40** (raw sigma units). The repo's own
+  default (`--n_epochs 100`, ~7.2h at this rate) is running now as a
+  detached background job (`pins.toml`'s `[cosmonet]` notes have the exact
+  command, log path, and how to check on it — it does **not**
+  auto-notify on completion, unlike the harness's own tracked background
+  runs).
+- **Not yet done:** `predictors/cosmonet.py` wired against the `Predictor`
+  seam once the trained checkpoint is ready, joining results back by
+  SMILES (design.md risk #4 — COSMO-NET's row order is not guaranteed);
+  the pretrained checkpoints already in the clone are trained on
+  COSMO-NET's own split, not ours, so they're a reference point, not a
+  substitute for our own training run.
 
 **Not started — T10** (`summarize` polish, results table, this README's
 final form).
