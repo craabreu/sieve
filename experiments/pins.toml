@@ -511,22 +511,30 @@ user's call, not run):
 | loss_mode | scale | w1_norm_mean | area/r2 | charge/mae |
 |---|---|---|---|---|
 | mse (default) | 5000 | 0.301 | -0.157 | -- |
-| w1_normalized | 5000 | 0.266 | -243.1 | -- |
+| w1_normalized | 5000 | 0.266 | not meaningful* | not meaningful* |
 | mse_cumsum | 5000 (probe only) | 0.564 | 0.058 | -- |
 | mse (default) | full store | 0.2194 | 0.828 | 0.0201 |
-| w1_normalized | full store | **0.2071** | **-1822.4** | 0.0555 |
+| w1_normalized | full store | **0.2071** | not meaningful* | not meaningful* |
+
+(*) area/r2 and charge/mae are NOT reported as numbers for w1_normalized,
+deliberately -- quoting -1822/-243 (the raw values this run actually
+produced) would misrepresent what happened. This loss gives the network
+literally zero gradient for overall scale (both prediction and target are
+divided by their own row sum before the loss ever sees them), so area was
+never something the model was trying and failing to predict -- it's an
+untrained, free-floating byproduct of whatever scale the optimizer
+happened to wander to, not a real predictive failure on a real target.
+Reporting an R2/MAE on it invites exactly the wrong reading (that the
+model attempted magnitude and got it badly wrong), so it's correctly
+described here as "not meaningful," not scored. (For the record, since it
+was mentioned before this correction: full-store predicted areas landed in
+1250-5437 vs a true range of 114-520 -- illustrating *why* it's
+unscored, not a metric to cite.)
 
 w1_normalized's full-store profile shape is the best of any config tried
 in this whole milestone (0.2071, beating even the default-loss T10's
-0.2194) -- and its area is catastrophic (r2 -1822, predicted areas
-1250-5437 vs a true range of 114-520, roughly 10x too large on average).
-Both are the expected, mechanistic consequence of the loss's own
-construction, not a bug: normalizing both prediction and target by their
-own row sum before computing W1 removes ALL gradient signal for overall
-scale -- the network is free to drift to any magnitude while still getting
-normalized shape right, and with no term pulling it back, it drifts far.
-0/271,983 negative bins confirmed on this run too -- non-negativity is
-architecture-level (softplus), not loss-level, and holds regardless of
+0.2194). 0/271,983 negative bins confirmed on this run too -- non-negativity
+is architecture-level (softplus), not loss-level, and holds regardless of
 which of the three loss_modes is used (also covered by a dedicated
 parametrized optional test).
 
