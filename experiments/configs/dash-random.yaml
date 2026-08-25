@@ -21,6 +21,6 @@ predictor:
     store: chaos-store
     scheme: cosmo-sac-2010
     max_depth: 16
-    attention_threshold: 10
+    attention_threshold: 5.2
     minimum_support: 5
     charge_reconciliation: std_weighted

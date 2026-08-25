@@ -400,7 +400,7 @@ class DASHBackoffPredictor(AtomPredictor):
         store: str,
         scheme: str,
         max_depth: int = 16,
-        attention_threshold: float = 10,
+        attention_threshold: float = 5.2,
         minimum_support: int = 5,
         charge_reconciliation: str = "std_weighted",
         location_mode: str = "charge",

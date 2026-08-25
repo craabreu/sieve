@@ -61,6 +61,52 @@ molecule's neighbor dict on every call unless one is passed via its
 `_atom_paths` now does the same, measured 8.5x faster on chaos-store with
 bit-identical metrics. This is design.md risk #1's main lever; re-check it
 with a `--limit` timing probe before committing to a full-store run.
+
+PAPER PARAMETERS (checked 2026-08-24 against the original preprint, Lehner
+et al., J. Chem. Inf. Model. 63, 6014-6028 (2023) / arXiv:2305.15981, read
+directly as a PDF rather than trusted from a summarized web fetch):
+- `max_depth: 16` matches the paper's own tuned optimum (Sec 3.3 / Fig 9D).
+- `attention_threshold`: the paper's tuned optimum is ~5.2 (Fig 10's RMSE-
+  vs-threshold sweep; Fig 8's caption gives the more precise "5.23"). The
+  paper's own running prose states "0.95" once (Sec 3.3) but that's
+  contradicted by both figures and is being treated as a typo/draft leftover
+  -- a sub-1 threshold can't be the real stopping criterion, since Fig 11
+  shows the *cumulative* attention it's compared against routinely exceeds 1
+  as the subgraph grows. Our config previously used `10`, which is just
+  `DASHTree.match_new_atom`'s own hardcoded function default, not the
+  paper's tuned value -- updated to `5.2` in both dash-*.yaml configs and
+  `DASHBackoffPredictor`'s own default, 2026-08-24.
+- `minimum_support`: no equivalent was used to build the published/shipped
+  tree. Sec 2.4.2 says so explicitly ("the attention could be used as an
+  early stopping condition ... not done here"). The only count-based pruning
+  anywhere in the DASH-tree codebase is `Node.prune()` in
+  `serenityff/charge/tree/node.py` (drops a child with `count < 3` past
+  level 3) -- but it is dead code: grepping the whole repo for `.prune(`
+  finds only its own recursive self-call, never invoked from
+  `Tree_constructor.build_tree()` or either worker module that actually
+  builds the shipped tree, and it also mutates `self.children` while
+  iterating it (a real bug, consistent with it being an abandoned
+  experiment). `minimum_support: 5` in our config remains a Sieve-only
+  addition to Stage A's own back-off statistics, with no working precedent
+  in DASH itself -- worth documenting as such, not changing.
+
+STAGE A PRECEDENT (checked 2026-08-24 against the DASH-tree authors' own
+follow-up, Lehner et al., "DASH properties: Estimating atomic and molecular
+properties from a dynamic attention-based substructure hierarchy," J. Chem.
+Phys. 161, 074103 (2024)): the authors themselves reuse the published tree
+topology (built once from MBIS-charge attention values) to predict several
+other target properties (AM1-BCC, Mulliken, RESP charges; dispersion C6;
+polarizability; the dual descriptor; molecular dipole/polarizability) by
+walking the same fixed topology and dropping each new property's median/
+variance into the existing nodes -- their own words: "this population
+process does not include any fitting... reusing the DASH tree structure
+built for the MBIS partial charges." No GNN retraining, no rebuilt topology.
+This is exactly our own Stage A move (fixed published topology, our own
+per-node target-property statistics on top), just for a different target
+(sigma-profile shape/location/magnitude instead of a scalar property) --
+independent precedent that this is a legitimate reuse, not a shortcut, and
+context for whoever eventually scopes Stage B (rebuilding the topology
+itself, still out of scope for this milestone -- see design.md).
 """
 
 [cosmonet]
