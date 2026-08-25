@@ -191,4 +191,53 @@ Valid/Test MAE/RMSE/R2 and a `Sigma_saved_model/<timestamp>_
 StratifiedCATEGORY_single/` checkpoint path when done. Still needed after
 that: wire predictors/cosmonet.py to load the trained checkpoint and
 predict against the Predictor seam.
+
+TRAINING FINISHED (2026-08-25 ~02:47 UTC, ~4h10m total, faster than the 7.2h
+estimate): Sigma_saved_model/2026-08-24_22-37-20_StratifiedCATEGORY_single/.
+Test MAE 0.827, RMSE 1.777, R2 0.970 (raw units) -- up from the 1-epoch
+checkpoint's 1.40/-/0.915. GPU use confirmed both empirically (`nvidia-smi
+--query-compute-apps` showed this exact PID allocating GPU memory while
+running) and from source (deepchem's TorchModel defaults device=None ->
+auto-picks cuda when available; DMPNN-Train-pSigma.py never overrides it).
+Split re-certified against this final run's own output too (not just the
+1-epoch probe): 53079/53079 rows, 0 mismatches.
+
+Loss function (checked from source, since the training script never
+overrides it): plain per-bin MSE (`L2Loss` -> `torch.nn.functional.
+mse_loss`), all 51 sigma-profile bins as independent, equally-weighted
+regression targets (`n_tasks=51`) -- no distributional loss (W1) and no
+shape/location/magnitude split the way DASH Stage A has. Active
+MODEL_HPARAMS is the script's smaller block (hidden_size=51,
+ffn_num_layers=1, dropout=0.1); a larger block (hidden_size=512,
+ffn_num_layers=5, dropout=0.2319021895799188 -- specific enough to look
+tuned) is commented out just above it, unexplored here.
+
+predictors/cosmonet.py (CosmonetPredictor) is written and tested
+(experiments/tests/test_experiment_predictor_cosmonet.py, 7 tests). It is a
+SMILES-keyed lookup against the training script's own saved
+Results/pSigma-{model}.csv, not live re-inference -- see the module
+docstring for the full reasoning, including a CATEGORY/split-column
+leakage guard (fit_molecules/predict_molecules re-certify every molecule's
+CATEGORY against what the current run's split expects, every run, raising
+if a predictions CSV built from a *different* split_column is pointed at
+by mistake).
+
+Stable-path convention: rather than pointing configs at a timestamped
+Sigma_saved_model/<ts>_StratifiedCATEGORY_single/ dir (not reproducible-by-
+name across retrains), the winning run's Results/pSigma-DMPNN.csv was
+copied to a fixed, documented name:
+
+    cp Training/DMPNN/Sigma_saved_model/2026-08-24_22-37-20_StratifiedCATEGORY_single/Folds/fold_00/Results/pSigma-DMPNN.csv \
+       Training/DMPNN/cosmonet-chaos-store-biased-predictions.csv
+
+configs/cosmonet-biased.yaml points at that stable path. A real harness run
+(`--config configs/cosmonet-biased.yaml --allow-dirty --no-tracking`)
+reproduces the manually-verified numbers bit-for-bit in 2.7s wall (pure
+lookup): profile/w1_norm_mean 0.224 vs DASH's 0.449 and global_mean's 1.024
+-- see README.md's T9 section for the full comparison table and caveats.
+
+configs/cosmonet-random.yaml has NO trained checkpoint yet (only
+biased_split has been trained) -- its predictions_csv points at a
+not-yet-created file by design, so the CATEGORY guard above would reject a
+biased_split CSV if someone pointed it there by mistake.
 """

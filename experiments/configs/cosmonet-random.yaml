@@ -15,5 +15,13 @@ data:
 predictor:
   name: cosmonet
   params:
-    n_epochs: 100
-    batch_size: 64
+    # NOT YET TRAINED on this split (`split`, the random sanity split) --
+    # only the biased_split checkpoint exists so far (see cosmonet-biased.
+    # yaml). predictors/cosmonet.py's fit-time CATEGORY certification will
+    # correctly reject the biased_split CSV here (it's built from a
+    # different split_column), so this config isn't runnable until a real
+    # training pass against `split`-derived CATEGORY labels produces its
+    # own predictions CSV -- see pins.toml's [cosmonet] notes.
+    store: chaos-store
+    scheme: cosmo-sac-2010
+    predictions_csv: experiments/external/COSMO-NET-Paper/Training/DMPNN/cosmonet-chaos-store-random-predictions.csv

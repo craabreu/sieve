@@ -181,39 +181,63 @@ full run" (design.md risk #1).
   empty (e.g. `--limit 50` on chaos-store, still exercised as a regression
   test in `test_experiment_smoke.py`/`test_experiment_metrics.py`).
 
-**In progress — COSMO-NET predictor (T9), started 2026-08-25:**
+**Done and verified — COSMO-NET predictor (T9), 2026-08-25:**
 
-- `[cosmonet]` in `pins.toml` now has a pinned commit
-  (`366839a0e6f9...`, re-cloned after the earlier disk-space incident —
-  106GB free this time, no issue; actual checkout is ~14GB, not ~4.8GB, see
-  `pins.toml` for why).
+- `[cosmonet]` in `pins.toml` has a pinned commit (`366839a0e6f9...`,
+  re-cloned after the earlier disk-space incident — 106GB free this time,
+  no issue; actual checkout is ~14GB, not ~4.8GB, see `pins.toml` for why).
 - Dependency resolution (**design.md risk #3, the milestone's largest
   schedule risk**) is **done and clean** — `experiments/
   cosmonet-requirements.txt` has the full pin, repro steps, and a gotcha
   (`torch-geometric` is required by `DMPNNModel` but missing from the
-  repo's own `requirements.txt`). Full stack (torch+cu124, tensorflow,
-  deepchem, torch-geometric, rdkit) smoke-tested end-to-end on "estes"'s
-  GPU: the repo's own `DMPNN-Train-pSigma.py --n_epochs 1` featurizes,
-  trains, and evaluates on their own CSAC-2002 data without error.
-- **Done:** the chaos-store → CSAC-CSV converter
-  (`sieve_experiments/cosmonet_data.py` — `category_labels` +
-  `write_cosmonet_csv`, tested). Confirmed the 51-point grid matches
-  COSMO-NET's own exactly, so it's a small join (SMILES + molecule sigma
-  profile + `biased_split`-as-`CATEGORY`), not a real transform.
-- **First full-data pass, 2026-08-25:** a `--n_epochs 1` timing probe on
-  the real full chaos-store CSV (53,079 molecules) took 4m18s and already
-  reached **Test R² 0.915, MAE 1.40** (raw sigma units). The repo's own
-  default (`--n_epochs 100`, ~7.2h at this rate) is running now as a
-  detached background job (`pins.toml`'s `[cosmonet]` notes have the exact
-  command, log path, and how to check on it — it does **not**
-  auto-notify on completion, unlike the harness's own tracked background
-  runs).
-- **Not yet done:** `predictors/cosmonet.py` wired against the `Predictor`
-  seam once the trained checkpoint is ready, joining results back by
-  SMILES (design.md risk #4 — COSMO-NET's row order is not guaranteed);
-  the pretrained checkpoints already in the clone are trained on
-  COSMO-NET's own split, not ours, so they're a reference point, not a
-  substitute for our own training run.
+  repo's own `requirements.txt`).
+- `sieve_experiments/cosmonet_data.py` (`category_labels` +
+  `write_cosmonet_csv`) converts a chaos-store `MoleculeSet` into COSMO-NET's
+  exact CSAC-CSV input format — confirmed the 51-point grid matches
+  COSMO-NET's own exactly, so it's a small join, not a real transform.
+- Trained the repo's own DMPNN (`Training/DMPNN/DMPNN-Train-pSigma.py
+  --splitter 4`, its documented default) on the **full** chaos-store,
+  `biased_split`-labeled, 100 epochs (~4h10m on "estes"'s GPU — confirmed
+  via `nvidia-smi` and deepchem's own cuda auto-detection, not a silent CPU
+  fallback). **The train/val/test split was certified against our own
+  `biased_split` column molecule-for-molecule, twice (after the 1-epoch
+  probe and again after the full run): 53,079/53,079 rows matched, 0
+  mismatches both times** — not just aggregate counts lining up.
+- `sieve_experiments/predictors/cosmonet.py` (`CosmonetPredictor`) wires
+  the trained checkpoint's own saved prediction CSV into the `Predictor`
+  seam as a SMILES-keyed lookup (not live re-inference — see its module
+  docstring for why that's numerically identical for any in-store molecule,
+  and where it stops generalizing). It **re-certifies every molecule's
+  CATEGORY against the run's own split at fit/predict time**, every run —
+  the same check done manually for this pass, now a permanent guard against
+  silently reusing a checkpoint trained on a *different* split_column
+  (which would leak train-set molecules into a "test" evaluation
+  undetectably). 7 tests, all passing, including both leakage-guard cases.
+- A real `--config configs/cosmonet-biased.yaml` harness run reproduces the
+  manually-verified numbers bit-for-bit (2.7s wall — pure lookup, no
+  training in the harness itself):
+
+  | metric | dash_backoff | global_mean | **cosmonet** |
+  | --- | --- | --- | --- |
+  | `profile/w1_norm_mean` | 0.449 | 1.024 | **0.224** |
+  | `area/r2` | 0.949 | 0.415 | 0.775 |
+  | `area/mae` | 8.41 | 31.30 | 15.56 |
+  | `charge/mae` | 0.108 | 0.00694* | 0.0172 |
+
+  \* `global_mean`'s low `charge/mae` is a metric artifact, not a real win —
+  see the git history for the full explanation (99.3% of chaos-store test
+  molecules are exactly neutral). COSMO-NET wins clearly on profile shape
+  (about half DASH's W1) but loses to DASH on area — expected, since this
+  DMPNN was trained with a flat per-bin MSE loss (`torch.nn.functional.
+  mse_loss`, all 51 sigma bins weighted equally, confirmed from
+  `deepchem.models.torch_models.dmpnn`'s source), with no explicit
+  shape/location/magnitude decomposition the way DASH Stage A has.
+- **Known limitations, honestly scoped:** the active training used the
+  script's smaller `MODEL_HPARAMS` (`hidden_size=51, ffn_num_layers=1`) —
+  a larger, apparently-tuned block (`hidden_size=512, ffn_num_layers=5,
+  dropout=0.232`) is commented out just above it in the source, unexplored
+  here. `cosmonet-random.yaml` (the sanity split) has no trained checkpoint
+  yet — only `biased_split` has been trained so far.
 
 **Not started — T10** (`summarize` polish, results table, this README's
 final form).
