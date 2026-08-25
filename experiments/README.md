@@ -153,6 +153,41 @@ manifest's `match_stats` and logs a WARNING; the results table should carry
 it alongside the metrics rather than quoting DASH numbers as if coverage
 were 100%.
 
+**Profile-mode experiment, 2026-08-25.** Does the shape/location/area
+decomposition (`fit_backoff`/`predict_backoff`, `profile_mode="decomposed"`,
+the default) earn its keep over the simplest alternative — bin-wise-average
+each tree node's raw, unnormalized atom profiles directly, with area/charge
+only ever *derived* from the resulting profile (`sum`, `profile @
+sigma_values`), never fit as their own quantities
+(`fit_backoff_raw`/`predict_backoff_raw`, `profile_mode="raw"`)? Both run
+full-store, `biased_split` (`configs/dash-biased.yaml` vs.
+`configs/dash-raw-biased.yaml`):
+
+| profile_mode | `atom/profile/w1_norm_mean` | `profile/w1_norm_mean` | `area/r2` | `charge/mae` |
+| --- | --- | --- | --- | --- |
+| decomposed (default) | 1.030 | 0.449 | 0.949 | 0.102 |
+| raw | 1.058 | **0.442** | 0.949 | 0.102 |
+
+`area/r2`/`charge/mae` are identical (to floating-point noise) either way —
+not a coincidence: molecule-level area/charge are additive rollups of
+atom-level area/charge, and "raw"'s derived charge (mean-profile @
+sigma_values) equals mean(individual atom charges) exactly by linearity,
+the same number "decomposed" fits directly. The decomposition changes
+nothing about area/charge, only how the profile bins are shaped. There, the
+two modes diverge in an unexpected direction: at the **atom** level "raw"
+is worse (1.058 vs 1.030 — the blur `fit_backoff`'s docstring predicts from
+averaging raw profiles across a node's differing sigma-centroids), but at
+the **molecule** level (after summing every atom into its molecule) "raw"
+comes out slightly *better* (0.442 vs 0.449) — "decomposed"'s own
+reconstruction (shifting a shape template to a *predicted* location, itself
+only ever an imperfect point estimate) introduces its own per-atom
+placement error that doesn't obviously wash out any better than raw's blur
+does once atoms are summed. `profile_mode="decomposed"` stays the default
+(atom-level accuracy is the more defensible thing to optimize for, and the
+molecule-level gap for "raw" is small), but `"raw"` stays available as a
+documented, cheaper alternative. Full writeup in `pins.toml`'s
+`[dash_tree]` notes.
+
 <details>
 <summary>Earlier <code>--limit 300</code> smoke numbers (superseded above,
 kept for the timing-probe methodology note)</summary>

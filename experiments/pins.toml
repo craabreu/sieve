@@ -107,6 +107,59 @@ per-node target-property statistics on top), just for a different target
 independent precedent that this is a legitimate reuse, not a shortcut, and
 context for whoever eventually scopes Stage B (rebuilding the topology
 itself, still out of scope for this milestone -- see design.md).
+
+PROFILE_MODE EXPERIMENT (2026-08-25): does the shape/location/area
+decomposition (fit_backoff/predict_backoff -- "decomposed", the default)
+actually earn its keep over the simplest alternative -- bin-wise-averaging
+each node's raw, unnormalized atom profiles directly, with area/charge only
+ever derived from the resulting profile (sum, profile @ sigma_values), never
+fit as their own quantities (fit_backoff_raw/predict_backoff_raw -- "raw",
+predictors/dash.py's new profile_mode param)? Both run full-store,
+biased_split (configs/dash-biased.yaml vs configs/dash-raw-biased.yaml):
+
+| profile_mode | atom/profile/w1_norm_mean | profile/w1_norm_mean | area/r2 | charge/mae |
+|---|---|---|---|---|
+| decomposed (default) | 1.0302 | 0.4486 | 0.9492 | 0.10197 |
+| raw | 1.0581 | **0.4420** | 0.9492 | 0.10197 |
+
+area/r2 and charge/mae are, to floating-point noise, IDENTICAL between the
+two modes -- not a coincidence. Molecule-level area/charge are additive
+rollups of atom-level area/charge, and profile_mode="raw"'s derived
+atom_charge (mean-profile @ sigma_values) equals mean(individual atom
+charges) exactly by linearity of the dot product over the mean -- precisely
+the same number "decomposed" mode fits directly as chosen.charge (and
+likewise for area, via sum). Which node each atom backs off to is decided
+by the tree-matching/pruning logic alone, identical in both modes. So
+whichever way the profile's *shape* comes out, its area and first moment
+land on the same number either way -- the decomposition changes nothing
+about how well DASH predicts scalar area/charge, only how the profile
+bins are shaped.
+
+Where the modes genuinely differ is profile shape, and in an unexpected
+direction: at the ATOM level, "raw" is worse (1.058 vs 1.030), exactly as
+fit_backoff's own docstring predicts -- bin-wise-averaging raw profiles
+blurs across a node's members' differing sigma-centroids. But at the
+MOLECULE level (after summing every atom's profile into its molecule),
+"raw" comes out slightly *better* (0.4420 vs 0.4486). The likely
+mechanism: "decomposed" mode's own reconstruction step (shift a shape
+template out to a *predicted* location, itself only ever mean(charge)/
+mean(area) or mean(location) -- both imperfect point estimates, never the
+atom's true location) introduces its own per-atom placement error, and at
+the molecule level that placement error does not obviously wash out any
+better than raw's blur does. Both are approximations of a heterogeneous
+population's spread by a single number (location vs. no correction at
+all); neither is free of it, and which one costs more depends on where you
+measure. Not investigated further here -- worth a note for whoever revisits
+Stage A, since the natural assumption ("more structure = better") does not
+hold at the molecule level for this metric.
+
+Takeaway: the decomposition buys atom-level shape accuracy (relevant if a
+later milestone scores atoms directly) but not molecule-level shape
+accuracy, and buys nothing for area/charge either way -- those are
+identical in both modes by construction. "decomposed" remains the default
+(atom-level accuracy is the more defensible target to optimize for, and the
+molecule-level gap for "raw" is small), but "raw" stays available as a
+documented, cheaper alternative.
 """
 
 [cosmonet]

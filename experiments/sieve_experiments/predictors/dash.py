@@ -52,6 +52,7 @@ if _DASH_TREE_ROOT.exists() and str(_DASH_TREE_ROOT) not in sys.path:
 
 
 VALID_LOCATION_MODES = ("sigma", "charge")
+VALID_PROFILE_MODES = ("decomposed", "raw")
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,136 @@ def predict_backoff(
     )
 
 
+@dataclass(frozen=True)
+class RawNodeStat:
+    count: int
+    profile: NDArray[np.float64]
+    charge_std: float
+
+
+@dataclass(frozen=True)
+class RawBackoffStats:
+    nodes: dict[PathKey, RawNodeStat]
+    fallback: RawNodeStat
+    sigma_values: NDArray[np.float64]
+
+
+def fit_backoff_raw(
+    paths: list[NodePath],
+    atom_profile: NDArray[np.floating],
+    *,
+    minimum_support: int,
+    sigma_values: NDArray[np.floating],
+) -> RawBackoffStats:
+    """``fit_backoff``'s counterpart with the shape/location/area
+    decomposition removed: each node's stat is just the plain bin-wise mean
+    of its members' *raw, unnormalized* profiles -- no shift-to-zero-centroid,
+    no divide-by-area. area and charge are never fit as separate quantities
+    here; both are only ever derived from a predicted profile after the
+    fact (``predict_backoff_raw``), the same convention molecule-level
+    profile predictors use (``CosmonetPredictor``, ``prediction_from_profile``
+    in ``predictors/chemprop_dmpnn.py``): ``area = profile.sum()``,
+    ``charge = profile @ sigma_values``.
+
+    ``fit_backoff``'s own docstring measured 5-35% width inflation from
+    bin-wise-averaging raw profiles directly, across real chaos-store
+    tree-node groups, which is exactly why that decomposition exists. This
+    variant exists to *measure* that cost end to end (does the extra
+    machinery actually buy better molecule-level metrics, or does it wash
+    out after roll-up?), not because it is expected to win.
+
+    ``atom_charge`` (needed only for each node's ``charge_std``, which
+    ``predict_backoff_raw`` copies through for ``reconcile_charge``'s
+    std-weighted mode) is derived as ``atom_profile @ sigma_values`` rather
+    than taken as a separate input -- exactly the integral
+    ``load_atom_truth``'s own scheme-averaged ``atom_charge`` already *is*
+    (see ``_atom_location``'s docstring), so nothing is lost by not
+    threading a second array through.
+    """
+    n = len(paths)
+    if len(atom_profile) != n:
+        raise ValueError("paths and atom_profile must have the same length")
+    atom_profile = np.asarray(atom_profile, dtype=np.float64)
+    sigma_values = np.asarray(sigma_values, dtype=np.float64)
+    if atom_profile.shape[1] != len(sigma_values):
+        raise ValueError(
+            f"atom_profile has {atom_profile.shape[1]} bins but sigma_values "
+            f"has {len(sigma_values)}"
+        )
+    atom_charge = atom_profile @ sigma_values
+
+    profile_sum: dict[PathKey, NDArray[np.float64]] = {}
+    charge_sum: dict[PathKey, float] = {}
+    charge_sq_sum: dict[PathKey, float] = {}
+    count: dict[PathKey, int] = {}
+
+    for path, profile, charge in zip(paths, atom_profile, atom_charge, strict=True):
+        for key in path:
+            if key not in count:
+                count[key] = 0
+                profile_sum[key] = np.zeros_like(profile)
+                charge_sum[key] = 0.0
+                charge_sq_sum[key] = 0.0
+            count[key] += 1
+            profile_sum[key] += profile
+            charge_sum[key] += charge
+            charge_sq_sum[key] += charge * charge
+
+    nodes: dict[PathKey, RawNodeStat] = {}
+    for key, c in count.items():
+        if c < minimum_support:
+            continue
+        mean_charge = charge_sum[key] / c
+        variance = max(charge_sq_sum[key] / c - mean_charge * mean_charge, 0.0)
+        nodes[key] = RawNodeStat(
+            count=c,
+            profile=profile_sum[key] / c,
+            charge_std=max(np.sqrt(variance), 1e-6),
+        )
+
+    fallback = RawNodeStat(
+        count=n,
+        profile=atom_profile.mean(axis=0),
+        charge_std=max(float(np.std(atom_charge)), 1e-6),
+    )
+    return RawBackoffStats(nodes=nodes, fallback=fallback, sigma_values=sigma_values)
+
+
+def predict_backoff_raw(
+    paths: list[NodePath], stats: RawBackoffStats
+) -> AtomPrediction:
+    """``predict_backoff``'s counterpart for ``RawBackoffStats``: walk each
+    atom's path deepest -> shallowest like ``predict_backoff``, but predict
+    the chosen node's raw mean profile directly, with no location/area
+    reconstruction step -- the node mean already carries whatever magnitude
+    its members had. ``atom_area``/``atom_charge`` are derived from that
+    predicted profile (``sum``, ``profile @ sigma_values``), not fit
+    separately -- see ``fit_backoff_raw``'s docstring.
+    """
+    n = len(paths)
+    profile_dim = stats.fallback.profile.shape[0]
+    atom_profile = np.empty((n, profile_dim), dtype=np.float64)
+    atom_charge_std = np.empty(n, dtype=np.float64)
+
+    for i, path in enumerate(paths):
+        chosen = stats.fallback
+        for key in reversed(path):
+            if key in stats.nodes:
+                chosen = stats.nodes[key]
+                break
+        atom_profile[i] = chosen.profile
+        atom_charge_std[i] = chosen.charge_std
+
+    atom_area = atom_profile.sum(axis=1)
+    atom_charge = atom_profile @ stats.sigma_values
+    return AtomPrediction(
+        atom_profile=atom_profile,
+        atom_area=atom_area,
+        atom_charge=atom_charge,
+        atom_charge_std=atom_charge_std,
+    )
+
+
 def _default_neighbor_dict_factory(mol: Any, af: Any) -> Any:
     from serenityff.charge.tree.dash_tools import init_neighbor_dict
 
@@ -389,7 +520,18 @@ class DASHBackoffPredictor(AtomPredictor):
 
     ``location_mode`` picks how ``predict_backoff`` derives a predicted
     atom's sigma-location -- ``"charge"`` (default) or ``"sigma"``. See
-    ``predict_backoff``'s docstring.
+    ``predict_backoff``'s docstring. Ignored when ``profile_mode="raw"``.
+
+    ``profile_mode`` picks the fit/predict algorithm:
+
+    - ``"decomposed"`` (default): ``fit_backoff``/``predict_backoff`` -- the
+      shape/location/area decomposition, i.e. area and charge are fit as
+      their own per-node quantities.
+    - ``"raw"``: ``fit_backoff_raw``/``predict_backoff_raw`` -- plain
+      bin-wise averaging of raw, unnormalized profiles per node, no
+      decomposition; area and charge are only ever derived from the
+      predicted profile (sum, sigma-weighted sum), never fit separately.
+      See ``fit_backoff_raw``'s docstring for why this variant exists.
     """
 
     name = "dash_backoff"
@@ -404,10 +546,16 @@ class DASHBackoffPredictor(AtomPredictor):
         minimum_support: int = 5,
         charge_reconciliation: str = "std_weighted",
         location_mode: str = "charge",
+        profile_mode: str = "decomposed",
         stores_root: str | None = None,
         tree_folder_path: str | None = None,
         preload: bool = True,
     ) -> None:
+        if profile_mode not in VALID_PROFILE_MODES:
+            raise ValueError(
+                f"profile_mode must be one of {VALID_PROFILE_MODES}, "
+                f"got {profile_mode!r}"
+            )
         self.store = store
         self.scheme = scheme
         self.max_depth = max_depth
@@ -415,12 +563,13 @@ class DASHBackoffPredictor(AtomPredictor):
         self.minimum_support = minimum_support
         self.charge_reconciliation = charge_reconciliation
         self.location_mode = location_mode
+        self.profile_mode = profile_mode
         self.stores_root = stores_root
         self.tree_folder_path = tree_folder_path
         self.preload = preload
         self.match_stats: dict[str, dict[str, int]] = {}
         self._tree: Any = None
-        self._stats: BackoffStats | None = None
+        self._stats: BackoffStats | RawBackoffStats | None = None
 
     def _load_tree(self) -> Any:
         if self._tree is None:
@@ -468,19 +617,31 @@ class DASHBackoffPredictor(AtomPredictor):
             **kwargs,
         )
         paths = self._paths_for(train, split="train")
-        self._stats = fit_backoff(
-            paths,
-            atom_profile,
-            atom_area,
-            atom_charge,
-            minimum_support=self.minimum_support,
-            sigma_values=train.grid.values,
-        )
+        if self.profile_mode == "raw":
+            # atom_area/atom_charge loaded above are never fit separately in
+            # raw mode -- see profile_mode's docstring.
+            self._stats = fit_backoff_raw(
+                paths,
+                atom_profile,
+                minimum_support=self.minimum_support,
+                sigma_values=train.grid.values,
+            )
+        else:
+            self._stats = fit_backoff(
+                paths,
+                atom_profile,
+                atom_area,
+                atom_charge,
+                minimum_support=self.minimum_support,
+                sigma_values=train.grid.values,
+            )
 
     def predict_atoms(self, test: MoleculeSet) -> AtomPrediction:
         if self._stats is None:
             raise RuntimeError("fit_atoms must be called before predict_atoms")
         paths = self._paths_for(test, split="test")
+        if isinstance(self._stats, RawBackoffStats):
+            return predict_backoff_raw(paths, self._stats)
         return predict_backoff(paths, self._stats, location_mode=self.location_mode)
 
 

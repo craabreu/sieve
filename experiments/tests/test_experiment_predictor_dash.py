@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from sieve_experiments.predictors.dash import fit_backoff, predict_backoff
+from sieve_experiments.predictors.dash import (
+    fit_backoff,
+    fit_backoff_raw,
+    predict_backoff,
+    predict_backoff_raw,
+)
 
 from experiments.tests.helpers import synthetic_molecule_set
 
@@ -434,4 +439,108 @@ def test_fit_backoff_requires_profile_width_to_match_sigma_values():
             np.array([0.1]),
             minimum_support=1,
             sigma_values=_GRID,  # 5 points
+        )
+
+
+# --- fit_backoff_raw / predict_backoff_raw ----------------------------------
+#
+# The "no decomposition" counterpart: node stats are the plain bin-wise mean
+# of raw profiles, and area/charge are always *derived* from a predicted
+# profile (sum, profile @ sigma_values), never fit as their own quantities.
+
+
+def test_raw_mode_blurs_across_differing_locations_unlike_decomposed():
+    """The contrast this variant exists to measure: two atoms with the same
+    shape and area but different locations average, in raw mode, to a
+    blurred two-peak blend -- exactly what the decomposed algorithm's shift
+    step exists to avoid (see test_predict_reconstructs_unsmeared_shape_
+    across_differing_locations, same input data, opposite outcome)."""
+    paths = [[(0, 0)], [(0, 0)]]
+    atom_profile = np.array([_spike(4.0, 3), _spike(4.0, 1)])  # +1.0 and -1.0
+
+    stats = fit_backoff_raw(paths, atom_profile, minimum_support=2, sigma_values=_GRID)
+    pred = predict_backoff_raw([[(0, 0)]], stats)
+
+    # plain bin-wise mean: [0, 2, 0, 2, 0], not a clean spike at 0
+    np.testing.assert_allclose(pred.atom_profile, [[0.0, 2.0, 0.0, 2.0, 0.0]])
+
+
+def test_raw_mode_derives_area_and_charge_from_the_predicted_profile():
+    """area and charge are never fit as their own quantities in raw mode --
+    they must equal sum(profile) / profile @ sigma_values exactly, whatever
+    node (or fallback) an atom backs off to, unlike decomposed mode where
+    ``atom_area``/``atom_charge`` are separately-fit means that need not
+    equal the reconstructed profile's own sum/moment (shift can lose mass
+    off the grid's edge)."""
+    paths = [
+        [(0, 0)],
+        [(0, 0)],
+        [(0, 0), (0, 1)],
+    ]
+    atom_profile = np.array([_spike(1.0, 4), _spike(3.0, 0), _spike(2.0, 2)])
+
+    stats = fit_backoff_raw(paths, atom_profile, minimum_support=2, sigma_values=_GRID)
+    assert (0, 1) not in stats.nodes  # pruned: only 1 supporting atom
+
+    # one atom on the well-supported (0,0) node, one that backs off to it
+    # from the unsupported (0,1) leaf, and one on a never-seen branch
+    # (falls back to the global mean)
+    pred = predict_backoff_raw([[(0, 0)], [(0, 0), (0, 1)], [(9, 9)]], stats)
+    assert pred.atom_area is not None
+    assert pred.atom_charge is not None
+
+    np.testing.assert_allclose(pred.atom_area, pred.atom_profile.sum(axis=1))
+    np.testing.assert_allclose(pred.atom_charge, pred.atom_profile @ _GRID)
+
+
+def test_raw_mode_backs_off_to_fallback_when_no_node_retained():
+    paths = [[(0, 0)], [(0, 0)]]
+    atom_profile = np.array([_spike(1.0, 2), _spike(3.0, 2)])
+
+    stats = fit_backoff_raw(
+        paths, atom_profile, minimum_support=100, sigma_values=_GRID
+    )
+    pred = predict_backoff_raw([[(0, 0)], [(7, 9)]], stats)
+
+    np.testing.assert_allclose(pred.atom_profile, [_spike(2.0, 2), _spike(2.0, 2)])
+
+
+def test_raw_mode_charge_std_is_positive_and_finite():
+    paths = [[(0, 0)], [(0, 0)], [(0, 0)]]
+    atom_profile = np.array([_spike(1.0, 2), _spike(2.0, 2), _spike(3.0, 2)])
+
+    stats = fit_backoff_raw(paths, atom_profile, minimum_support=1, sigma_values=_GRID)
+    pred = predict_backoff_raw([[(0, 0)]], stats)
+
+    assert pred.atom_charge_std is not None
+    assert np.all(np.isfinite(pred.atom_charge_std))
+    assert np.all(pred.atom_charge_std > 0)
+
+
+def test_fit_backoff_raw_requires_matching_lengths():
+    with pytest.raises(ValueError):
+        fit_backoff_raw(
+            [[(0, 0)]],
+            np.array([[1.0], [2.0]]),
+            minimum_support=1,
+            sigma_values=np.array([0.0]),
+        )
+
+
+def test_fit_backoff_raw_requires_profile_width_to_match_sigma_values():
+    with pytest.raises(ValueError, match="sigma_values"):
+        fit_backoff_raw(
+            [[(0, 0)]],
+            np.array([[1.0, 2.0]]),  # 2 bins
+            minimum_support=1,
+            sigma_values=_GRID,  # 5 points
+        )
+
+
+def test_dash_backoff_predictor_rejects_unknown_profile_mode():
+    from sieve_experiments.predictors.dash import DASHBackoffPredictor
+
+    with pytest.raises(ValueError, match="profile_mode"):
+        DASHBackoffPredictor(
+            store="chaos-store", scheme="cosmo-sac-2010", profile_mode="bogus"
         )
