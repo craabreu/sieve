@@ -248,6 +248,43 @@ mischaracterized until now as "the paper's hyperparameters" -- see
 README.md's T9/T10 sections for the corrected account and what it implies
 for the T9-vs-T10 comparison.
 
+WHY THE AUTHORS' OWN CHECKPOINT IS (300, 49), NOT (300, 147) (2026-08-25):
+their shipped StratifiedCATEGORY_CV5 checkpoint's encoder.W_i.weight is
+(300, 49) = 35 + 14, not our (300, 147) = 133 + 14 -- both used
+use_default_fdim=True (never overridden anywhere, confirmed by grep), so
+by the mechanism above both should read GraphConvConstants.ATOM_FDIM/
+BOND_FDIM unconditionally, ignoring the atom_fdim=35 kwarg entirely.
+Checked DMPNNEncoderLayer.__init__ directly:
+
+    if use_default_fdim:
+        self.atom_fdim = GraphConvConstants.ATOM_FDIM
+        self.concat_fdim = GraphConvConstants.ATOM_FDIM + GraphConvConstants.BOND_FDIM
+    else:
+        self.atom_fdim = atom_fdim
+        self.concat_fdim = atom_fdim + bond_fdim
+
+On our installed (stock, unpatched PyPI) deepchem, GraphConvConstants.
+ATOM_FDIM=133, BOND_FDIM=14 (confirmed directly) -- hence our (300, 147).
+The only way their run got (300, 49) through this same code path is if
+GraphConvConstants.ATOM_FDIM itself equalled 35 in whatever deepchem they
+actually used -- i.e. they didn't touch the training script's logic at
+all, they patched deepchem's own dmpnn_featurizer.py module, hardcoding
+GraphConvConstants.ATOM_FDIM = 35 (and presumably narrowing
+ATOM_FEATURES['atomic_num'] to their 8-element vocabulary), so that
+use_default_fdim=True silently does the "right" thing only because they'd
+redefined what "default" means. This is exactly GitHub issue #1's own
+description: "the README says dmpnn_featurizer.py was patched (ALLOWED_
+ATOMS = 8 elements, ATOM_FDIM hardcoded to 35)... the patched file isn't
+in the repo."
+
+Corollary, not previously noted: BOND_FDIM stayed at deepchem's stock 14
+in BOTH checkpoints (49-35=14, 147-133=14) -- only the atom side was ever
+patched. So even the authors' own shipped, published model never actually
+used the paper's own Table 2 (12-dim bond features) either -- a fourth,
+narrower gap layered on top of gap 2 above, not just "the featurizer file
+is missing" but "even the file that IS missing only covers half of what
+Tables 1-2 together describe."
+
 predictors/cosmonet.py (CosmonetPredictor) is written and tested
 (experiments/tests/test_experiment_predictor_cosmonet.py, 7 tests). It is a
 SMILES-keyed lookup against the training script's own saved
@@ -302,7 +339,14 @@ found while investigating T9's negative-sigma-bin issue:
      default-shaped model regardless of what the log echoes back;
   2. the atom featurizer needed to reproduce that checkpoint (atom_fdim=35
      vs deepchem's stock 133) was never published -- independently confirmed
-     in that repo's own GitHub issue #1, unanswered since 2026-08-09;
+     in that repo's own GitHub issue #1, unanswered since 2026-08-09; the
+     mechanism is a patched deepchem module (GraphConvConstants.ATOM_FDIM
+     hardcoded to 35), not a script-level flag -- see [cosmonet]'s "WHY THE
+     AUTHORS' OWN CHECKPOINT IS (300, 49)" note above for the full trace.
+     Narrower than it first looked, too: BOND_FDIM stayed at deepchem's
+     stock 14 in their checkpoint as well (49-35=14) -- only the atom side
+     was ever patched, so even their own shipped model never used the
+     paper's own Table 2 (12-dim bond features) either;
   3. the published training script has no non-negativity enforcement
      anywhere in its prediction path, yet its own published results CSV has
      exactly 0% negative bins across all 5 folds.
