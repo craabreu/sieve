@@ -5,7 +5,7 @@ COSMO-NET) on the chaos-store sigma-profile prediction task, evaluated on
 Sieve's own `biased_split` extrapolation split. Design doc:
 `docs/superpowers/specs/2026-08-24-baseline-experiment-harness-design.md`.
 
-## Status (2026-08-24, updated) — read this before continuing the work
+## Status (2026-08-25, updated) — read this before continuing the work
 
 **Done and verified (T0–T8 of the design doc's task table):**
 
@@ -88,23 +88,63 @@ and the real pinned DASH-tree clone
   training split has to be loaded independently
   (`data.load_atom_truth`; `load_molecule_set` never populates it).
 
-A real CLI run (`--config configs/dash-biased.yaml --limit 300`) beats the
-`global_mean` floor on the same slice: `profile/w1_norm_mean` 0.00054
-(`location_mode="charge"`, the default) vs. 0.00079, `area/r2` 0.96 vs. 0.69.
-`fit_s` ≈11s at this size, ~10s of which is the one-time DASHTree preload;
-`predict_s` is 0.05s. Re-check with `--limit` timing probes before
-committing to a full run (design.md risk #1).
+**First full-store pass, 2026-08-25 (superseding the earlier `--limit 300`
+numbers below).** `--config configs/dash-biased.yaml`, no `--limit`, full
+53,079-molecule chaos-store, `attention_threshold=5.2` (the paper's tuned
+value — see `pins.toml`'s `[dash_tree]` notes), `location_mode="charge"`
+(the default). A `--limit 5000` timing probe ran first (design.md risk #1):
+24s wall, extrapolated the full run to ~2-3 min, which held (`real 1m58s`).
+Test-split (`n_test` 5333 molecules) results, DASH vs. `global_mean` floor
+(`configs/global-mean-biased.yaml`, same split, `real 2.3s`):
+
+| metric | dash_backoff | global_mean |
+| --- | --- | --- |
+| `profile/w1_norm_mean` | 0.449 | 1.024 |
+| `area/r2` | 0.949 | 0.415 |
+| `atom/profile/w1_norm_mean` | 1.030 | — (no atom truth for global_mean's params) |
+| `charge/mae` | 0.108 | 0.00694 |
+
+DASH clearly wins on profile shape and area; `global_mean` beats DASH on
+molecule-level `charge/mae` for a mechanical reason, confirmed against
+`predictions.npz`'s `net_charge` array: **5296/5333 (99.3%) of test
+molecules have `net_charge` exactly 0** (chaos-store is almost entirely
+formally-neutral molecules). `global_mean`'s charge reconciliation
+effectively predicts a constant zero, so its "MAE" is just
+`mean(|true net charge|)` = 0.00694 by construction — bit-for-bit the
+number reported. It isn't evidence `global_mean` models charge well; it's
+an artifact of the metric on a near-degenerate label distribution.
+`time/fit_s` 96.8s (includes the ~10s tree preload), `time/predict_s`
+14.3s, `time/data_s` 0.41s.
 
 **Coverage caveat — read before quoting any DASH number.** DASH cannot match
 every chaos-store atom: `init_neighbor_dict` rejects atoms whose feature
 tuple is outside DASH's published vocabulary (boron, Si, Ge, Sb, Te), and it
 runs over the whole molecule, so one such atom disqualifies **all** of that
-molecule's atoms. Measured: **554/11000 atoms from 13/300 molecules (~4%)**.
-Those atoms fall back to the unconditional global mean — i.e. part of any
-DASH score is really the floor predictor's score. Every run records this per
-split in its manifest's `match_stats` and logs a WARNING; the results table
-should carry it alongside the metrics rather than quoting DASH numbers as if
-coverage were 100%.
+molecule's atoms. Measured on the full store: **train 52103/1168845 atoms
+(4.5%) from 2082/42459 molecules (4.9%)**; **test 2114/203063 atoms (1.0%)
+from 51/5333 molecules (1.0%)** — close to the earlier `--limit 300`
+estimate (~4%), and confirmed not to be a small-sample artifact. Those atoms
+fall back to the unconditional global mean — i.e. part of any DASH score is
+really the floor predictor's score. Every run records this per split in its
+manifest's `match_stats` and logs a WARNING; the results table should carry
+it alongside the metrics rather than quoting DASH numbers as if coverage
+were 100%.
+
+<details>
+<summary>Earlier <code>--limit 300</code> smoke numbers (superseded above,
+kept for the timing-probe methodology note)</summary>
+
+A real CLI run (`--config configs/dash-biased.yaml --limit 300`) beats the
+`global_mean` floor on the same slice: `profile/w1_norm_mean` 0.00054
+(`location_mode="charge"`, the default) vs. 0.00079, `area/r2` 0.96 vs. 0.69.
+`fit_s` ≈11s at this size, ~10s of which is the one-time DASHTree preload;
+`predict_s` is 0.05s. This predates the `attention_threshold` fix (was 10,
+now 5.2) and an earlier metrics-module revision, so the raw numbers aren't
+directly comparable to the full-store pass above — kept only as the
+worked example for "run a `--limit` timing probe before committing to a
+full run" (design.md risk #1).
+
+</details>
 
 **Gotchas hit while building T8** (full detail in `pins.toml`'s
 `[dash_tree]` notes):
