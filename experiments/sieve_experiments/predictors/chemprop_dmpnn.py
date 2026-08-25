@@ -245,6 +245,82 @@ def prediction_from_profile(
     )
 
 
+VALID_OUTPUT_ACTIVATIONS = ("softplus", "squared", "abs")
+
+_NONNEG_FFN_CLASSES: dict[str, Any] = {}
+
+
+def nonneg_regression_ffn_class(kind: str = "softplus") -> Any:
+    """A ``RegressionFFN`` subclass that forces a non-negative activation onto
+    the FFN's raw output, *before* unscaling -- see the module docstring for
+    why applying it there makes ``p(sigma) > 0`` structural rather than a
+    post-hoc clip.
+
+    Built lazily and memoized per kind rather than defined at module scope,
+    because it subclasses chemprop and this module must stay importable
+    without it (the fast-suite contract). Shared with
+    ``predictors/chemprop_atom.py`` (T11), so the invariant lives in one place.
+
+    ``kind`` picks the activation. All three keep non-negativity equally, but
+    they differ in whether an output of *exactly* zero is reachable, which
+    turns out to decide whether the model trains at all:
+
+    - ``"softplus"`` -- T10's default and what the COSMO-NET paper describes.
+      ``softplus(x) = 0`` only as ``x -> -inf``. Fine for molecule-level
+      profiles, which are dense (50.2% exact-zero bins, 25.4 of 51 bins
+      populated) and never need the output driven to exactly zero.
+    - ``"squared"`` -- T11's default. ``x**2`` hits exactly zero at ``x = 0``,
+      a finite point, so a target of exactly zero is reachable and the
+      gradient does not vanish on the way there.
+    - ``"abs"`` -- same reachability property, non-smooth at the origin.
+      Measured slightly worse than ``"squared"``; kept for comparison.
+
+    WHY THIS IS PARAMETERIZED (2026-08-25): softplus **collapses entirely** at
+    the atom level. Atom profiles are 81.4% exact zeros (each atom occupies
+    only ~9.5 of the 51 bins), so MSE relentlessly drives those outputs toward
+    exactly zero; softplus can only approach that as its pre-activation goes
+    to -inf, where its own derivative ``sigmoid(x)`` vanishes, and the head
+    dies. Measured: a softplus atom model predicts identically zero and cannot
+    overfit even 20 molecules (w1 6.72, predicted area 0.000 against a true
+    7.676), while the same model with ``"squared"`` reaches w1 0.878 and area
+    7.859 -- statistically indistinguishable from an unconstrained linear head
+    (w1 0.825), which however emits 13,110 negative bins. See README's T11
+    section.
+    """
+    if kind not in VALID_OUTPUT_ACTIVATIONS:
+        raise ValueError(
+            f"output_activation must be one of {VALID_OUTPUT_ACTIVATIONS}, got {kind!r}"
+        )
+    if kind in _NONNEG_FFN_CLASSES:
+        return _NONNEG_FFN_CLASSES[kind]
+
+    import torch.nn.functional as F
+    from chemprop.nn.predictors import RegressionFFN
+
+    activations = {
+        "softplus": F.softplus,
+        "squared": lambda x: x**2,
+        "abs": lambda x: x.abs(),
+    }
+    activation = activations[kind]
+
+    class NonNegativeRegressionFFN(RegressionFFN):
+        """``RegressionFFN`` with a non-negative activation forced onto the
+        FFN's raw output, before unscaling -- see
+        ``nonneg_regression_ffn_class``.
+        """
+
+        def forward(self, Z):
+            return self.output_transform(activation(self.ffn(Z)))
+
+        train_step = forward
+
+    NonNegativeRegressionFFN.__name__ = f"{kind.capitalize()}RegressionFFN"
+    NonNegativeRegressionFFN.__qualname__ = NonNegativeRegressionFFN.__name__
+    _NONNEG_FFN_CLASSES[kind] = NonNegativeRegressionFFN
+    return NonNegativeRegressionFFN
+
+
 def _build_model(
     *,
     hidden_size: int,
@@ -259,23 +335,12 @@ def _build_model(
 ):
     """Lazy: only imports chemprop when actually called."""
     import torch
-    import torch.nn.functional as F
     from chemprop.models import MPNN
     from chemprop.nn.agg import MeanAggregation
     from chemprop.nn.message_passing import BondMessagePassing
     from chemprop.nn.metrics import ChempropMetric
-    from chemprop.nn.predictors import RegressionFFN
 
-    class SoftplusRegressionFFN(RegressionFFN):
-        """``RegressionFFN`` with softplus forced on the FFN's raw output,
-        before unscaling -- see the module docstring for why this makes
-        non-negativity structural rather than a post-hoc clip.
-        """
-
-        def forward(self, Z):
-            return self.output_transform(F.softplus(self.ffn(Z)))
-
-        train_step = forward
+    SoftplusRegressionFFN = nonneg_regression_ffn_class("softplus")
 
     class _UnscalingRowLoss(ChempropMetric):
         """Base for a loss that needs the whole row (all ``n_tasks`` profile

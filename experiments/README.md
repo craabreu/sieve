@@ -465,13 +465,106 @@ the first (now-superseded) paper-faithful run's own numbers, kept as the
 record of what "faithfully implementing the paper's own claimed
 hyperparameters" actually produces.
 
-**Not started — T11** (per-atom Chemprop: an `AtomPredictor` counterpart to
-T10's molecule-level `ChempropDMPNNPredictor`, predicting a sigma-profile
-per atom off each atom's own D-MPNN hidden representation rather than a
-pooled molecule embedding — directly comparable to DASH Stage A on the same
-atom-level metrics. Previously out of scope as "the per-atom Sieve model
-line, later milestone" (see T10's plan); promoted to T11 here. Not yet
-planned in detail.)
+**Done and verified — per-atom Chemprop (T11), 2026-08-25.**
+
+`predictors/chemprop_atom.py` — a `MolAtomBondMPNN` predicting one 51-bin
+profile per **atom**, off that atom's own message-passing hidden state.
+`agg=None`, no molecule-level and no bond-level head; molecule results come
+from the harness's ordinary `roll_up` of the atom predictions, so they are a
+pure readout of atom quality rather than a separately-trained head. This is
+the second atom-level predictor after DASH Stage A (T8), and the comparison
+against it is the point: learned per-atom vs averaged-over-a-published-tree.
+
+Otherwise it follows T10's recipe exactly — raw unshifted, unnormalized
+bins, per-bin min-max scaling fit on the training split only, plain MSE —
+so T11-vs-T10 isolates the atom-vs-molecule head and T11-vs-DASH isolates
+learned-vs-averaged.
+
+- **The finding: softplus does not transfer to the atom level.** T10's
+  softplus output **collapses entirely here** — it predicts identically zero
+  and cannot overfit even 20 molecules. This is structural, not tuning.
+  `softplus(x) = 0` only as `x → −∞`, and atom profiles are **81.4% exact
+  zeros** (each atom occupies ~9.5 of the 51 bins; a *molecule* profile is
+  far denser — 50.2% zeros, 25.4 bins populated). MSE therefore drives most
+  outputs toward exactly zero, pushing pre-activations to −∞, which is
+  precisely where softplus's own derivative `sigmoid(x)` vanishes. The head
+  dies. T10 never hit this because molecule targets are dense and never need
+  the output driven to exact zero. Measured on a 20-molecule overfit (true
+  mean atom area 7.676):
+
+  | output activation | w1 | predicted area | negative bins |
+  | --- | --- | --- | --- |
+  | softplus (T10's) | 6.717 | 0.000 | 0 — dead |
+  | **squared (`x²`)** | **0.878** | **7.859** | **0** |
+  | abs | 0.947 | 7.939 | 0 |
+  | plain linear | 0.825 | 7.786 | 13,110 |
+
+  `x²` is the adopted default: **equally structurally non-negative** (the
+  activation still sits on the raw output before unscaling, and every bin's
+  training minimum is exactly 0, so `y_min ≥ 0`), but exact zero is reachable
+  at the finite point `x = 0`, so no gradient dies. It costs essentially
+  nothing against an unconstrained linear head, which would forfeit the
+  non-negativity guarantee that was T10's whole selling point. Selectable via
+  `output_activation`; `"softplus"` stays available so the collapse stays
+  reproducible.
+- **Atom features**: chemprop's own `MultiHotAtomFeaturizer.v2()` (72-dim,
+  Z = 1–36 plus 53), *not* T10's `PaperAtomFeaturizer`. The paper's Table 1
+  vocabulary has **no hydrogen**, and 56.8% of chaos-store atoms are hydrogen
+  once the graph keeps explicit H — which it must, since the store carries
+  atom-level truth for every atom. Covers every chaos-store element except
+  Sb and Te.
+- **Atom ordering** — the one thing that would silently produce plausible but
+  meaningless numbers. chemprop's `make_mol(..., reorder_atoms=True)`
+  renumbers by atom-map number, which *is* the store's own flat atom order,
+  so no manual permutation is needed (unlike `dash.py`). Guarded three ways:
+  a per-molecule count + map-order assert, a test against the store's own
+  `element` column (dropping `reorder_atoms=True` changes the element
+  sequence for 38 of 40 molecules and mismatches 16.0% of atoms, so it
+  genuinely discriminates), and a reversed-molecule-order prediction test.
+- **A shape check cannot catch a shuffled predict loader**: `build_dataloader`
+  shuffles *molecules*, and each molecule's atoms travel with it as a
+  contiguous block, so a shuffled loader returns the identical
+  `(n_atoms, 51)` shape with blocks permuted. The guard is a per-molecule
+  atom-count sequence check recovered from each batch's own `bmg.batch`.
+- **100% atom coverage**, unlike DASH (~1.0% of test atoms fall back to the
+  global mean) — see the coverage caveat in T8. The comparison mildly favours
+  T11 for that reason.
+
+**Full-store results, 2026-08-25.** `--config configs/chemprop-atom-biased.yaml`,
+no `--limit`, `n_test` 5333 molecules / 203,063 atoms. `time/fit_s` 2048s
+(34 min, matching the `--limit 5000` probe's extrapolation), `time/predict_s`
+6.5s. **0/271,983 rolled-up bins negative**; predicted molecule areas span
+103–551 against a true 114–520.
+
+| metric | DASH decomposed | DASH raw | **chemprop_atom (T11)** | chemprop_dmpnn (T10) |
+| --- | --- | --- | --- | --- |
+| `atom/profile/w1_norm_mean` | **1.030** | 1.058 | 1.055 | — (molecule-level) |
+| `atom/area/r2` | 0.945 | 0.945 | **0.956** | — |
+| `atom/charge/mae` | 0.00752 | 0.00752 | **0.00726** | — |
+| `profile/w1_norm_mean` | 0.449 | 0.442 | 0.380 | **0.219** |
+| `area/r2` | **0.949** | 0.949 | 0.943 | 0.828 |
+| `charge/mae` | 0.102 | 0.102 | 0.0792 | **0.0201** |
+
+Reading these honestly:
+
+- **T11 beats DASH on atom area and atom charge**, and is essentially tied
+  with it on atom *shape* (1.055 vs 1.030 — DASH decomposed is marginally
+  ahead, DASH raw marginally behind). A learned per-atom model does not
+  obviously beat averaging over DASH's published tree at the atom level,
+  which is a more interesting result than if it had.
+- **But T11 is clearly ahead once rolled up to molecules** (`profile/
+  w1_norm_mean` 0.380 vs DASH's 0.449/0.442) — the same atom-level-vs-
+  molecule-level decoupling the `profile_mode` experiment turned up in T8:
+  the two granularities' shape errors do not move together, because per-atom
+  errors can cancel or compound when summed into a molecule.
+- **T10 still owns molecule-level shape and charge** (0.219, 0.0201) by a
+  wide margin — unsurprising, since it optimizes the molecule profile
+  directly, whereas T11's molecule numbers are an unoptimized by-product of
+  summing atoms. **T11 owns area** (0.943 vs 0.828). So the atom-level head
+  buys area accuracy and per-atom detail at a real cost in molecule-level
+  shape; it does not dominate T10, and shouldn't be reported as if it did.
+
+Full gotcha writeup in `pins.toml`'s `[chemprop]` notes.
 
 **Not started — T12** (`summarize` polish, results table, this README's
 final form).
