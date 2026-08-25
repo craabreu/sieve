@@ -13,9 +13,11 @@ BOND_FDIM/MultiHotBondFeaturizer length assertion.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from rdkit import Chem
 from sieve_experiments.predictors.chemprop_dmpnn import (
     ATOM_FDIM,
+    ChempropDMPNNPredictor,
     PaperAtomFeaturizer,
     minmax_apply,
     minmax_fit,
@@ -136,3 +138,18 @@ def test_prediction_from_profile_area_and_charge():
     np.testing.assert_allclose(pred.mol_profile, profile)
     np.testing.assert_allclose(pred.mol_area, np.array([6.0, 0.0]))
     np.testing.assert_allclose(pred.mol_charge_raw, np.array([2.0, 0.0]))  # -1+0+3
+
+
+# --- ChempropDMPNNPredictor construction (no chemprop import needed) ----
+
+
+def test_rejects_an_unknown_loss_mode():
+    with pytest.raises(ValueError, match="loss_mode"):
+        ChempropDMPNNPredictor(
+            store="chaos-store", scheme="cosmo-sac-2010", loss_mode="bogus"
+        )
+
+
+def test_default_loss_mode_is_mse():
+    predictor = ChempropDMPNNPredictor(store="chaos-store", scheme="cosmo-sac-2010")
+    assert predictor.loss_mode == "mse"

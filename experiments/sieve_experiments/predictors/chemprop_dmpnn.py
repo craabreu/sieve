@@ -102,6 +102,33 @@ Architecture:
   own Noam-like warmup schedule. Not replicated here -- would need
   subclassing `MPNN.configure_optimizers` -- and left as a known,
   documented remaining deviation.
+
+``loss_mode`` (predictor param, default ``"mse"``) picks the training
+objective, independent of the architecture above:
+
+- ``"mse"`` -- chemprop's own default: plain per-bin MSE, each of the 51
+  sigma bins as an independent, equally-weighted regression target. What
+  the real deepchem run (and this module, before this option existed) uses.
+- ``"w1_normalized"`` -- Wasserstein-1 distance between the predicted and
+  target profiles, each normalized by its OWN row sum first (a pure shape
+  loss, decoupled from magnitude) -- matches `metrics.molecule_metrics`'s
+  primary eval metric (`profile/w1_norm_mean`) exactly, used as the
+  training objective instead of just an eval metric.
+- ``"mse_cumsum"`` -- MSE between the predicted and target profiles'
+  cumulative sums ("accumulated area sums"), unnormalized -- a joint
+  shape+magnitude loss: matching the true cumsum vector uniquely
+  determines the true profile (`profile[i] = cumsum[i] - cumsum[i-1]`), so
+  every output bin gets real gradient, unlike an MSE on total area alone
+  (which would leave the 50 shape degrees of freedom undetermined if used
+  as the sole loss).
+
+Both custom losses need the whole row (all 51 bins together, not
+per-bin independently) in REAL, unscaled units to mean anything physically
+-- see ``_UnscalingRowLoss``'s docstring for why per-bin min-max scaling
+makes a row-sum or cumsum computed directly on the *scaled* tensor
+meaningless, and why `UnscaleTransform`'s own train-mode no-op can't be
+relied on here (both classes unscale explicitly, with their own copy of
+`y_min`/`scale`, regardless of train/eval mode).
 """
 
 from __future__ import annotations
@@ -226,12 +253,17 @@ def _build_model(
     ffn_n_layers: int,
     n_tasks: int,
     output_transform,
+    y_min: NDArray[np.float64],
+    scale: NDArray[np.float64],
+    loss_mode: str,
 ):
     """Lazy: only imports chemprop when actually called."""
+    import torch
     import torch.nn.functional as F
     from chemprop.models import MPNN
     from chemprop.nn.agg import MeanAggregation
     from chemprop.nn.message_passing import BondMessagePassing
+    from chemprop.nn.metrics import ChempropMetric
     from chemprop.nn.predictors import RegressionFFN
 
     class SoftplusRegressionFFN(RegressionFFN):
@@ -244,6 +276,105 @@ def _build_model(
             return self.output_transform(F.softplus(self.ffn(Z)))
 
         train_step = forward
+
+    class _UnscalingRowLoss(ChempropMetric):
+        """Base for a loss that needs the whole row (all ``n_tasks`` profile
+        bins together, not per-bin independently) in REAL, unscaled units.
+
+        ``preds``/``targets`` arrive here in per-bin-independently-scaled
+        space (each of the 51 bins has its own min-max transform) -- a
+        row-sum or cumsum computed directly on that scaled tensor would not
+        correspond to the true physical row-sum/cumsum at all, since scaling
+        differs bin to bin. ``UnscaleTransform`` itself is a no-op during
+        training (by design, so plain per-element losses stay in scaled
+        space) so it can't be relied on here; this class unscales explicitly
+        instead, with its own copy of ``y_min``/``scale``, regardless of
+        train/eval mode. Subclasses override ``_row_loss`` only.
+        """
+
+        def __init__(self, y_min, scale, task_weights=1.0, **kwargs):
+            super().__init__(task_weights)
+            self.register_buffer("y_min", torch.as_tensor(y_min, dtype=torch.float))
+            self.register_buffer("scale", torch.as_tensor(scale, dtype=torch.float))
+
+        def _calc_unreduced_loss(self, *args, **kwargs):
+            raise NotImplementedError(
+                f"{type(self).__name__} overrides update() directly."
+            )
+
+        def _row_loss(
+            self, pred_real: torch.Tensor, target_real: torch.Tensor
+        ) -> torch.Tensor:
+            raise NotImplementedError
+
+        def update(
+            self,
+            preds: torch.Tensor,
+            targets: torch.Tensor,
+            mask: torch.Tensor | None = None,
+            weights: torch.Tensor | None = None,
+            lt_mask: torch.Tensor | None = None,
+            gt_mask: torch.Tensor | None = None,
+        ) -> None:
+            if mask is None:
+                mask = torch.ones_like(targets, dtype=torch.bool)
+            if weights is None:
+                weights = torch.ones(targets.shape[0], device=targets.device)
+            valid = mask[:, 0]
+
+            pred_real = preds * self.scale + self.y_min
+            target_real = targets * self.scale + self.y_min
+            loss = self._row_loss(pred_real, target_real) * valid * weights.view(-1)
+
+            self.total_loss += loss.sum()
+            self.num_samples += valid.sum()
+
+    class NormalizedWasserstein1Loss(_UnscalingRowLoss):
+        """Wasserstein-1 distance between the predicted and target profiles,
+        each normalized by its OWN row sum first -- a pure shape loss,
+        decoupled from magnitude, matching ``metrics.molecule_metrics``'s
+        primary eval metric (``profile/w1_norm_mean``) exactly, but used as
+        the training objective instead of just an eval metric.
+        """
+
+        def __init__(self, y_min, scale, task_weights=1.0, eps: float = 1e-8, **kwargs):
+            super().__init__(y_min, scale, task_weights, **kwargs)
+            self.eps = eps
+
+        def _row_loss(
+            self, pred_real: torch.Tensor, target_real: torch.Tensor
+        ) -> torch.Tensor:
+            pred_norm = pred_real / (pred_real.sum(1, keepdim=True) + self.eps)
+            target_norm = target_real / (target_real.sum(1, keepdim=True) + self.eps)
+            return (target_norm.cumsum(1) - pred_norm.cumsum(1)).abs().sum(1)
+
+        def extra_repr(self) -> str:
+            return f"eps={self.eps}"
+
+    class CumulativeSumMSELoss(_UnscalingRowLoss):
+        """MSE between the predicted and target profiles' cumulative sums
+        ("accumulated area sums"), unnormalized -- a joint shape+magnitude
+        loss: matching the true cumsum vector uniquely determines the true
+        profile (profile[i] = cumsum[i] - cumsum[i-1]), so every output bin
+        gets real gradient, unlike an MSE on total area alone.
+        """
+
+        def _row_loss(
+            self, pred_real: torch.Tensor, target_real: torch.Tensor
+        ) -> torch.Tensor:
+            return ((pred_real.cumsum(1) - target_real.cumsum(1)) ** 2).mean(1)
+
+    if loss_mode == "mse":
+        criterion = None  # RegressionFFN's own default (plain per-bin MSE)
+    elif loss_mode == "w1_normalized":
+        criterion = NormalizedWasserstein1Loss(y_min=y_min, scale=scale)
+    elif loss_mode == "mse_cumsum":
+        criterion = CumulativeSumMSELoss(y_min=y_min, scale=scale)
+    else:
+        raise ValueError(
+            "loss_mode must be one of 'mse', 'w1_normalized', 'mse_cumsum', "
+            f"got {loss_mode!r}"
+        )
 
     message_passing = BondMessagePassing(
         d_v=ATOM_FDIM, d_e=BOND_FDIM, d_h=hidden_size, depth=depth, dropout=dropout
@@ -258,6 +389,7 @@ def _build_model(
         hidden_dim=hidden_size,
         n_layers=ffn_n_layers,
         dropout=dropout,
+        criterion=criterion,
         output_transform=output_transform,
     )
     return MPNN(message_passing, agg, predictor)
@@ -282,8 +414,14 @@ class ChempropDMPNNPredictor(MoleculePredictor):
         ffn_n_layers: int = 2,
         batch_size: int = 64,
         max_epochs: int = 100,
+        loss_mode: str = "mse",
         grid: SigmaGridSpec = DEFAULT_GRID,
     ) -> None:
+        if loss_mode not in ("mse", "w1_normalized", "mse_cumsum"):
+            raise ValueError(
+                "loss_mode must be one of 'mse', 'w1_normalized', 'mse_cumsum', "
+                f"got {loss_mode!r}"
+            )
         self.store = store
         self.scheme = scheme
         self.hidden_size = hidden_size
@@ -292,6 +430,7 @@ class ChempropDMPNNPredictor(MoleculePredictor):
         self.ffn_n_layers = ffn_n_layers
         self.batch_size = batch_size
         self.max_epochs = max_epochs
+        self.loss_mode = loss_mode
         self.grid = grid
         self._model: Any = None
 
@@ -354,6 +493,9 @@ class ChempropDMPNNPredictor(MoleculePredictor):
             ffn_n_layers=self.ffn_n_layers,
             n_tasks=self.grid.num_points,
             output_transform=output_transform,
+            y_min=y_min,
+            scale=scale,
+            loss_mode=self.loss_mode,
         )
         trainer = pl.Trainer(
             max_epochs=self.max_epochs,

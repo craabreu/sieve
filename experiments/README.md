@@ -407,6 +407,20 @@ unreproducible artifacts:
   only one of the two whose non-negativity is a structural guarantee
   rather than a discovered gap — now it also happens to score better,
   though that was never the point.
+- **Loss-function experiment**: `ChempropDMPNNPredictor` now has a
+  `loss_mode` option (`"mse"` default, `"w1_normalized"`, `"mse_cumsum"`) —
+  tried against the default MSE. `w1_normalized` (Wasserstein-1 on each
+  profile normalized by its own row sum — a pure shape loss) reached the
+  **best profile shape of any config in this milestone**,
+  `profile/w1_norm_mean` **0.2071** — but with **catastrophic area**
+  (`r2` -1822, predicted areas 10× too large on average): the expected
+  mechanistic consequence of normalizing away all magnitude information
+  before computing the loss, not a bug. `mse_cumsum` (MSE on raw cumulative
+  sums, tried at `--limit 5000` scale only — a full run wasn't judged worth
+  it) landed worse on shape and only marginally better on area than plain
+  MSE. Neither replaces the default; both stay available as documented
+  options. Full numbers and the mechanistic explanation in `pins.toml`'s
+  `[chemprop]` notes.
 
 See `pins.toml`'s `[chemprop]` notes for the full gotcha writeup, including
 the first (now-superseded) paper-faithful run's own numbers, kept as the

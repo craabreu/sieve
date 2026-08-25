@@ -63,7 +63,87 @@ def test_default_ffn_has_the_deepchem_equivalent_layer_count():
     )
 
 
-def test_fit_predict_produces_no_negative_bins(tmp_path):
+# --- custom loss classes, hand-computed -----------------------------
+
+
+def _tiny_model(loss_mode: str, y_min: np.ndarray, scale: np.ndarray):
+    """Build a minimal real MPNN just to reach its constructed
+    ``predictor.criterion`` -- the loss classes are nested inside
+    ``_build_model`` (mirrors ``SoftplusRegressionFFN``'s own nesting), so
+    this is the only way to get a real instance to test directly.
+    """
+    from chemprop.nn.transforms import UnscaleTransform
+    from sieve_experiments.predictors.chemprop_dmpnn import _build_model
+
+    output_transform = UnscaleTransform(mean=y_min, scale=scale)
+    return _build_model(
+        hidden_size=4,
+        depth=1,
+        dropout=0.0,
+        ffn_n_layers=0,
+        n_tasks=len(y_min),
+        output_transform=output_transform,
+        y_min=y_min,
+        scale=scale,
+        loss_mode=loss_mode,
+    )
+
+
+def test_w1_normalized_loss_matches_hand_computation():
+    import torch
+
+    # true=[1,2,3] (sum 6) -> normalized [1,2,3]/6; pred=[3,2,1] (sum 6) ->
+    # normalized [3,2,1]/6. cumsum(true_norm)=[1,3,6]/6, cumsum(pred_norm)=
+    # [3,5,6]/6 -> |diff|=[2,2,0]/6 -> sum = 4/6.
+    model = _tiny_model("w1_normalized", np.zeros(3), np.ones(3))
+    criterion = model.predictor.criterion
+
+    preds = torch.tensor([[3.0, 2.0, 1.0]])
+    targets = torch.tensor([[1.0, 2.0, 3.0]])
+    criterion.update(preds, targets)
+    assert abs(criterion.compute().item() - 4 / 6) < 1e-5
+
+
+def test_mse_cumsum_loss_matches_hand_computation():
+    import torch
+
+    # cumsum(true)=[1,3,6], cumsum(pred)=[3,5,6] -> diffs=[-2,-2,0] ->
+    # squared=[4,4,0] -> mean = 8/3.
+    model = _tiny_model("mse_cumsum", np.zeros(3), np.ones(3))
+    criterion = model.predictor.criterion
+
+    preds = torch.tensor([[3.0, 2.0, 1.0]])
+    targets = torch.tensor([[1.0, 2.0, 3.0]])
+    criterion.update(preds, targets)
+    assert abs(criterion.compute().item() - 8 / 3) < 1e-5
+
+
+def test_loss_unscales_before_computing():
+    """y_min/scale must actually be applied, not the raw (scaled) tensors --
+    feeds inputs that only reproduce the hand-computed mse_cumsum example
+    above once unscaled (real = scaled * scale + y_min)."""
+    import torch
+
+    y_min = np.array([10.0, 10.0, 10.0])
+    scale = np.array([2.0, 2.0, 2.0])
+    model = _tiny_model("mse_cumsum", y_min, scale)
+    criterion = model.predictor.criterion
+
+    # real target=[1,2,3] -> scaled=(real-10)/2=[-4.5,-4,-3.5]
+    # real pred=[3,2,1]   -> scaled=(real-10)/2=[-3.5,-4,-4.5]
+    preds = torch.tensor([[-3.5, -4.0, -4.5]])
+    targets = torch.tensor([[-4.5, -4.0, -3.5]])
+    criterion.update(preds, targets)
+    assert abs(criterion.compute().item() - 8 / 3) < 1e-4
+
+
+# --- end-to-end, all three loss modes ---------------------------------
+
+
+@pytest.mark.parametrize("loss_mode", ["mse", "w1_normalized", "mse_cumsum"])
+def test_fit_predict_produces_no_negative_bins(tmp_path, loss_mode):
+    """Non-negativity comes from the softplus architecture, not the loss
+    function -- must hold under every loss_mode."""
     from sieve_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
     from sieve_experiments.data import load_molecule_set
     from sieve_experiments.runner import execute
@@ -92,6 +172,7 @@ def test_fit_predict_produces_no_negative_bins(tmp_path):
                 "scheme": "cosmo-sac-2010",
                 "max_epochs": 1,
                 "batch_size": 8,
+                "loss_mode": loss_mode,
             },
         ),
     )
@@ -107,6 +188,7 @@ def test_fit_predict_produces_no_negative_bins(tmp_path):
     profile_pred = predictions["mol_profile_pred"]
     n_negative = (profile_pred < 0).sum()
     assert n_negative == 0, (
-        f"{n_negative}/{profile_pred.size} predicted bins are negative -- "
-        "softplus should make this structurally impossible"
+        f"{n_negative}/{profile_pred.size} predicted bins are negative "
+        f"(loss_mode={loss_mode!r}) -- softplus should make this "
+        "structurally impossible"
     )

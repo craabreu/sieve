@@ -494,4 +494,54 @@ same architecture) is fully resolved: they were never comparable before
 (different real architectures under an identical-looking config), and now
 they are (same real architecture, T10 built deliberately). See README.md's
 T9/T10 sections for the full comparison table.
+
+LOSS_MODE EXPERIMENT (2026-08-25): the user asked to test two alternative
+training losses against the default per-bin MSE -- ``w1_normalized``
+(Wasserstein-1 on each profile normalized by its own row sum, a pure shape
+loss) and ``mse_cumsum`` (MSE on the profiles' raw cumulative sums, a joint
+shape+magnitude loss) -- see predictors/chemprop_dmpnn.py's module
+docstring for both formulas and the ``_UnscalingRowLoss`` base class (both
+need real, unscaled units to mean anything physically, since per-bin
+min-max scaling makes a row-sum/cumsum on the *scaled* tensor meaningless).
+
+A --limit 5000 probe for both, then a full-store run for w1_normalized only
+(mse_cumsum's probe result didn't justify the ~22 min full-store cost --
+user's call, not run):
+
+| loss_mode | scale | w1_norm_mean | area/r2 | charge/mae |
+|---|---|---|---|---|
+| mse (default) | 5000 | 0.301 | -0.157 | -- |
+| w1_normalized | 5000 | 0.266 | -243.1 | -- |
+| mse_cumsum | 5000 (probe only) | 0.564 | 0.058 | -- |
+| mse (default) | full store | 0.2194 | 0.828 | 0.0201 |
+| w1_normalized | full store | **0.2071** | **-1822.4** | 0.0555 |
+
+w1_normalized's full-store profile shape is the best of any config tried
+in this whole milestone (0.2071, beating even the default-loss T10's
+0.2194) -- and its area is catastrophic (r2 -1822, predicted areas
+1250-5437 vs a true range of 114-520, roughly 10x too large on average).
+Both are the expected, mechanistic consequence of the loss's own
+construction, not a bug: normalizing both prediction and target by their
+own row sum before computing W1 removes ALL gradient signal for overall
+scale -- the network is free to drift to any magnitude while still getting
+normalized shape right, and with no term pulling it back, it drifts far.
+0/271,983 negative bins confirmed on this run too -- non-negativity is
+architecture-level (softplus), not loss-level, and holds regardless of
+which of the three loss_modes is used (also covered by a dedicated
+parametrized optional test).
+
+mse_cumsum's probe-scale numbers (w1_norm_mean 0.564, worse shape than
+both alternatives; area/r2 0.058, better than plain mse's -0.157 at the
+same scale but a marginal gain) didn't justify a full run. Recorded as a
+probe-only result, not a full-store one.
+
+Takeaway: neither alternative loss is a straightforward improvement over
+the default MSE for this architecture/task. w1_normalized would need an
+explicit magnitude term (e.g. combined with an area MSE, mirroring the
+user's own SigmaProfileLoss's shape+area+charge combination) to be usable
+on its own; mse_cumsum's cost (worse shape) wasn't worth its benefit
+(marginal area) even at probe scale. Kept as documented `loss_mode` options
+on ChempropDMPNNPredictor for future experimentation, not adopted as a new
+default -- `chemprop-biased.yaml`/`chemprop-random.yaml` stay on
+`loss_mode="mse"`.
 """

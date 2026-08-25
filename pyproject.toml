@@ -135,13 +135,21 @@ invalid-argument-type = "ignore"
 # typing.Protocol -- ty checks it nominally, but SimpleMoleculeMolGraphFeaturizer
 # actually takes it structurally (a dataclass field with no isinstance check;
 # confirmed empirically: a plain __call__+__len__ class with no inheritance
-# works at runtime). PaperAtomFeaturizer/PaperBondFeaturizer deliberately don't
-# inherit VectorFeaturizer so they stay importable without chemprop -- see
-# predictors/chemprop_dmpnn.py's module docstring.
+# works at runtime). PaperAtomFeaturizer deliberately doesn't inherit
+# VectorFeaturizer so it stays importable without chemprop -- see
+# predictors/chemprop_dmpnn.py's module docstring. Also covers the loss
+# classes' nn.Module.register_buffer()/torchmetrics.Metric.add_state()
+# attributes (self.scale, self.y_min, self.total_loss, self.num_samples):
+# both are dynamic-attribute mechanisms resolved via __getattr__ at
+# runtime, invisible to static analysis, which infers their type from the
+# declaring class instead (Module/Metric) and flags every arithmetic use
+# as unsupported-operator -- a well-known false-positive class for any
+# static checker over PyTorch's buffer/state APIs, not a real bug.
 include = ["experiments/sieve_experiments/predictors/chemprop_dmpnn.py"]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
+unsupported-operator = "ignore"
 
 [tool.ty.environment]
 extra-paths = ["experiments"]
