@@ -87,8 +87,9 @@ def test_roll_up_charge_raw_is_pre_reconciliation_total():
     assert pred.mol_charge_raw is not None
     assert pred.mol_charge is not None
     np.testing.assert_allclose(pred.mol_charge_raw, expected_raw)
-    # but after reconciliation it hits the known input exactly
-    np.testing.assert_allclose(pred.mol_charge, ms.net_charge, atol=1e-10)
+    # but after reconciliation it hits the screening-charge target exactly
+    # (-net_charge, not net_charge -- see MoleculeSet.screening_charge)
+    np.testing.assert_allclose(pred.mol_charge, ms.screening_charge, atol=1e-10)
 
 
 def test_roll_up_omits_area_and_charge_when_atom_predictor_omits_them():
@@ -143,7 +144,9 @@ def test_global_mean_predicts_reasonable_shape_and_reconciles_charge():
     assert pred.mol_charge_raw is not None
     assert pred.mol_profile.shape == (test.n_molecules, ms.grid.num_points)
     np.testing.assert_allclose(pred.mol_area, pred.mol_profile.sum(axis=1))
-    np.testing.assert_allclose(pred.mol_charge, test.net_charge)
+    # screening_charge (-net_charge), not net_charge -- see
+    # MoleculeSet.screening_charge's docstring.
+    np.testing.assert_allclose(pred.mol_charge, test.screening_charge)
     np.testing.assert_allclose(pred.mol_charge_raw, np.zeros(test.n_molecules))
 
 

@@ -278,7 +278,10 @@ def _execute_inner(
         else None
     )
     area_pred = pred.mol_area if area_true is not None else None
-    charge_true = test.net_charge if pred.mol_charge_raw is not None else None
+    # screening_charge (-net_charge), not net_charge itself: mol_charge_raw
+    # is a sigma-derived charge, opposite in sign from the molecule's own
+    # formal charge -- see MoleculeSet.screening_charge's docstring.
+    charge_true = test.screening_charge if pred.mol_charge_raw is not None else None
     charge_pred = pred.mol_charge_raw
 
     run_metrics = metrics_mod.molecule_metrics(

@@ -280,3 +280,35 @@ def test_end_to_end_run_on_real_store_limit_50(tmp_path):
     assert result.run_dir.is_dir()
     assert np.isfinite(result.metrics["profile/w1_norm_mean"])
     assert result.metrics["n_test"] > 0
+
+
+def test_screening_charge_is_the_negated_net_charge_on_real_molecules():
+    """Empirical confirmation of the COSMO screening-charge sign convention.
+
+    Sum(sigma * mol_profile) -- the same quantity atom_table.charges,
+    mol_charge_raw, and DASH's NodeStat.charge all use -- tracks
+    -net_charge on real chaos-store molecules, not net_charge itself. This
+    is the real-data check behind MoleculeSet.screening_charge; loads the
+    full store (not the module's LIMIT=200 fixture) since a small slice of
+    biased_split's smallest-molecules-first train partition may contain no
+    charged molecules at all.
+    """
+    from sieve_experiments.data import DEFAULT_GRID, load_molecule_set
+
+    mset, _masks = load_molecule_set(
+        STORE_NAME,
+        scheme="cosmo-sac-2010",
+        split_column="biased_split",
+        stores_root=STORES_ROOT,
+    )
+    charged = mset.net_charge != 0
+    assert charged.sum() > 0, "expected at least one charged molecule in chaos-store"
+
+    sigma_charge = mset.mol_profile @ DEFAULT_GRID.values
+    correlation = np.corrcoef(mset.net_charge[charged], sigma_charge[charged])[0, 1]
+    assert correlation < -0.9, (
+        f"expected sigma_charge to track -net_charge, correlation was {correlation}"
+    )
+    np.testing.assert_allclose(
+        sigma_charge[charged], mset.screening_charge[charged], atol=0.05
+    )

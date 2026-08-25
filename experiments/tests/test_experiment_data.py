@@ -66,6 +66,15 @@ def test_atom_mol_id_layout():
     assert ms.n_atoms == 8
 
 
+def test_screening_charge_is_negated_net_charge():
+    ms = MoleculeSet(
+        smiles=["a", "b", "c"],
+        num_atoms=np.array([1, 1, 1]),
+        net_charge=np.array([1.0, -1.0, 0.0]),
+    )
+    np.testing.assert_array_equal(ms.screening_charge, [-1.0, 1.0, 0.0])
+
+
 # --- select --------------------------------------------------------------
 
 

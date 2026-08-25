@@ -9,10 +9,13 @@ That is what lets a molecule-level model (COSMO-NET) and an atom-level model
 ``AtomPredictor`` does the atom -> molecule rollup once, here, so no predictor
 subclass reimplements it. Charge reconciliation is likewise defined once:
 per-atom charges are adjusted so their molecule sum matches the known
-``net_charge`` input, and the reconciled total is re-summed into
-``mol_charge``. ``mol_charge_raw`` -- the total *before* reconciliation -- is
-what the charge metrics score, since that is the honest answer to "how well
-would the raw output have reproduced the given total."
+``screening_charge`` target (``-net_charge`` -- see ``MoleculeSet.
+screening_charge``'s docstring for why sigma-derived charge and the
+molecule's own formal charge are opposite in sign), and the reconciled
+total is re-summed into ``mol_charge``. ``mol_charge_raw`` -- the total
+*before* reconciliation -- is what the charge metrics score, since that is
+the honest answer to "how well would the raw output have reproduced the
+given total."
 """
 
 from __future__ import annotations
@@ -68,13 +71,13 @@ class Predictor(Protocol):
 def reconcile_charge(
     atom_charge: NDArray[np.floating],
     mol_id: NDArray[np.int64],
-    net_charge: NDArray[np.floating],
+    target_charge: NDArray[np.floating],
     n_molecules: int,
     *,
     mode: str,
     atom_charge_std: NDArray[np.floating] | None = None,
 ) -> NDArray[np.float64]:
-    """Adjust per-atom charges so each molecule's sum matches ``net_charge``.
+    """Adjust per-atom charges so each molecule's sum matches ``target_charge``.
 
     - "none": identity, no adjustment.
     - "shift": distribute the residual evenly across a molecule's atoms.
@@ -82,8 +85,12 @@ def reconcile_charge(
       predicted charge std (requires ``atom_charge_std``) -- the same scheme
       DASHTree.get_molecules_partial_charges uses.
 
-    After reconciliation each molecule's summed charge equals ``net_charge``
-    to floating-point precision, by construction.
+    After reconciliation each molecule's summed charge equals
+    ``target_charge`` to floating-point precision, by construction. Callers
+    reconciling a sigma-derived atom charge (the convention every predictor
+    here uses) must pass ``MoleculeSet.screening_charge``, not
+    ``net_charge`` directly -- see that property's docstring for why they
+    differ by a sign.
     """
     if mode not in VALID_CHARGE_RECONCILIATION:
         raise ValueError(
@@ -95,7 +102,7 @@ def reconcile_charge(
         return atom_charge
 
     current = molecule_sum(atom_charge, mol_id, n_molecules)
-    residual = np.asarray(net_charge, dtype=np.float64) - current
+    residual = np.asarray(target_charge, dtype=np.float64) - current
     num_atoms_per_mol = np.bincount(mol_id, minlength=n_molecules)
 
     if mode == "shift":
@@ -135,7 +142,7 @@ def roll_up(
         atom_charge_out = reconcile_charge(
             atom_pred.atom_charge,
             mol_id,
-            test.net_charge,
+            test.screening_charge,
             n,
             mode=charge_reconciliation,
             atom_charge_std=atom_pred.atom_charge_std,

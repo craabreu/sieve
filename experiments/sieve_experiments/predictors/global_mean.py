@@ -43,12 +43,14 @@ class GlobalMeanPredictor(MoleculePredictor):
             raise RuntimeError("fit_molecules must be called before predict_molecules")
         mol_profile = self._mean_atom_profile[None, :] * test.num_atoms[:, None]
         mol_area = mol_profile.sum(axis=1)
-        # The naive floor: predict 0 charge, then reconcile to the known
-        # input, as any real predictor's output would be.
+        # The naive floor: predict 0 screening charge, then reconcile to the
+        # known target, as any real predictor's output would be. Note the
+        # target is screening_charge (-net_charge), not net_charge itself --
+        # see MoleculeSet.screening_charge's docstring.
         mol_charge_raw = np.zeros(test.n_molecules)
         return Prediction(
             mol_profile=mol_profile,
             mol_area=mol_area,
             mol_charge_raw=mol_charge_raw,
-            mol_charge=test.net_charge,
+            mol_charge=test.screening_charge,
         )

@@ -102,7 +102,7 @@ Test-split (`n_test` 5333 molecules) results, DASH vs. `global_mean` floor
 | `profile/w1_norm_mean` | 0.449 | 1.024 |
 | `area/r2` | 0.949 | 0.415 |
 | `atom/profile/w1_norm_mean` | 1.030 | — (no atom truth for global_mean's params) |
-| `charge/mae` | 0.108 | 0.00694 |
+| `charge/mae` | 0.102 | 0.00694 |
 
 DASH clearly wins on profile shape and area; `global_mean` beats DASH on
 molecule-level `charge/mae` for a mechanical reason, confirmed against
@@ -110,11 +110,34 @@ molecule-level `charge/mae` for a mechanical reason, confirmed against
 molecules have `net_charge` exactly 0** (chaos-store is almost entirely
 formally-neutral molecules). `global_mean`'s charge reconciliation
 effectively predicts a constant zero, so its "MAE" is just
-`mean(|true net charge|)` = 0.00694 by construction — bit-for-bit the
-number reported. It isn't evidence `global_mean` models charge well; it's
-an artifact of the metric on a near-degenerate label distribution.
-`time/fit_s` 96.8s (includes the ~10s tree preload), `time/predict_s`
-14.3s, `time/data_s` 0.41s.
+`mean(|true screening charge|)` = 0.00694 by construction — bit-for-bit the
+number reported (unaffected by the sign-convention fix below, since
+`mean(|0 - x|)` is sign-invariant). It isn't evidence `global_mean` models
+charge well; it's an artifact of the metric on a near-degenerate label
+distribution. `time/fit_s` 96.8s (includes the ~10s tree preload),
+`time/predict_s` 14.3s, `time/data_s` 0.41s.
+
+**Charge sign-convention bug, found and fixed 2026-08-25.** Every "charge"
+metric above (and the charge-reconciliation target every predictor uses)
+was silently comparing a sigma-derived charge against `net_charge` with the
+wrong sign. COSMO's screening charge is the charge the dielectric
+continuum induces on the cavity surface, which *opposes* the solute's own
+enclosed charge — confirmed empirically on chaos-store: molecules with
+`net_charge == +1` average `Sum(sigma * mol_profile) == -1.005`, not `+1`
+(correlation -0.997 against `net_charge`, +0.997 against `-net_charge`).
+Added `MoleculeSet.screening_charge` (`= -net_charge`) as the one correct
+reconciliation/scoring target and fixed the three call sites that used
+`net_charge` directly (`reconcile_charge` via `roll_up`, `global_mean`'s
+`mol_charge`, `runner.py`'s `charge_true`), plus a real-data regression
+test (`test_screening_charge_is_the_negated_net_charge_on_real_molecules`).
+Effect on the numbers, re-run after the fix: DASH's `charge/mae` improved
+0.108 → **0.102**; `global_mean`'s is unchanged (0.00694, expected — see
+above); COSMO-NET's improved 3× (0.0172 → **0.00546**, see the T9 section
+below) since it makes a real, nontrivial charge prediction that was being
+scored against the wrong-signed target. Only 54/53,079 molecules are
+charged, which is why the aggregate MAE shift is modest for DASH even
+though the fix is substantively correct — the per-molecule effect on those
+54 is large.
 
 **Coverage caveat — read before quoting any DASH number.** DASH cannot match
 every chaos-store atom: `init_neighbor_dict` rejects atoms whose feature
@@ -222,16 +245,21 @@ full run" (design.md risk #1).
   | `profile/w1_norm_mean` | 0.449 | 1.024 | **0.224** |
   | `area/r2` | 0.949 | 0.415 | 0.775 |
   | `area/mae` | 8.41 | 31.30 | 15.56 |
-  | `charge/mae` | 0.108 | 0.00694* | 0.0172 |
+  | `charge/mae` | 0.102 | 0.00694* | **0.00546** |
 
-  \* `global_mean`'s low `charge/mae` is a metric artifact, not a real win —
-  see the git history for the full explanation (99.3% of chaos-store test
-  molecules are exactly neutral). COSMO-NET wins clearly on profile shape
-  (about half DASH's W1) but loses to DASH on area — expected, since this
-  DMPNN was trained with a flat per-bin MSE loss (`torch.nn.functional.
-  mse_loss`, all 51 sigma bins weighted equally, confirmed from
-  `deepchem.models.torch_models.dmpnn`'s source), with no explicit
-  shape/location/magnitude decomposition the way DASH Stage A has.
+  Numbers above are post charge-sign-fix (see the DASH section's callout
+  above) — re-run after the fix, not just recomputed. COSMO-NET's
+  `charge/mae` improved 3× from the pre-fix number (0.0172 → 0.00546) since
+  it makes a real, nontrivial charge prediction (unlike `global_mean`'s
+  constant zero), so the wrong-signed target mattered far more for it than
+  for DASH. \* `global_mean`'s low `charge/mae` is a metric artifact, not a
+  real win — see the git history for the full explanation (99.3% of
+  chaos-store test molecules are exactly neutral). COSMO-NET wins clearly
+  on profile shape (about half DASH's W1) but loses to DASH on area —
+  expected, since this DMPNN was trained with a flat per-bin MSE loss
+  (`torch.nn.functional.mse_loss`, all 51 sigma bins weighted equally,
+  confirmed from `deepchem.models.torch_models.dmpnn`'s source), with no
+  explicit shape/location/magnitude decomposition the way DASH Stage A has.
 - **Known limitations, honestly scoped:** the active training used the
   script's smaller `MODEL_HPARAMS` (`hidden_size=51, ffn_num_layers=1`) —
   a larger, apparently-tuned block (`hidden_size=512, ffn_num_layers=5,

@@ -108,6 +108,26 @@ class MoleculeSet:
         """Molecule index of each atom, e.g. [0,0,0,1,1,2,...]."""
         return np.repeat(np.arange(self.n_molecules), self.num_atoms)
 
+    @property
+    def screening_charge(self) -> NDArray[np.float64]:
+        """The target any sigma-derived "charge" quantity should reconcile
+        to or be scored against -- ``-net_charge``, not ``net_charge``.
+
+        ``net_charge`` is the molecule's own (solute) formal charge. Every
+        other "charge" field in this codebase (``atom_charge``,
+        ``mol_charge_raw``, ``atom_table.charges``, ``Sum(sigma * profile)``)
+        is the COSMO *screening* charge: the charge the dielectric
+        continuum induces on the cavity surface, which opposes the enclosed
+        solute charge (COSMO conductor-screening theory) -- confirmed
+        empirically on chaos-store: molecules with ``net_charge == +1``
+        average ``Sum(sigma * mol_profile) == -1.005``, not ``+1``
+        (correlation -0.997 against ``net_charge``, +0.997 against this
+        property). Reconciling or scoring a sigma-derived charge against
+        raw ``net_charge`` silently flips the sign for every charged
+        molecule.
+        """
+        return -self.net_charge
+
     def select(self, mol_mask: NDArray[np.bool_]) -> MoleculeSet:
         """The sub-set of molecules (and their atoms) where ``mol_mask`` is True.
 
