@@ -291,6 +291,34 @@ def test_build_parity_panels_molecule_profile_only():
     assert panels[0]["metrics"] == {"w1_norm_mean": 0.01}
 
 
+def test_build_parity_panels_reuses_precomputed_molecule_normalization():
+    """_write_plots already normalizes test.mol_profile/pred.mol_profile
+    for profile_panel's needs -- _build_parity_panels must reuse that
+    result for its own "molecule profile" panel rather than recomputing
+    normalize_rows on the same arrays a second time."""
+    import sieve_experiments.runner as runner_mod
+    from sieve_experiments.predictors.base import Prediction
+
+    ms = synthetic_molecule_set(n_mol=6, seed=0)
+    pred = Prediction(mol_profile=ms.mol_profile)
+    precomputed = runner_mod._normalized_profile_rows(ms.mol_profile, pred.mol_profile)
+
+    panels = runner_mod._build_parity_panels(
+        ms,
+        pred,
+        {},
+        area_true=None,
+        area_pred=None,
+        charge_true=None,
+        charge_pred=None,
+        atom_truth=None,
+        molecule_profile_norm=precomputed,
+    )
+    norm_true, norm_pred, keep = precomputed
+    np.testing.assert_array_equal(panels[0]["y_true"], norm_true[keep])
+    np.testing.assert_array_equal(panels[0]["y_pred"], norm_pred[keep])
+
+
 def test_build_parity_panels_includes_area_and_charge_when_supplied():
     import sieve_experiments.runner as runner_mod
     from sieve_experiments.predictors.base import Prediction
@@ -378,3 +406,125 @@ def test_build_parity_panels_excludes_atom_panels_when_atom_truth_load_failed():
         atom_truth=None,
     )
     assert _panel_titles(panels) == ["molecule profile"]
+
+
+def test_smoke_handles_an_empty_train_split_without_crashing_manifest(
+    tmp_path, monkeypatch
+):
+    """train_mean_num_atoms must be guarded against an empty train split the
+    same way val_mean_num_atoms/test_mean_num_atoms already are: not every
+    predictor rejects an empty train set the way GlobalMeanPredictor does
+    (it raises explicitly) -- a future/custom predictor that tolerates it
+    would otherwise hit np.mean(empty) while building the manifest, after
+    fit/predict have already succeeded. pyproject.toml promotes
+    RuntimeWarning to an error."""
+    import sieve_experiments.runner as runner_mod
+
+    class _NoOpPredictor:
+        name = "noop"
+
+        def fit(self, train, val, *, rng):
+            del train, val, rng
+
+        def predict(self, test):
+            from sieve_experiments.predictors.base import Prediction
+
+            return Prediction(mol_profile=np.zeros_like(test.mol_profile))
+
+    monkeypatch.setattr(runner_mod, "build", lambda name, params: _NoOpPredictor())
+
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    none = np.zeros(10, dtype=bool)
+    test_mask = ~none
+    masks = {"train": none, "val": none, "test": test_mask}
+    cfg = _tiny_cfg()
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text())
+    assert manifest["data"]["train_mean_num_atoms"] is None
+
+
+# --- predictor store/scheme cross-check -------------------------------------
+#
+# DASHBackoffPredictor carries its own store/scheme (predictor.params),
+# duplicating data.store/data.scheme, because it has to load atom-level
+# truth independently (see dash.py's own docstring). Nothing enforced the
+# two copies actually agree -- a config edit to data.store with the
+# predictor.params.store copy left stale would silently fit/evaluate DASH
+# against two different stores. execute() checks this, duck-typed off
+# whatever attributes a predictor happens to expose (like match_stats).
+
+
+class _StoreSchemePredictor:
+    """A minimal predictor exposing store/scheme attributes, the same duck
+    type DASHBackoffPredictor has -- without needing DASH's real machinery
+    (rdkit, the tree clone) just to test the cross-check."""
+
+    name = "fake_store_scheme"
+
+    def __init__(self, store, scheme):
+        self.store = store
+        self.scheme = scheme
+
+    def fit(self, train, val, *, rng):
+        del train, val, rng
+
+    def predict(self, test):
+        from sieve_experiments.predictors.base import Prediction
+
+        return Prediction(mol_profile=np.zeros_like(test.mol_profile))
+
+
+def test_execute_rejects_a_predictor_store_that_disagrees_with_data_store(
+    tmp_path, monkeypatch
+):
+    import sieve_experiments.runner as runner_mod
+
+    monkeypatch.setattr(
+        runner_mod,
+        "build",
+        lambda name, params: _StoreSchemePredictor(
+            store="a-different-store", scheme="cosmo-sac-2010"
+        ),
+    )
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    masks = _synthetic_masks(10, seed=1)
+    cfg = _tiny_cfg()  # data.store == "synthetic"
+
+    with pytest.raises(ValueError, match="store"):
+        execute(cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None)
+
+
+def test_execute_rejects_a_predictor_scheme_that_disagrees_with_data_scheme(
+    tmp_path, monkeypatch
+):
+    import sieve_experiments.runner as runner_mod
+
+    monkeypatch.setattr(
+        runner_mod,
+        "build",
+        lambda name, params: _StoreSchemePredictor(
+            store="synthetic", scheme="a-different-scheme"
+        ),
+    )
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    masks = _synthetic_masks(10, seed=1)
+    cfg = _tiny_cfg()  # data.scheme == "cosmo-sac-2010"
+
+    with pytest.raises(ValueError, match="scheme"):
+        execute(cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None)
+
+
+def test_execute_allows_a_predictor_with_no_store_scheme_attributes(tmp_path):
+    """global_mean (and any plain Predictor) has no .store/.scheme -- the
+    check is a no-op for it, duck-typed, not a required interface field."""
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    masks = _synthetic_masks(10, seed=1)
+    cfg = _tiny_cfg()
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert result.run_dir.is_dir()

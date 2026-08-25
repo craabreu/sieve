@@ -10,9 +10,15 @@ that script, all reproducibility-motivated:
 - Verifies the download's integrity two ways. Zenodo's own record (record
   22050672, resolved 2026-08-24 after an earlier HTTP 404) publishes an md5
   checksum per file -- ``EXPECTED_ZIP_MD5`` is checked against that. A sha256
-  is also computed and recorded next to the store on first download, then
-  re-verified (not re-trusted) on every later run that finds the store
-  already present -- belt-and-suspenders since Zenodo publishes only md5.
+  is also computed and recorded next to the store on first download, as a
+  permanent provenance record. It is checked only once, though: the hash is
+  of the downloaded *zip*, which is deleted right after extraction (to avoid
+  doubling the ~8GB on disk), so there is nothing left to re-hash against on
+  a later run -- ``prepare_store`` just reports the recorded value and moves
+  on. An earlier version of this docstring claimed the sha256 gets
+  "re-verified (not re-trusted)" on every later run; that was never actually
+  implemented, and isn't achievable without either keeping the zip around or
+  hashing the multi-GB extracted directory tree by some other scheme.
 - Idempotent: if the store already has a ``biased_split`` column, does
   nothing and says so, rather than recomputing every run.
 - Also writes split_summary.txt next to the store, so a run manifest can

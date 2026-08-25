@@ -216,6 +216,35 @@ def _atom_metrics_from_truth(
     )
 
 
+def _check_predictor_store_scheme(predictor: Any, cfg: ExperimentCfg) -> None:
+    """Some predictors (DASHBackoffPredictor) need their own store/scheme
+    (predictor.params) because they load atom-level truth independently of
+    data.store/data.scheme -- see dash.py's own docstring. That's a
+    duplicated value with nothing enforcing the two copies agree: a config
+    edit to data.store with predictor.params.store left stale would
+    silently fit/evaluate against two different stores. Duck-typed off
+    whatever attributes a predictor happens to expose (the same pattern
+    match_stats already uses below) -- a plain Predictor with no
+    store/scheme attributes (global_mean) is unaffected.
+    """
+    predictor_store = getattr(predictor, "store", None)
+    if predictor_store is not None and predictor_store != cfg.data.store:
+        raise ValueError(
+            f"predictor {cfg.predictor.name!r}'s own store "
+            f"({predictor_store!r}) does not match data.store "
+            f"({cfg.data.store!r}) -- check predictor.params.store in the "
+            f"config"
+        )
+    predictor_scheme = getattr(predictor, "scheme", None)
+    if predictor_scheme is not None and predictor_scheme != cfg.data.scheme:
+        raise ValueError(
+            f"predictor {cfg.predictor.name!r}'s own scheme "
+            f"({predictor_scheme!r}) does not match data.scheme "
+            f"({cfg.data.scheme!r}) -- check predictor.params.scheme in the "
+            f"config"
+        )
+
+
 def _execute_inner(
     cfg: ExperimentCfg,
     train: MoleculeSet,
@@ -230,6 +259,7 @@ def _execute_inner(
     data_seconds: float,
 ) -> RunResult:
     predictor = build(cfg.predictor.name, cfg.predictor.params)
+    _check_predictor_store_scheme(predictor, cfg)
 
     t0 = time.perf_counter()
     predictor.fit(train, val, rng=rng)
@@ -305,7 +335,9 @@ def _execute_inner(
             "n_test_molecules": test.n_molecules,
             "n_train_atoms": train.n_atoms,
             "n_test_atoms": test.n_atoms,
-            "train_mean_num_atoms": float(np.mean(train.num_atoms)),
+            "train_mean_num_atoms": float(np.mean(train.num_atoms))
+            if train.n_molecules
+            else None,
             "val_mean_num_atoms": float(np.mean(val.num_atoms))
             if val.n_molecules
             else None,
@@ -383,6 +415,10 @@ def _build_parity_panels(
     charge_true: NDArray[np.float64] | None,
     charge_pred: NDArray[np.float64] | None,
     atom_truth: AtomTruth | None,
+    molecule_profile_norm: tuple[
+        NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_]
+    ]
+    | None = None,
 ) -> list[dict[str, Any]]:
     """Which hexbin parity panels this run has data for, and what feeds
     each one: molecule profile always (assuming a non-degenerate row
@@ -390,10 +426,16 @@ def _build_parity_panels(
     the predictor and run actually supply them. Pure numpy -- no
     matplotlib -- so this is testable independent of plots.py actually
     rendering anything.
+
+    ``molecule_profile_norm``, when given, is the caller's own
+    already-computed ``_normalized_profile_rows(test.mol_profile,
+    pred.mol_profile)`` (``_write_plots`` needs the same result for
+    ``profile_panel``) -- reused here instead of normalizing the same
+    arrays a second time. Computed fresh if omitted (e.g. these unit tests).
     """
     panels: list[dict[str, Any]] = []
 
-    norm_true, norm_pred, keep = _normalized_profile_rows(
+    norm_true, norm_pred, keep = molecule_profile_norm or _normalized_profile_rows(
         test.mol_profile, pred.mol_profile
     )
     if keep.any():
@@ -517,9 +559,8 @@ def _write_plots(
         return  # nothing to plot on an empty eval split (e.g. a small
         # --limit run whose split happens to land entirely in train)
 
-    norm_true, norm_pred, keep = _normalized_profile_rows(
-        test.mol_profile, pred.mol_profile
-    )
+    molecule_profile_norm = _normalized_profile_rows(test.mol_profile, pred.mol_profile)
+    norm_true, norm_pred, keep = molecule_profile_norm
     if not keep.any():
         return  # every test molecule degenerate -- nothing plottable
     norm_true, norm_pred = norm_true[keep], norm_pred[keep]
@@ -535,6 +576,7 @@ def _write_plots(
             charge_true=charge_true,
             charge_pred=charge_pred,
             atom_truth=atom_truth,
+            molecule_profile_norm=molecule_profile_norm,
         )
         plots.parity_panel(
             panels,

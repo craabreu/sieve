@@ -141,7 +141,9 @@ def profile_panel(
     rng = np.random.default_rng(seed)
     n_sample = min(n_rows * n_cols, len(labels))
     idx = rng.choice(len(labels), size=n_sample, replace=False)
-    display_labels = [_display_smiles(s) for s in labels]
+    # Parse only the sampled molecules' SMILES, not every one of a test
+    # split that may hold thousands -- only these n_sample titles get shown.
+    display_labels = {int(i): _display_smiles(labels[i]) for i in idx}
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2.4 * n_rows))
     axes_flat = np.atleast_1d(axes).ravel()
@@ -150,7 +152,7 @@ def profile_panel(
         ax.plot(
             sigma_values, mol_pred[i], color="#d62728", lw=1.5, ls="--", label="pred"
         )
-        ax.set_title(display_labels[i][:24], fontsize=8)
+        ax.set_title(display_labels[int(i)][:24], fontsize=8)
         ax.tick_params(labelsize=7)
         ax.axhline(0, color="0.85", lw=0.5, zorder=0)
     for ax in axes_flat[n_sample:]:

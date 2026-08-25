@@ -162,10 +162,12 @@ final form).
 chaos-store's official source) returned HTTP 404 on an earlier dev machine;
 it resolves normally now. `prepare_store.py` now verifies both Zenodo's
 published md5 (`EXPECTED_ZIP_MD5`, filled in from
-`curl -s https://zenodo.org/api/records/22050672`) and a
+`curl -s https://zenodo.org/api/records/22050672`) at download time and a
 trust-on-first-download sha256, recorded at `stores/chaos-store/
-.download.sha256` and re-verified on every later run that finds the store
-already present.
+.download.sha256` — but only checked once: the sha256 is of the downloaded
+zip, deleted right after extraction, so a later run that finds the store
+already present just reports the recorded hash rather than re-verifying it
+against the extracted directory (nothing left to re-hash it against).
 
 ## Running today's working pieces
 

@@ -246,7 +246,7 @@ def predict_backoff(
 
         area = chosen.area
         if location_mode == "charge":
-            location = chosen.charge / area if area > 0 else 0.0
+            location = _atom_location(chosen.charge, area)
             charge = chosen.charge
         else:  # "sigma"
             location = chosen.location
