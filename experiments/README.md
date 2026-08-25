@@ -316,7 +316,8 @@ full run" (design.md risk #1).
   checkpoint yet — only `biased_split` has been trained so far.
 
 **Done and verified — Chemprop reimplementation of COSMO-NET (T10), 2026-08-25.**
-Replaces what was originally planned as T10 (renumbered to T11, below).
+Replaces what was originally planned as T10 (renumbered, now T12 below —
+originally to T11, then T11 itself was reassigned to per-atom Chemprop).
 
 COSMO-NET-Paper's own repo has **three independently-confirmed
 reproducibility gaps**, found while investigating T9's negative-sigma-bin
@@ -464,7 +465,15 @@ the first (now-superseded) paper-faithful run's own numbers, kept as the
 record of what "faithfully implementing the paper's own claimed
 hyperparameters" actually produces.
 
-**Not started — T11** (`summarize` polish, results table, this README's
+**Not started — T11** (per-atom Chemprop: an `AtomPredictor` counterpart to
+T10's molecule-level `ChempropDMPNNPredictor`, predicting a sigma-profile
+per atom off each atom's own D-MPNN hidden representation rather than a
+pooled molecule embedding — directly comparable to DASH Stage A on the same
+atom-level metrics. Previously out of scope as "the per-atom Sieve model
+line, later milestone" (see T10's plan); promoted to T11 here. Not yet
+planned in detail.)
+
+**Not started — T12** (`summarize` polish, results table, this README's
 final form).
 
 **Known external gap, resolved 2026-08-24:** Zenodo record 22050672 (the
