@@ -181,19 +181,28 @@ full run" (design.md risk #1).
   empty (e.g. `--limit 50` on chaos-store, still exercised as a regression
   test in `test_experiment_smoke.py`/`test_experiment_metrics.py`).
 
-**Not started — COSMO-NET predictor (T9):**
+**In progress — COSMO-NET predictor (T9), started 2026-08-25:**
 
-- `[cosmonet]` in `pins.toml` has the repo URL but **no pinned commit yet** —
-  a clone was interrupted by a disk-space incident before `git rev-parse
-  HEAD` could be recorded. Re-clone, record the commit, and fill in
-  `pins.toml`. The checkout is ~4.8GB (includes CSAC-2002/2010 data CSVs) —
-  make sure there's real disk headroom first.
-- `cosmonet-requirements.txt` has not been compiled yet. It needs a
-  CUDA-enabled torch build matching the GPU server ("estes" — see the
-  `gpu-server-estes` memory entry: CUDA 13.2 driver, Ubuntu 22.04, Python
-  3.10.12, dual RTX 4090, no `uv` installed there yet). Compile it there or
-  with a matching `--extra-index-url` (e.g. `https://download.pytorch.org/
-  whl/cu124`) targeting Python 3.10 / linux-x86_64.
+- `[cosmonet]` in `pins.toml` now has a pinned commit
+  (`366839a0e6f9...`, re-cloned after the earlier disk-space incident —
+  106GB free this time, no issue; actual checkout is ~14GB, not ~4.8GB, see
+  `pins.toml` for why).
+- Dependency resolution (**design.md risk #3, the milestone's largest
+  schedule risk**) is **done and clean** — `experiments/
+  cosmonet-requirements.txt` has the full pin, repro steps, and a gotcha
+  (`torch-geometric` is required by `DMPNNModel` but missing from the
+  repo's own `requirements.txt`). Full stack (torch+cu124, tensorflow,
+  deepchem, torch-geometric, rdkit) smoke-tested end-to-end on "estes"'s
+  GPU: the repo's own `DMPNN-Train-pSigma.py --n_epochs 1` featurizes,
+  trains, and evaluates on their own CSAC-2002 data without error.
+- **Not yet done:** a chaos-store → CSAC-CSV converter (SMILES + molecule
+  sigma profile + `biased_split`-as-`CATEGORY` — the input schema's 51-point
+  grid already matches our own `DEFAULT_GRID` exactly, so this should be a
+  small join, not a real transform), a real training run on chaos-store
+  data (the pretrained checkpoints already in the clone are trained on
+  COSMO-NET's own split, not ours — not usable as our baseline directly),
+  and `predictors/cosmonet.py` wired against the `Predictor` seam, joining
+  results back by SMILES (design.md risk #4).
 
 **Not started — T10** (`summarize` polish, results table, this README's
 final form).

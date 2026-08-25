@@ -111,20 +111,50 @@ itself, still out of scope for this milestone -- see design.md).
 
 [cosmonet]
 url = "https://github.com/snaserib/COSMO-NET-Paper.git"
-commit = ""  # NOT YET PINNED. A clone was interrupted by a disk-space
-             # incident (2026-08-24) before `git rev-parse HEAD` could be
-             # recorded. Re-clone and fill this in before first real use.
+commit = "366839a0e6f94db65e54dc64068f6266a3f0d914"  # main, 2026-08-25
 license = "MIT"
 notes = """
-~4.8GB checkout (includes the CSAC-2002/2010 data CSVs under Data/) -- make
-sure there is real disk headroom before cloning; running this dev machine's
-disk to zero mid-clone is what interrupted the original pin attempt.
+Re-cloned 2026-08-25 (the first clone attempt was interrupted by a
+disk-space incident on 2026-08-24 -- 106GB free this time, no issue).
+Actual checkout size is ~14GB, not the ~4.8GB originally estimated (the
+Training/*/​*_saved_model/ dirs ship pretrained checkpoints per
+architecture x property x splitter x CV-fold, e.g.
+Training/DMPNN/Sigma_saved_model/StratifiedCATEGORY_CV5/ -- these are
+trained on COSMO-NET's own CSAC-2002/2010 split, not chaos-store, so they
+are a reference/sanity point, not directly usable as our baseline; the
+design's intent (retrain with --splitter 4 against our own biased_split
+CATEGORY labels) still requires a real training run on chaos-store data).
 
-D-MPNN training script: DMPNN-Train-pSigma.py, invoked with `--splitter 4`
-(predefined CATEGORY-column split) to impose our train/val/test labels --
-see the design doc for the intended predictors/cosmonet.py integration.
-Needs its own uv-managed venv (Python 3.10, matching the GPU server) with a
-CUDA-enabled torch build -- see [[gpu-server-estes]] in memory for the
-server's driver CUDA version, and `experiments/cosmonet-requirements.txt`
-(not yet compiled) for the actual pin.
+D-MPNN training script: Training/DMPNN/DMPNN-Train-pSigma.py, invoked with
+`--splitter 4` (predefined CATEGORY-column split) to impose our train/val/
+test labels -- see the design doc for the intended predictors/cosmonet.py
+integration. Input format (Data/CSAC-2002.csv, Data/CSAC-2010.csv):
+CanonicalSMILES + a CATEGORY column (Training/Validation/Test) + a 51-point
+sigma profile at columns "-0.025".."0.025" -- matches our own DEFAULT_GRID
+exactly (51 points, ±0.025 e/Å², bin width 0.001), so a chaos-store ->
+CSAC-format CSV only needs SMILES + molecule-level sigma profile + our own
+biased_split relabeled into CATEGORY. Not yet built.
+
+Dependency resolution (design.md risk #3, "largest schedule risk in the
+milestone") DONE and clean -- see `experiments/cosmonet-requirements.txt`
+for the full pin and exact repro steps. Needs its own uv-managed venv
+(Python 3.10, matching the GPU server "estes" -- see the gpu-server-estes
+memory entry) with a CUDA-enabled torch build (cu124 wheels, driver
+595.71.05 / toolkit 12.9 on this machine, backward compatible). One real
+gotcha: torch-geometric is required by deepchem.models.torch_models.
+DMPNNModel but is NOT listed in the repo's own requirements.txt --
+deepchem swallows the missing-torch_geometric ImportError internally and
+only surfaces it as a confusing `cannot import name 'DMPNNModel'` from
+whatever imports it, not as a torch_geometric error. Full stack
+(torch+cu124, tensorflow, deepchem 2.8.0, torch-geometric, rdkit)
+smoke-tested end-to-end: DMPNN-Train-pSigma.py --n_epochs 1 on the repo's
+own CSAC-2002.csv (16130 molecules) featurizes, trains, and evaluates on
+GPU without error (Test R2 0.89 after 1 epoch -- their data, not ours,
+pipeline sanity check only).
+
+Next step for T9: build the chaos-store -> CSAC-format CSV (SMILES + our
+own molecule sigma profile + biased_split-as-CATEGORY), then run a real
+training pass and wire predictors/cosmonet.py against the Predictor seam,
+joining results back by SMILES (design.md risk #4 -- COSMO-NET's row order
+is not guaranteed).
 """
