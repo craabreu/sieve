@@ -9,15 +9,14 @@ DASH-tree repo except its own commented-out recursive self-call).
 
 Populated with our own sigma-profile data, since DASH's own tree ships only
 MBIS partial charges: there is no DASH function that populates an *existing*
-tree with a new property (confirmed, not assumed -- DASH-properties' own
-follow-up paper gets new atomic properties onto the published topology by
-re-matching every atom and averaging, the same shape this module's own
-accumulation takes). The property is the plain, raw (undecomposed) profile
--- the plainest possible choice, and the only one DASH's own real algorithm
-would recognize; a shape/location/area decomposition was tried and measured
-to cost accuracy relative to this simpler design (see ``pins.toml``'s
-``[dash_tree]`` notes for the full comparison and the two other back-off
-variants Sieve tried and retired).
+tree with a new property -- DASH-properties' own follow-up paper gets new
+atomic properties onto the published topology by re-matching every atom and
+averaging, the same shape this module's own accumulation takes. The
+property is the plain, raw (undecomposed) profile -- the plainest possible
+choice, and the only one DASH's own real algorithm would recognize; a
+shape/location/area decomposition was tried and measured to cost accuracy
+relative to this simpler design (full comparison and the two retired
+back-off variants: ``experiments/docs/dash.md``).
 
 Two layers, deliberately split so the algorithm is testable without either
 optional dependency:
@@ -40,19 +39,11 @@ deepest last -- the converted form of ``DASHTree.match_new_atom``'s raw
 ``predict_via_data_storage_walk`` converts back to that raw format itself
 where needed (see its own docstring).
 
-Engineering history worth knowing if touching this module: a first version
-of the back-off step genuinely called ``DASHTree.get_property_noNAN`` once
-per scalar property (52 calls/atom -- 51 profile bins + charge_std),
-measured at ~47 microseconds/call, ~39 minutes extrapolated for a
-full-store predict. Replaced, at the user's explicit request for speed over
-strict literalness, with a reimplementation of its exact walk semantics --
-verified bit-for-bit equivalent to the literal-call version's own output on
-a real run before committing to the swap, not just argued. That
-replacement's own first attempt (re-selecting DataFrame columns inside the
-per-atom loop) was measured *worse* than the calls it replaced (467
-microseconds/call) -- fixed by precomputing each branch's columns as a
-plain numpy array once, outside the loop (0.35 microseconds/call, ~1300x
-faster). Full story in ``pins.toml``'s ``[dash_tree]`` notes.
+``predict_via_data_storage_walk`` reimplements ``get_property_noNAN``'s own
+walk rather than calling it directly, purely for speed (calling it live is
+~130x slower at full-store scale) -- verified bit-for-bit equivalent to a
+literal-call prototype's own output before adopting it. Full performance
+story and the two real bugs found building it: ``experiments/docs/dash.md``.
 """
 
 from __future__ import annotations
@@ -208,10 +199,8 @@ def predict_via_data_storage_walk(
     directly against ``tree.data_storage`` and using the first node whose
     row is populated -- the same fallback ``DASHTree.get_property_noNAN``
     itself implements, applied to a whole profile row at once instead of
-    one scalar call per bin (an earlier version of this function called
-    ``get_property_noNAN`` 52 times per atom; measured at ~47
-    microseconds/call, ~39 minutes extrapolated for a full-store predict --
-    replaced with this direct version for speed).
+    one scalar call per bin (see the module docstring for why this is a
+    reimplementation rather than a live call).
 
     A node's profile row and its charge_std are always written together, by
     ``populate_tree_with_sigma_properties`` (never partially) -- so checking
@@ -220,14 +209,9 @@ def predict_via_data_storage_walk(
 
     Converts each touched branch's relevant columns to a plain numpy array
     ONCE (``df[cols].to_numpy()``), outside the per-atom walk, rather than
-    re-selecting those columns from the DataFrame on every path step.
-    Measured directly: repeated ``df[cols].iloc[node_id]`` costs ~467
-    microseconds/call (pandas column-selection overhead dominates, worse
-    than calling ``get_property_noNAN`` itself) -- indexing a precomputed
-    numpy array costs ~0.35 microseconds/call, ~1300x faster. A first
-    version of this function did the slow thing; caught by an actual timing
-    run (a `--limit 5000` probe that didn't finish in 10 minutes, where it
-    should have taken seconds), not assumed correct from line count alone.
+    re-selecting those columns from the DataFrame on every path step --
+    ~1300x faster than re-selecting per lookup (``experiments/docs/dash.md``
+    has the measurement).
     """
     n = len(paths)
     n_bins = len(props.profile_columns)
@@ -378,11 +362,7 @@ def _atom_paths(
 class _DASHTreeMixin:
     """Shared ``DASHTree`` loading and atom-matching bookkeeping for
     ``DASHPredictor``: tree-loading kwargs, ``match_stats`` recording, and
-    the two-failure-mode warning (see ``_atom_paths``'s docstring). Split
-    out into its own mixin rather than folded into the predictor class
-    directly because an earlier version of this module had two DASH
-    predictors sharing this exact logic (a decomposed/raw back-off variant,
-    since retired in favor of the single design this module now describes).
+    the two-failure-mode warning (see ``_atom_paths``'s docstring).
 
     Instances must set ``max_depth``/``attention_threshold``/``preload``/
     ``tree_folder_path``/``match_stats``/``_tree`` themselves (in their own

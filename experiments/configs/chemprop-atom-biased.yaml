@@ -1,5 +1,5 @@
 # T11: a per-ATOM D-MPNN sigma-profile predictor on Chemprop's
-# MolAtomBondMPNN. Same training recipe as chemprop-biased.yaml (T10) -- raw
+# MolAtomBondMPNN. Same training recipe as chemprop-cosmonet-biased.yaml (T10) -- raw
 # unnormalized bins, min-max scaling fit on train only, softplus, MSE -- but
 # predicting one profile per atom instead of one per molecule, so the
 # molecule-level numbers come from the harness's own roll_up of those atom
@@ -32,7 +32,7 @@ predictor:
     dropout: 0.0
     # ffn_n_layers=2 means 3 total Linear layers -- chemprop counts
     # *additional* hidden layers, deepchem counts the total. Same offset
-    # documented in chemprop-biased.yaml.
+    # documented in chemprop-cosmonet-biased.yaml.
     ffn_n_layers: 2
     batch_size: 64
     max_epochs: 100

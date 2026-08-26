@@ -38,19 +38,13 @@ THREE DELIBERATE DEPARTURES FROM T10, all forced by predicting per atom:
    profile is dense: 50.2% zeros, 25.4 bins populated), so MSE drives most
    outputs toward exactly zero -- which softplus reaches only as its
    pre-activation goes to -inf, exactly where its own derivative
-   ``sigmoid(x)`` vanishes. The head dies and never recovers. Measured on a
-   20-molecule overfit (true mean atom area 7.676):
-
-       softplus     w1 6.717   predicted area 0.000   <- dead, cannot overfit
-       squared      w1 0.878   predicted area 7.859
-       abs          w1 0.947   predicted area 7.939
-       plain linear w1 0.825   predicted area 7.786   <- 13,110 negative bins
-
+   ``sigmoid(x)`` vanishes. The head dies and never recovers.
    ``x**2`` keeps non-negativity exactly as structural as softplus while
    making a target of exactly zero reachable at a finite pre-activation, and
    costs essentially nothing against an unconstrained linear head. Selectable
    via ``output_activation``; ``"softplus"`` remains available so the
-   collapse above stays reproducible.
+   collapse above stays reproducible. Measured comparison across
+   activations: ``experiments/docs/chemprop_atom.md``.
 
 ATOM ORDERING -- the one thing that silently corrupts everything if wrong.
 The store's atom-level truth is a flat concatenation in molecule order, and

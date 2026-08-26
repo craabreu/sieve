@@ -5,7 +5,7 @@
 # what it's asked to do here: on chaos-store, it predicts a profile for
 # every explicit hydrogen node; here, there are no separate H nodes to
 # predict at all, and each heavy atom's own target already includes its
-# merged hydrogens' surface. See pins.toml's [chaos_store_ua] notes for the
+# merged hydrogens' surface. See experiments/docs/chaos_store_ua.md for the
 # full framing and for why no code change was needed (make_mol's
 # keep_h=True, add_h=False already parses chaos-store-ua's SMILES correctly).
 #

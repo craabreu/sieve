@@ -1,10 +1,8 @@
 # T10: a Chemprop D-MPNN reimplementation of COSMO-NET's sigma-profile model
 # -- reproducing the *real* architecture COSMO-NET-Paper's own shipped
-# checkpoint was actually trained with, reverse-engineered from the
-# checkpoint's own weight shapes rather than trusted from either the paper's
-# text or the training script's own printed hyperparameters (both wrong). See
-# predictors/chemprop_cosmonet.py's module docstring and pins.toml's
-# [chemprop_cosmonet]/[cosmonet_investigation] notes for the full derivation.
+# checkpoint was actually trained with, not the paper's own claimed
+# hyperparameters. See predictors/chemprop_cosmonet.py's module docstring
+# and experiments/docs/chemprop_cosmonet.md for the full derivation.
 # Headline extrapolation split. Otherwise identical to
 # chemprop-cosmonet-random.yaml.
 run:

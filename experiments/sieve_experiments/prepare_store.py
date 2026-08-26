@@ -224,7 +224,7 @@ def prepare_ua_store(
     ``source_store_name``.
 
     Built via ``cosmolayer``'s own ``SegmentStore.coarse_grain`` (see
-    ``pins.toml``'s ``[chaos_store_ua]`` notes for why this, rather than an
+    ``experiments/docs/chaos_store_ua.md`` for why this, rather than an
     atom-level predictor option, is the right place to make DASH and
     Chemprop's atom-level baselines united-atom: no segment is ever dropped,
     so molecule-level truth is bit-identical between the AA and UA stores --

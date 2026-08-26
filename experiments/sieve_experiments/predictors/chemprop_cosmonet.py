@@ -1,45 +1,20 @@
 """A Chemprop D-MPNN reimplementation of COSMO-NET's sigma-profile model --
 not an independent architecture inspired by the same idea, but a direct
 reproduction of the *real* architecture COSMO-NET-Paper's own published
-checkpoint was actually trained with, reverse-engineered from the
+checkpoint was actually trained with (below), reverse-engineered from the
 checkpoint's own weight shapes rather than trusted from either the paper's
-text or the training script's own printed hyperparameters. Both of those
-turned out to be wrong, and independently of each other:
-
-- The peer-reviewed paper's text (Naseri Boroujeni et al., *Mol. Syst. Des.
-  Eng.*, 2026, DOI 10.1039/d6me00088f, Tables 1-2 and Section 2.2.2) claims
-  `hidden_size=51, ffn_num_layers=1, dropout=0.1`, sum pooling, and 12-dim
-  bond features.
-- COSMO-NET-Paper's own shipped training script, ``DMPNN-Train-pSigma.py``,
-  claims to train that architecture via a ``MODEL_HPARAMS`` dict -- but its
-  keys (``dropout``, ``message_passing_steps``, ``hidden_size``,
-  ``ffn_num_layers``) are not real ``DMPNNModel.__init__`` parameter names on
-  the installed deepchem version. They get silently absorbed into
-  ``**kwargs`` and never reach the encoder, which is built from deepchem's
-  own defaults instead. ``message_passing_steps=3`` is the one of the four
-  whose failure has no visible symptom: deepchem's real parameter
-  (``depth``) also defaults to 3, so the "right" value comes out by
-  coincidence, not because the script successfully passed it through.
-
-Confirmed directly against real trained checkpoint weights (both the paper
-repo's own shipped one and an independently-trained one, run months apart):
-the model that was *really* trained -- and that plausibly produced the
-paper's own reported results too -- has `hidden_size=300` (not 51), a
-3-layer FFN (not 1), no dropout (not 0.1), and mean-pooling readout (not the
-sum pooling the paper's own eqn 11 specifies). This module reproduces *that*
-real architecture, since it is the one thing in this whole picture with
-direct empirical evidence (checkpoint weights) behind it -- neither the
-paper's own prose nor the training script's own printed log is trustworthy.
-Full derivation, including the checkpoint-weight evidence and the atom
-featurizer's own patched-vocabulary discovery, in ``pins.toml``'s
-``[cosmonet_investigation]`` notes.
+text or the training script's own printed hyperparameters -- both turned
+out to be wrong, independently of each other. Full derivation, including
+the checkpoint-weight evidence and the atom featurizer's own
+patched-vocabulary discovery: ``experiments/docs/cosmonet_investigation.md``
+and ``experiments/docs/chemprop_cosmonet.md``.
 
 Two layers, deliberately split so the featurization is testable without the
 optional dependency:
 
 - ``PaperAtomFeaturizer``, ``minmax_*``, ``prediction_from_profile`` -- pure
   numpy + rdkit, no chemprop import at module scope. Fast-suite tested
-  (experiments/tests/test_experiment_predictor_chemprop.py).
+  (experiments/tests/test_experiment_predictor_chemprop_cosmonet.py).
 - ``ChempropCosmonetPredictor`` -- wires those onto a real chemprop ``MPNN`` and
   a lightning ``Trainer``. Needs the ``chemprop`` extra
   (``uv sync --extra chemprop``). Optional-data tested only.
@@ -53,8 +28,8 @@ Architecture:
   (1). This is the one part of the paper's own claimed architecture that
   *was* genuinely realized: the paper repo's own shipped checkpoint has
   `encoder.W_i.weight` of `(300, 49)` = 35 (patched atom_fdim) + 14 (stock
-  bond_fdim) -- see pins.toml's "WHY THE AUTHORS' OWN CHECKPOINT IS (300,
-  49)" note. chemprop's own built-in ``MultiHotAtomFeaturizer`` cannot be
+  bond_fdim) -- see ``experiments/docs/cosmonet_investigation.md`` for why.
+  chemprop's own built-in ``MultiHotAtomFeaturizer`` cannot be
   parameterized down to exactly 35 (it always reserves one pad slot per
   one-hot block, landing at 41), so this stays a custom, duck-typed class.
   An element outside this 8-element vocabulary (chaos-store has B, Si, Ge,
@@ -156,7 +131,7 @@ ATOM_FDIM = 35
 # chemprop's own built-in MultiHotBondFeaturizer() default length -- see the
 # module docstring for why this matches deepchem's real (never-patched)
 # bond featurization exactly. Asserted against the real class in
-# test_experiment_predictor_chemprop_optional.py, since chemprop isn't
+# test_experiment_predictor_chemprop_cosmonet_optional.py, since chemprop isn't
 # available to the fast suite.
 BOND_FDIM = 14
 
@@ -284,17 +259,14 @@ def nonneg_regression_ffn_class(kind: str = "softplus") -> Any:
     - ``"abs"`` -- same reachability property, non-smooth at the origin.
       Measured slightly worse than ``"squared"``; kept for comparison.
 
-    WHY THIS IS PARAMETERIZED (2026-08-25): softplus **collapses entirely** at
+    Why this is parameterized at all: softplus **collapses entirely** at
     the atom level. Atom profiles are 81.4% exact zeros (each atom occupies
     only ~9.5 of the 51 bins), so MSE relentlessly drives those outputs toward
     exactly zero; softplus can only approach that as its pre-activation goes
     to -inf, where its own derivative ``sigmoid(x)`` vanishes, and the head
-    dies. Measured: a softplus atom model predicts identically zero and cannot
-    overfit even 20 molecules (w1 6.72, predicted area 0.000 against a true
-    7.676), while the same model with ``"squared"`` reaches w1 0.878 and area
-    7.859 -- statistically indistinguishable from an unconstrained linear head
-    (w1 0.825), which however emits 13,110 negative bins. See README's T11
-    section.
+    dies -- a softplus atom model predicts identically zero and cannot learn
+    at all. See ``experiments/docs/chemprop_atom.md`` for the measured
+    comparison across activations.
     """
     if kind not in VALID_OUTPUT_ACTIVATIONS:
         raise ValueError(
