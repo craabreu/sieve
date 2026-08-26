@@ -1,0 +1,36 @@
+# DASH Stage A on the united-atom store: same published tree topology and
+# back-off logic as dash-biased.yaml (profile_mode="decomposed", the
+# default), but scored against chaos-store-ua -- hydrogens merged into
+# their heavy-atom neighbor via cosmolayer's SegmentStore.coarse_grain.
+#
+# DASH already represents hydrogens implicitly (its own subgraph matching
+# skips them entirely -- see pins.toml's [chaos_store_ua] notes), so this is
+# not a different model, just the same one finally scored at the atom
+# granularity it actually reasons about. Molecule-level numbers stay
+# directly comparable to dash-biased.yaml's (chaos-store-ua's split/
+# biased_split columns and molecule-level truth are carried through
+# unchanged from chaos-store); atom-level numbers are NOT comparable to
+# dash-biased.yaml's -- different atom population, different targets.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store-ua
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: dash_backoff
+  params:
+    # store/scheme duplicate data.* above -- DASHBackoffPredictor loads
+    # atom-level truth itself (load_molecule_set never populates it; see
+    # data.py's module docstring), so it needs its own store/scheme handle.
+    store: chaos-store-ua
+    scheme: cosmo-sac-2010
+    max_depth: 16
+    attention_threshold: 5.2
+    minimum_support: 5
+    charge_reconciliation: std_weighted

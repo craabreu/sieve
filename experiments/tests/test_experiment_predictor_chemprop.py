@@ -153,3 +153,39 @@ def test_rejects_an_unknown_loss_mode():
 def test_default_loss_mode_is_mse():
     predictor = ChempropDMPNNPredictor(store="chaos-store", scheme="cosmo-sac-2010")
     assert predictor.loss_mode == "mse"
+
+
+# --- AA vs UA store invariance -------------------------------------------
+#
+# T10 needs no re-run on the united-atom store (pins.toml's
+# [chaos_store_ua]): it never touches atom-level truth, and its plain
+# Chem.MolFromSmiles(smi) (default removeHs=True) parses an AA and a UA
+# SMILES to the identical heavy-atom graph, since coarse-graining only
+# merges peripheral H into their neighbor's implicit-H count and never
+# touches heavy-atom connectivity. Verified deterministically here (no
+# store, no training needed) rather than only argued.
+
+
+def test_parses_identically_whether_given_aa_or_ua_smiles():
+    pytest.importorskip("cosmolayer")
+    from cosmolayer.store.coarse_graining import compute_atom_remap
+
+    aa_smi = "[C:1]([H:2])([H:3])([H:4])[C:5]([H:6])([H:7])[O:8][H:9]"  # ethanol
+    _, _, ua_smi = compute_atom_remap(aa_smi)
+    assert ua_smi != aa_smi, "the UA SMILES must actually differ (H merged away)"
+
+    mol_aa = Chem.MolFromSmiles(aa_smi)
+    mol_ua = Chem.MolFromSmiles(ua_smi)
+
+    assert [a.GetSymbol() for a in mol_aa.GetAtoms()] == [
+        a.GetSymbol() for a in mol_ua.GetAtoms()
+    ]
+    assert [a.GetTotalNumHs() for a in mol_aa.GetAtoms()] == [
+        a.GetTotalNumHs() for a in mol_ua.GetAtoms()
+    ]
+    assert mol_aa.GetNumBonds() == mol_ua.GetNumBonds()
+
+    featurizer = PaperAtomFeaturizer()
+    features_aa = np.stack([featurizer(a) for a in mol_aa.GetAtoms()])
+    features_ua = np.stack([featurizer(a) for a in mol_ua.GetAtoms()])
+    np.testing.assert_array_equal(features_aa, features_ua)

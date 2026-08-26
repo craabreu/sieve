@@ -214,3 +214,77 @@ def prepare_store(
     summary_text = split_chaos_store(store_dir, train=train, val=val, test=test)
     (store_dir / "split_summary.txt").write_text(summary_text + "\n")
     logger.info("wrote biased_split for %s:\n%s", store_name, summary_text)
+
+
+def prepare_ua_store(
+    source_store_name: str, ua_store_name: str, *, stores_root: Path
+) -> None:
+    """Ensure ``ua_store_name`` exists as a united-atom (hydrogens merged
+    into their heavy-atom neighbor) coarse-graining of the already-prepared
+    ``source_store_name``.
+
+    Built via ``cosmolayer``'s own ``SegmentStore.coarse_grain`` (see
+    ``pins.toml``'s ``[chaos_store_ua]`` notes for why this, rather than an
+    atom-level predictor option, is the right place to make DASH and
+    Chemprop's atom-level baselines united-atom: no segment is ever dropped,
+    so molecule-level truth is bit-identical between the AA and UA stores --
+    verified on a 400-molecule subsample -- only atom PARTITIONING changes.
+
+    Idempotent like ``prepare_store``: does nothing if ``ua_store_name``
+    already has a ``biased_split`` column. Requires ``source_store_name`` to
+    already be downloaded and split (raises otherwise) -- the UA store reuses
+    the AA store's own ``split``/``biased_split`` columns verbatim
+    (``coarse_grain`` carries every ``molecules_df`` column through
+    unchanged except ``smiles``/``num_atoms``/``atom_offsets``), rather than
+    recomputing a split from scratch. That guarantees the two stores' splits
+    are identical, not just similarly distributed -- required for T8/T11's
+    AA-vs-UA numbers to be a controlled comparison (same molecules in the
+    same roles) rather than two independent benchmarks.
+    """
+    from cosmolayer.store import SegmentStore
+
+    source_dir = stores_root / source_store_name
+    ua_dir = stores_root / ua_store_name
+
+    ua_molecules_path = ua_dir / "molecules.parquet"
+    if ua_molecules_path.exists():
+        import pyarrow.parquet as pq
+
+        if "biased_split" in pq.ParquetFile(ua_molecules_path).schema.names:
+            logger.info(
+                "%s already has a biased_split column; nothing to do",
+                ua_store_name,
+            )
+            return
+
+    if not SegmentStore.exists(source_dir):
+        raise ValueError(
+            f"{source_store_name!r} is not a complete store at {source_dir} "
+            f"-- run `prepare-store {source_store_name}` first"
+        )
+    source = SegmentStore.load(source_dir)
+    if "biased_split" not in source.molecules_df.columns:
+        raise ValueError(
+            f"{source_store_name!r} has no biased_split column -- run "
+            f"`prepare-store {source_store_name}` first"
+        )
+
+    logger.info(
+        "coarse-graining %s -> %s (merging hydrogens into their heavy-atom neighbor)",
+        source_store_name,
+        ua_store_name,
+    )
+    ua = source.coarse_grain()
+    ua.save(ua_dir)
+
+    n_aa, n_ua = len(source.atoms_df), len(ua.atoms_df)
+    logger.info(
+        "%s: %d molecules, %d atoms -> %d (%.1f%% reduction); "
+        "split/biased_split carried through unchanged from %s",
+        ua_store_name,
+        len(ua.molecules_df),
+        n_aa,
+        n_ua,
+        100 * (1 - n_ua / n_aa),
+        source_store_name,
+    )

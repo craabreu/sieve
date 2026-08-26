@@ -54,6 +54,14 @@ def _cmd_prepare_store(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_coarse_grain_store(args: argparse.Namespace) -> int:
+    from sieve_experiments.prepare_store import prepare_ua_store
+
+    dest = args.dest or f"{args.source}-ua"
+    prepare_ua_store(args.source, dest, stores_root=DEFAULT_STORES_ROOT)
+    return 0
+
+
 def _cmd_summarize(args: argparse.Namespace) -> int:
     del args
     runs_root = DEFAULT_RUNS_ROOT
@@ -130,6 +138,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_prepare = sub.add_parser("prepare-store", help="download and split a COSMO store")
     p_prepare.add_argument("store", nargs="?", default="chaos-store")
     p_prepare.set_defaults(func=_cmd_prepare_store)
+
+    p_coarse = sub.add_parser(
+        "coarse-grain-store",
+        help="build a united-atom store (H merged into their heavy-atom "
+        "neighbor) from an already-prepared source store",
+    )
+    p_coarse.add_argument("source", nargs="?", default="chaos-store")
+    p_coarse.add_argument(
+        "--dest",
+        default=None,
+        help="destination store name; default is '<source>-ua'",
+    )
+    p_coarse.set_defaults(func=_cmd_coarse_grain_store)
 
     p_summary = sub.add_parser(
         "summarize", help="collect runs/**/metrics.json into a CSV"

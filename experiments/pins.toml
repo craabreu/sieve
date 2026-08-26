@@ -382,6 +382,132 @@ not-yet-created file by design, so the CATEGORY guard above would reject a
 biased_split CSV if someone pointed it there by mistake.
 """
 
+[chaos_store_ua]
+notes = """
+UNITED-ATOM STORE (2026-08-25). Prompted by a question about DASH's own
+atom granularity: is it all-atom or united-atom (implicit H)? Investigated
+directly against real chaos-store data and DASH-tree's source
+(serenityff/charge/tree/dash_tree.py, atom_features.py) while building T11:
+
+- DASH IS all-atom in what it PREDICTS -- every hydrogen gets its own
+  prediction from its own dedicated tree branch (branch 37, the single
+  feature tuple (1,1,0,False,0) every H maps to -- AtomFeatures.feature_list
+  has exactly one H entry out of 122).
+- But it is united-atom in how it REPRESENTS: `_get_init_layer` explicitly
+  redirects an H atom's subgraph descent to its heavy-atom neighbor, with
+  the authors' own comment "skip Hs as they are only treated implicitly".
+  Measured on 2930 real chaos-store atoms: 0 subgraphs ever contain a
+  hydrogen. Consequence: an H's prediction is a pure function of its heavy
+  atom's environment -- 60.4% of hydrogens in a sample of real chaos-store
+  molecules share a bit-identical tree path with another H in the same
+  molecule (e.g. both H's of a CH2), so they get IDENTICAL predictions.
+
+Since 56.8% of chaos-store atoms are hydrogen, `atom/*` metrics are
+majority-weighted by exactly the atoms DASH represents most crudely -- an
+all-atom DASH number and a genuinely united-atom prediction problem are
+being conflated under one metric. The fix is not a predictor option: it's
+giving DASH (and T11) an atom population that actually matches DASH's own
+united-atom design, via a real united-atom STORE, so the same all-atom vs
+united-atom question can be asked of every atom-level predictor uniformly.
+
+BUILT VIA cosmolayer's OWN `SegmentStore.coarse_grain()`, not a bespoke
+merge: every hydrogen `Chem.RemoveHs` would actually remove gets folded
+into its heavy-atom neighbor; a hydrogen RDKit conservatively keeps (a
+non-default isotope, or a neighbor with non-tetrahedral stereo it can't
+safely represent implicitly) survives as its own atom, same as any heavy
+atom -- verified with a synthetic deuterium case (`[2H]`), since chaos-store
+itself has zero such survivors in every subsample checked (2000 molecules).
+
+WHY THIS PRESERVES A CONTROLLED COMPARISON: `coarse_grain` drops NO
+segments -- only atom PARTITIONING changes. Verified on a 400-molecule
+subsample: molecule-level sigma profiles and areas come back BIT-IDENTICAL
+between the AA and UA stores. `molecules_df`'s `split`/`biased_split`
+columns are also carried through UNCHANGED (not recomputed) --
+`prepare_ua_store` (prepare_store.py) enforces this by deriving the UA
+store from an already-split AA store rather than re-clustering, so AA and
+UA runs use the exact same molecules in the exact same train/val/test
+roles. Molecule-level metrics are therefore directly comparable
+AA-vs-UA-vs-T10 the same way as any other config change; ATOM-level
+metrics are NOT comparable across AA/UA (different atom population,
+different targets) and must be reported as separate blocks, never the same
+column -- see README's T8/T11 sections for the fuller framing.
+
+NO PREDICTOR CHANGES NEEDED, verified rather than assumed:
+- DASH's own atom features already encode H-count via `num_hydrogens`
+  (`includeNeighbors=True`), so a united atom's tree match is unaffected --
+  DASH-on-UA is the SAME model, just finally scored at its own native
+  granularity, not a different one.
+- Both predictors' SMILES/atom-order paths (DASH's plain
+  `Chem.SmilesParserParams(removeHs=False)`, T11's
+  `make_mol(keep_h=True, add_h=False, reorder_atoms=True)`) parse UA SMILES
+  correctly with ZERO code changes: verified 200/200 real coarse-grained
+  molecules, element-order-aligned against the UA store's own `atoms_df`,
+  for both paths, including the synthetic deuterium-survivor case.
+  `keep_h`/`add_h` need care though (a real footgun, worth remembering for
+  any future predictor): `keep_h` only RETAINS explicit H already written
+  in the SMILES text (`params.removeHs = not keep_h`); it never ADDS one.
+  `add_h=True` calls `Chem.AddHs`, which explicitly instantiates every
+  IMPLICIT H as a brand-new atom with no atom-map number -- on a UA store
+  that would silently balloon the united atoms back toward all-atom and
+  break `reorder_atoms`'s map-number sort entirely. Neither predictor sets
+  `add_h`; T11 already used `keep_h=True, add_h=False` for the reasons
+  above, so it needed no change at all for UA support.
+- T10 (molecule-level) needs no re-run on the UA store: it never touches
+  atom-level truth, and its plain `Chem.MolFromSmiles(smi)` (default
+  `removeHs=True`) produces the identical heavy-atom graph whether parsing
+  an AA or a UA SMILES (coarse-graining never touches heavy-atom
+  connectivity, only merges peripheral H into their neighbor's implicit-H
+  count) -- confirmed by the molecule-level-truth-identity result above.
+
+BUILD COST -- CORRECTED (2026-08-25): the "~0.2s per 400 molecules, ~30s
+extrapolated for the full store" estimate above was WRONG, not just
+imprecise -- linearly extrapolating a subsample timing hid a real
+algorithmic bug rather than measuring it, exactly the mistake this
+project's own "run a --limit timing probe before committing to a full run"
+discipline (design.md risk #1) exists to prevent. The first real full-store
+`coarse-grain-store chaos-store` run was killed after 30+ min of steady
+100% CPU with no sign of finishing (confirmed not hung via /proc: advancing
+wall clock, stable ~3.5GB RSS, still mid-load with no output written yet).
+
+ROOT CAUSE, found by reading cosmolayer's own source directly:
+`SegmentStore.coarse_grain()`'s atom-index remap loop recomputed
+`segment_molecule == m` -- a full scan of the ENTIRE segment array -- once
+per molecule, plus two more full-length boolean-mask operations per
+iteration. O(n_molecules * n_segments), not O(n_segments): chaos-store has
+~53,079 molecules and ~99.7M segments, so the loop did on the order of
+5.29e12 element-compares total, vs 2.96e8 on the 400-molecule subsample
+that "validated" the fast estimate -- 17,861x more work, not the 132x a
+molecule-count-only extrapolation predicts. Segments are already
+contiguous per molecule by construction (that's what `segment_offsets` is
+for), so this is a genuine, fixable performance bug, not something
+inherent to coarse-graining.
+
+FIX: cosmolayer PR https://github.com/craabreu/cosmolayer/pull/55 (branch
+`fix/coarse-grain-quadratic-remap` off `d3c06e3`, the commit sieve
+currently pins) slices each molecule's own contiguous segment range
+directly from `segment_offsets` instead of rescanning the full array.
+Bit-identical output (all 129 of cosmolayer's own store tests pass
+unchanged, including the 5 existing CoarseGrain ones); added a new
+regression test using differently-sized fixture molecules so a boundary
+slip in the slicing itself would be caught. Measured on synthetic data at
+chaos-store's real segment density: 339x faster at n_mols=2000, 1650x at
+n_mols=8000, with the ratio growing (confirming O(n^2) vs O(n), not a
+constant factor) -- extrapolated full-store: the old loop alone is
+40-90 minutes; the new one is under a second.
+
+STATUS (2026-08-25): PR open, not yet merged -- sieve deliberately stays
+pinned to the pre-fix commit until the user reviews and merges it (their
+call, not automated), at which point sieve's own `cosmolayer` pin gets
+bumped and `chaos-store-ua` gets built for real. dash-ua-biased.yaml /
+chemprop-atom-ua-biased.yaml exist but have NOT been run yet -- do not
+assume they have results.
+
+`prepare_ua_store` (prepare_store.py) is idempotent like `prepare_store`:
+skipped if the destination already has a `biased_split` column. CLI:
+`python -m sieve_experiments coarse-grain-store chaos-store` (default dest
+`<source>-ua`).
+"""
+
 [chemprop]
 # A PyPI version pin, not a git SHA -- chemprop is a real pip dependency
 # (pyproject.toml's `chemprop` extra), unlike DASH-tree/COSMO-NET-Paper's

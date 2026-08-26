@@ -1,0 +1,44 @@
+# T11 (per-atom Chemprop) on the united-atom store: same MolAtomBondMPNN
+# recipe as chemprop-atom-biased.yaml, but scored against chaos-store-ua --
+# hydrogens merged into their heavy-atom neighbor via cosmolayer's
+# SegmentStore.coarse_grain. Unlike DASH, this predictor genuinely changes
+# what it's asked to do here: on chaos-store, it predicts a profile for
+# every explicit hydrogen node; here, there are no separate H nodes to
+# predict at all, and each heavy atom's own target already includes its
+# merged hydrogens' surface. See pins.toml's [chaos_store_ua] notes for the
+# full framing and for why no code change was needed (make_mol's
+# keep_h=True, add_h=False already parses chaos-store-ua's SMILES correctly).
+#
+# Molecule-level numbers stay directly comparable to chemprop-atom-biased's
+# (and to T10's); atom-level numbers are NOT comparable across the two
+# stores -- different atom population, different targets.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store-ua
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: chemprop_atom
+  params:
+    # store/scheme duplicate data.* above -- this predictor loads atom-level
+    # truth itself (load_molecule_set never populates it; see data.py's
+    # module docstring), and the runner's own _check_predictor_store_scheme
+    # cross-checks these against data.*.
+    store: chaos-store-ua
+    scheme: cosmo-sac-2010
+    hidden_size: 300
+    depth: 3
+    dropout: 0.0
+    ffn_n_layers: 2
+    batch_size: 64
+    max_epochs: 100
+    charge_reconciliation: none
+    # x**2, not softplus -- see chemprop-atom-biased.yaml's comment and
+    # predictors/chemprop_atom.py's module docstring for why.
+    output_activation: squared

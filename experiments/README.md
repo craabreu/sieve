@@ -188,6 +188,31 @@ molecule-level gap for "raw" is small), but `"raw"` stays available as a
 documented, cheaper alternative. Full writeup in `pins.toml`'s
 `[dash_tree]` notes.
 
+**All-atom vs united-atom, 2026-08-25.** A question surfaced while building
+T11: is DASH all-atom or united-atom (implicit H)? Traced directly against
+DASH-tree's source: DASH *predicts* a value for every hydrogen, but
+*represents* one purely as an attribute of its heavy-atom neighbor —
+`_get_init_layer` explicitly redirects an H's subgraph descent to its heavy
+atom (measured: 0/2930 real subgraphs ever contain a hydrogen), and all
+hydrogens share the tree's single H feature tuple, so 60.4% of hydrogens in
+a sampled molecule get a bit-identical prediction to another H in the same
+molecule. Since 56.8% of chaos-store atoms are hydrogen, `atom/*` metrics
+are majority-weighted by exactly the atoms DASH represents most crudely —
+worth scoring DASH (and T11) on a store that matches DASH's own
+united-atom design, rather than only on the all-atom one. See
+`configs/dash-ua-biased.yaml` / `configs/chemprop-atom-ua-biased.yaml` and
+`pins.toml`'s `[chaos_store_ua]` notes for the united-atom store and the
+full mechanism.
+
+**Blocked, not run yet.** Building the store for real hit a genuine
+performance bug in `cosmolayer.SegmentStore.coarse_grain()` (an
+O(n_molecules × n_segments) loop, not O(n_segments) — 40-90 minutes
+extrapolated on the full store where it should take under a second). Fixed
+upstream: [cosmolayer#55](https://github.com/craabreu/cosmolayer/pull/55),
+open, not yet merged. `dash-ua-biased.yaml`/`chemprop-atom-ua-biased.yaml`
+exist but have not been run — no UA numbers to report yet. Full account in
+`pins.toml`'s `[chaos_store_ua]` notes.
+
 <details>
 <summary>Earlier <code>--limit 300</code> smoke numbers (superseded above,
 kept for the timing-probe methodology note)</summary>
@@ -601,6 +626,11 @@ uv run python -m sieve_experiments run \
 uv run python -m sieve_experiments run \
     --config experiments/configs/dash-biased.yaml \
     --allow-dirty --no-tracking --limit 500
+
+# united-atom store (H merged into their heavy-atom neighbor), needed for
+# dash-ua-biased.yaml / chemprop-atom-ua-biased.yaml -- requires chaos-store
+# already prepared above; idempotent, see pins.toml's [chaos_store_ua]:
+uv run python -m sieve_experiments coarse-grain-store chaos-store
 ```
 
 `--allow-dirty` is needed on an uncommitted tree; drop it once committed.
