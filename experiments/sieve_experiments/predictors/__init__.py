@@ -38,6 +38,8 @@ def build(name: str, params: Mapping[str, Any]) -> Predictor:
     # "cosmonet"); each module calls register() on import.
     if name == "dash_backoff" and name not in REGISTRY:
         import sieve_experiments.predictors.dash
+    if name == "dash_literal" and name not in REGISTRY:
+        import sieve_experiments.predictors.dash
     if name == "cosmonet" and name not in REGISTRY:
         import sieve_experiments.predictors.cosmonet
     if name == "chemprop_dmpnn" and name not in REGISTRY:

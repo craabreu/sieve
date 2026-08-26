@@ -62,6 +62,44 @@ def test_reconcile_charge_unknown_mode_raises():
         reconcile_charge(atom_charge, mol_id, net_charge, 2, mode="bogus")
 
 
+def test_reconcile_charge_std_floor_changes_a_zero_std_atoms_share():
+    """A near-zero-std atom is nearly excluded from the residual split under
+    the default floor (1e-12), but gets a real share under a coarser floor
+    (e.g. 0.1, DASH's own get_molecules_partial_charges default -- see
+    reconcile_charge's docstring). One molecule, atom 0 has std=0, atom 1
+    has std=1.0, residual to distribute is 1.0.
+
+    Default floor: std used = [1e-12, 1.0], weight0 ~= 1e-12 -- atom 0 gets
+    essentially nothing. floor=0.1: std used = [0.1, 1.0], weight0 =
+    0.1/1.1 -- atom 0 gets ~9.1% of the residual, a real, non-negligible
+    share driven entirely by the floor value.
+    """
+    atom_charge = np.array([0.0, 0.0])
+    mol_id = np.array([0, 0])
+    net_charge = np.array([1.0])
+    std = np.array([0.0, 1.0])
+
+    default_floor = reconcile_charge(
+        atom_charge, mol_id, net_charge, 1, mode="std_weighted", atom_charge_std=std
+    )
+    coarse_floor = reconcile_charge(
+        atom_charge,
+        mol_id,
+        net_charge,
+        1,
+        mode="std_weighted",
+        atom_charge_std=std,
+        std_floor=0.1,
+    )
+
+    assert default_floor[0] < 1e-8, "near-zero floor should give atom 0 ~nothing"
+    np.testing.assert_allclose(coarse_floor[0], 0.1 / 1.1, atol=1e-10)
+    np.testing.assert_allclose(coarse_floor[1], 1.0 / 1.1, atol=1e-10)
+    # both floors must still hit the molecule's own target charge exactly
+    np.testing.assert_allclose(default_floor.sum(), 1.0, atol=1e-10)
+    np.testing.assert_allclose(coarse_floor.sum(), 1.0, atol=1e-10)
+
+
 # --- roll_up ---------------------------------------------------------------
 
 

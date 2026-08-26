@@ -256,6 +256,79 @@ never appear in a results table alongside `dash_backoff`/`chemprop_dmpnn`/
 scheme has no analogous defect), so `chemprop-atom-ua-biased.yaml` remains
 a legitimate comparison.
 
+**Literal-DASH predictor (`dash_literal`), 2026-08-26.** The user asked for
+a predictor that reproduces DASH literally, relying on their own code as
+much as possible — not `DASHBackoffPredictor`'s always-been-a-
+reimplementation of DASH's back-off (`fit_backoff*`/`predict_backoff*`,
+however faithful). Investigated piece by piece against the pinned DASH-tree
+clone, not assumed:
+
+- **Paper says median, code computes mean.** DASH-properties' own paper
+  states each node stores the "median" of matching atoms' values; grepping
+  the whole DASH-tree repo finds zero `median` calls anywhere —
+  `DevelopNode.update_average` computes `np.nanmean`. A real paper/code
+  discrepancy. "Rely on their code" means mean, not median.
+- **No DASH function populates an existing tree with a new property** —
+  DASH-properties itself gets new properties onto nodes by re-matching
+  atoms and averaging, the same shape our own accumulation already takes.
+  Some accumulation code is unavoidably ours.
+- **`Node.prune()`** — the one piece of DASH's own code that would
+  implement a support/count threshold — is confirmed dead: no caller
+  anywhere in the repo. `DASHTree.get_property_noNAN` (DASH's own real
+  prediction-time fallback) consults no count/std threshold at all; a node
+  with even a single matching atom is used at full confidence. There is no
+  `minimum_support` concept in this predictor.
+- **Built, measured, and replaced**: a first version genuinely called
+  `get_property_noNAN` 52 times per atom (51 profile bins + charge_std).
+  Measured at ~47 microseconds/call — a `--limit 5000` probe's predict step
+  alone extrapolated to ~39 minutes for the full store. Told "it doesn't
+  matter if it's mathematically equivalent, I want a simple function," the
+  final design instead reimplements `get_property_noNAN`'s exact walk
+  (deepest → shallowest, first populated node wins, else the global mean) —
+  verified bit-for-bit equivalent to the literal-call version's own output
+  on a real run, not just argued.
+- **Two real bugs, both found only by actually running end to end** (never
+  by fast-suite unit tests, which never touch a real `DASHTree`): (1)
+  `get_property_noNAN` expects DASH's own raw path format, not this
+  module's own `NodePath` conversion of it — calling their function with
+  our format raised `KeyError` deep inside their tree-loading code (moot
+  now that we no longer call it, but a real fact about their API). (2) A
+  full-store-only failure: a branch with zero training atoms never gets
+  the new columns written at all, so a test atom matching it hit a
+  missing-column `KeyError` a `--limit 5000` probe never happened to
+  trigger. (3) A performance trap in the *replacement* itself: the first
+  attempt (`df[cols].iloc[node_id]` inside the per-atom walk) measured
+  **467 microseconds/call — worse than the literal calls it was meant to
+  avoid**, since re-selecting 52 columns from a wide DataFrame on every
+  lookup dominates. Fixed by converting each branch's columns to a plain
+  numpy array once, outside the loop: 0.35 microseconds/call, ~1300× faster.
+- **`charge_std_floor=0.1`** (new `reconcile_charge`/`roll_up` parameter,
+  additive, `1e-12` default preserves every other predictor) matches
+  `get_molecules_partial_charges`'s own `default_std_value` — not the
+  `1e-12` every other predictor here uses.
+
+**Full-store results, 2026-08-26.** `--config configs/dash-literal-biased.yaml`,
+no `--limit`, n_test 5333 molecules / 203,063 atoms, fit 93.5s, predict
+16.2s, **0/271,983 rolled-up bins negative**:
+
+| metric | DASH decomposed | DASH raw (min_support=5) | **DASH literal** |
+| --- | --- | --- | --- |
+| `atom/profile/w1_norm_mean` | 1.030 | 1.058 | 1.012 |
+| `atom/area/r2` | 0.945 | 0.945 | 0.944 |
+| `profile/w1_norm_mean` | 0.449 | 0.442 | **0.407** |
+| `area/r2` | 0.949 | 0.949 | 0.952 |
+| `charge/mae` | 0.102 | 0.102 | **0.0922** |
+
+DASH's own real back-off — no support threshold at all, just the
+missing-value fallback — beats *both* of Sieve's own variants on every
+metric shown, at both granularities. The only structural difference from
+"raw" (`minimum_support=5`) is the support threshold itself. So Sieve's own
+safety threshold, added to avoid trusting thinly-supported nodes, is
+measurably *costing* accuracy here, not buying it — an unexpected, useful
+finding, not investigated further (why a thinly-supported node's raw mean
+would out-predict backing off to a coarser, better-supported ancestor isn't
+obvious).
+
 <details>
 <summary>Earlier <code>--limit 300</code> smoke numbers (superseded above,
 kept for the timing-probe methodology note)</summary>

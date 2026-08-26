@@ -76,6 +76,7 @@ def reconcile_charge(
     *,
     mode: str,
     atom_charge_std: NDArray[np.floating] | None = None,
+    std_floor: float = 1e-12,
 ) -> NDArray[np.float64]:
     """Adjust per-atom charges so each molecule's sum matches ``target_charge``.
 
@@ -83,7 +84,13 @@ def reconcile_charge(
     - "shift": distribute the residual evenly across a molecule's atoms.
     - "std_weighted": distribute the residual proportionally to each atom's
       predicted charge std (requires ``atom_charge_std``) -- the same scheme
-      DASHTree.get_molecules_partial_charges uses.
+      DASHTree.get_molecules_partial_charges uses. ``std_floor`` clips a
+      near-zero std before it's used as a weight (default ``1e-12``, an
+      epsilon that barely dampens a near-zero-std atom); DASH's own
+      ``get_molecules_partial_charges`` instead substitutes a much coarser
+      ``default_std_value=0.1`` for any non-positive std, so a predictor
+      aiming to match DASH's own numbers literally should pass
+      ``std_floor=0.1``.
 
     After reconciliation each molecule's summed charge equals
     ``target_charge`` to floating-point precision, by construction. Callers
@@ -112,7 +119,7 @@ def reconcile_charge(
     # std_weighted
     if atom_charge_std is None:
         raise ValueError("std_weighted reconciliation requires atom_charge_std")
-    std = np.clip(np.asarray(atom_charge_std, dtype=np.float64), 1e-12, None)
+    std = np.clip(np.asarray(atom_charge_std, dtype=np.float64), std_floor, None)
     mol_std_total = molecule_sum(std, mol_id, n_molecules)
     weight = std / mol_std_total[mol_id]
     return atom_charge + weight * residual[mol_id]
@@ -123,8 +130,13 @@ def roll_up(
     test: MoleculeSet,
     *,
     charge_reconciliation: str = "none",
+    charge_std_floor: float = 1e-12,
 ) -> Prediction:
-    """Sum an ``AtomPrediction`` up to molecule level (the only definition)."""
+    """Sum an ``AtomPrediction`` up to molecule level (the only definition).
+
+    ``charge_std_floor`` is forwarded to ``reconcile_charge``'s ``std_floor``
+    -- see there.
+    """
     mol_id = test.atom_mol_id
     n = test.n_molecules
 
@@ -146,6 +158,7 @@ def roll_up(
             n,
             mode=charge_reconciliation,
             atom_charge_std=atom_pred.atom_charge_std,
+            std_floor=charge_std_floor,
         )
         mol_charge = molecule_sum(atom_charge_out, mol_id, n)
 
@@ -169,6 +182,7 @@ class AtomPredictor(ABC):
 
     name: ClassVar[str]
     charge_reconciliation: str = "none"
+    charge_std_floor: float = 1e-12
 
     @abstractmethod
     def fit_atoms(
@@ -186,7 +200,10 @@ class AtomPredictor(ABC):
     def predict(self, test: MoleculeSet) -> Prediction:
         atom_pred = self.predict_atoms(test)
         return roll_up(
-            atom_pred, test, charge_reconciliation=self.charge_reconciliation
+            atom_pred,
+            test,
+            charge_reconciliation=self.charge_reconciliation,
+            charge_std_floor=self.charge_std_floor,
         )
 
 

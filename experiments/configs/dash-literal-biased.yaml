@@ -1,0 +1,55 @@
+# Literal-DASH Stage A: DASH's own published tree topology (match_new_atom,
+# unmodified) AND its own DASHTree.get_property_noNAN for prediction-time
+# back-off, called directly rather than reimplemented -- see
+# predictors/dash.py's DASHLiteralPredictor/populate_tree_with_sigma_
+# properties/predict_via_get_property_noNAN docstrings for exactly what
+# "literal" means here.
+#
+# Differs from dash-biased.yaml (decomposed shape/location/area) and
+# dash-raw-biased.yaml (raw profile, minimum_support=5, our own back-off
+# safety threshold) in two ways: no shape/location decomposition at all --
+# not an algorithmic deviation from DASH, just a choice of property, and the
+# plainest one -- and no minimum_support concept whatsoever. DASH's own code
+# has none (Node.prune(), the one piece of code that would implement a count
+# threshold, is dead -- confirmed never called from the real tree-building
+# pipeline); back-off here is purely DASHTree.get_property_noNAN's own
+# missing-value fallback, executing for real, not reimplemented.
+#
+# attention_threshold=5.2 is the paper's own tuned optimum (Fig 8/10), not
+# DASH's own code default (10) -- same value dash-biased.yaml/
+# dash-raw-biased.yaml already use; settled explicitly for this predictor
+# too, since "literal" genuinely forks on this one parameter.
+#
+# charge_std_floor=0.1 matches DASHTree.get_molecules_partial_charges's own
+# default_std_value -- not the 1e-12 every other predictor in this project
+# uses (see predictors/base.py::reconcile_charge's docstring).
+#
+# Note (documented, not hidden): DASH-properties' own paper (Lehner et al.,
+# J. Chem. Phys. 161, 074103 (2024)) says each node stores the "median" of
+# matching atoms' values. The actual DASH-tree code computes np.nanmean,
+# never np.median (confirmed: zero median calls anywhere in serenityff/) --
+# a real paper/code discrepancy. This predictor follows the code, per
+# "rely on their code as much as possible."
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: biased_split
+
+predictor:
+  name: dash_literal
+  params:
+    # store/scheme duplicate data.* above -- DASHLiteralPredictor loads
+    # atom-level truth itself (load_molecule_set never populates it; see
+    # data.py's module docstring), so it needs its own store/scheme handle.
+    store: chaos-store
+    scheme: cosmo-sac-2010
+    max_depth: 16
+    attention_threshold: 5.2
+    charge_reconciliation: std_weighted
+    charge_std_floor: 0.1
