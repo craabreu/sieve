@@ -1,5 +1,5 @@
-"""End-to-end DASHBackoffPredictor test against the real chaos-store and the
-real DASH-tree clone (pins.toml's ``[dash_tree]``). Skipped unless rdkit,
+"""End-to-end DASHPredictor tests against the real chaos-store and the real
+DASH-tree clone (pins.toml's ``[dash_tree]``). Skipped unless rdkit,
 cosmolayer, the store, and the clone are all present -- same pattern as
 test_experiment_store.py (this directory).
 """
@@ -77,66 +77,7 @@ def test_atom_map_order_matches_the_stores_own_element_column():
     assert non_identity > 0, "no reordered molecule in sample; check is vacuous"
 
 
-def test_dash_backoff_end_to_end_on_real_store(tmp_path):
-    from sieve_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
-    from sieve_experiments.data import load_molecule_set
-    from sieve_experiments.runner import execute
-
-    mset, masks = load_molecule_set(
-        STORE_NAME,
-        scheme="cosmo-sac-2010",
-        split_column="biased_split",
-        limit=TRAIN_LIMIT,
-        stores_root=STORES_ROOT,
-    )
-    # Force small train/test slices out of the same loaded set, so both the
-    # predictor and the ground truth stay consistent regardless of where the
-    # real biased_split boundaries fall within the first TRAIN_LIMIT rows.
-    train_mask = np.zeros(mset.n_molecules, dtype=bool)
-    train_mask[: TRAIN_LIMIT - TEST_LIMIT] = True
-    test_mask = ~train_mask
-    masks = {"train": train_mask, "val": train_mask, "test": test_mask}
-
-    cfg = ExperimentCfg(
-        run=RunCfg(experiment="dash-smoke", seed=0),
-        data=DataCfg(
-            store=STORE_NAME, scheme="cosmo-sac-2010", split_column="biased_split"
-        ),
-        predictor=PredictorCfg(
-            name="dash_backoff",
-            params={
-                "store": STORE_NAME,
-                "scheme": "cosmo-sac-2010",
-                "stores_root": str(STORES_ROOT),
-                "tree_folder_path": None,
-                "max_depth": 8,
-                "attention_threshold": 10,
-                "minimum_support": 1,
-                "charge_reconciliation": "std_weighted",
-            },
-        ),
-    )
-    result = execute(
-        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
-    )
-    assert result.run_dir.is_dir()
-    assert np.isfinite(result.metrics["profile/w1_norm_mean"])
-    assert result.metrics["n_test"] > 0
-
-    # How much of each split DASH actually covered is on the record: some
-    # chaos-store molecules contain atoms outside DASH's published feature
-    # vocabulary and fall back to the global mean wholesale.
-    import json
-
-    manifest = json.loads((result.run_dir / "manifest.json").read_text())
-    stats = manifest["match_stats"]
-    for split in ("train", "test"):
-        assert stats[split]["n_atoms"] > 0
-        assert 0 <= stats[split]["n_unmatched_atoms"] <= stats[split]["n_atoms"]
-        assert stats[split]["n_unmatched_molecules"] <= stats[split]["n_molecules"]
-
-
-# --- DASHLiteralPredictor: load-bearing checks on the real DASH-tree -------
+# --- DASHPredictor: load-bearing checks on the real DASH-tree --------------
 
 
 def test_data_storage_row_count_matches_topology_for_every_branch():
@@ -181,7 +122,7 @@ def test_predict_via_data_storage_walk_matches_get_property_noNAN_on_real_data()
 
     sys.path.insert(0, str(DASH_TREE_ROOT))
     from sieve_experiments.data import load_molecule_set
-    from sieve_experiments.predictors.dash import DASHLiteralPredictor
+    from sieve_experiments.predictors.dash import DASHPredictor
 
     mset, _ = load_molecule_set(
         STORE_NAME,
@@ -195,7 +136,7 @@ def test_predict_via_data_storage_walk_matches_get_property_noNAN_on_real_data()
     train = mset.select(train_mask)
     test = mset.select(~train_mask)
 
-    predictor = DASHLiteralPredictor(
+    predictor = DASHPredictor(
         store=STORE_NAME, scheme="cosmo-sac-2010", stores_root=str(STORES_ROOT)
     )
     predictor.fit_atoms(train, train, rng=np.random.default_rng(0))
@@ -230,7 +171,7 @@ def test_predict_via_data_storage_walk_matches_get_property_noNAN_on_real_data()
     assert checked > 0, "no matched atom in this sample -- test proves nothing"
 
 
-def test_dash_literal_end_to_end_on_real_store(tmp_path):
+def test_dash_end_to_end_on_real_store(tmp_path):
     from sieve_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
     from sieve_experiments.data import load_molecule_set
     from sieve_experiments.runner import execute
@@ -248,12 +189,12 @@ def test_dash_literal_end_to_end_on_real_store(tmp_path):
     masks = {"train": train_mask, "val": train_mask, "test": test_mask}
 
     cfg = ExperimentCfg(
-        run=RunCfg(experiment="dash-literal-smoke", seed=0),
+        run=RunCfg(experiment="dash-smoke", seed=0),
         data=DataCfg(
             store=STORE_NAME, scheme="cosmo-sac-2010", split_column="biased_split"
         ),
         predictor=PredictorCfg(
-            name="dash_literal",
+            name="dash",
             params={
                 "store": STORE_NAME,
                 "scheme": "cosmo-sac-2010",

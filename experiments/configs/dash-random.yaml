@@ -1,6 +1,8 @@
-# DASH Stage A: published tree topology, our own per-node statistics fit on
-# the training split. Sanity-reference split (random, cluster-aware) -- see
-# dash-biased.yaml for the headline extrapolation split.
+# DASH Stage A: published tree topology, DASH's own real prediction-time
+# back-off (DASHTree.get_property_noNAN), called directly. Sanity-reference
+# split (random, cluster-aware) -- see dash-biased.yaml for the headline
+# extrapolation split, and for the full parameter/design writeup this file
+# deliberately keeps diffable to.
 run:
   experiment: milestone1-sigma-profile
   seed: 0
@@ -13,14 +15,14 @@ data:
   split_column: split
 
 predictor:
-  name: dash_backoff
+  name: dash
   params:
-    # store/scheme duplicate data.* above -- DASHBackoffPredictor loads
-    # atom-level truth itself (load_molecule_set never populates it; see
-    # data.py's module docstring), so it needs its own store/scheme handle.
+    # store/scheme duplicate data.* above -- DASHPredictor loads atom-level
+    # truth itself (load_molecule_set never populates it; see data.py's
+    # module docstring), so it needs its own store/scheme handle.
     store: chaos-store
     scheme: cosmo-sac-2010
     max_depth: 16
     attention_threshold: 5.2
-    minimum_support: 5
     charge_reconciliation: std_weighted
+    charge_std_floor: 0.1

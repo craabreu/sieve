@@ -1,6 +1,6 @@
 """T11: a per-ATOM sigma-profile predictor on Chemprop's ``MolAtomBondMPNN``.
 
-Where T10 (``predictors/chemprop_dmpnn.py``) pools a molecule's atoms into one
+Where T10 (``predictors/chemprop_cosmonet.py``) pools a molecule's atoms into one
 embedding and predicts one 51-bin profile per molecule, this predicts a 51-bin
 profile for *every atom*, off that atom's own message-passing hidden state.
 Molecule-level results are then the harness's ordinary ``roll_up`` of those
@@ -78,7 +78,7 @@ Non-negativity is structural here for the same reason as in T10: every one of
 the 51 atom-profile bins has a training minimum of exactly 0, so ``y_min >=
 0``, and ``activation(x) * scale + y_min >= 0`` always, for any of the
 supported activations. The FFN class itself comes from
-``chemprop_dmpnn.nonneg_regression_ffn_class`` so the invariant -- activation
+``chemprop_cosmonet.nonneg_regression_ffn_class`` so the invariant -- activation
 applied to the raw output, *before* unscaling -- is defined exactly once and
 shared with T10.
 """
@@ -104,7 +104,7 @@ from sieve_experiments.predictors.base import (
     AtomPrediction,
     AtomPredictor,
 )
-from sieve_experiments.predictors.chemprop_dmpnn import (
+from sieve_experiments.predictors.chemprop_cosmonet import (
     VALID_OUTPUT_ACTIVATIONS,
     minmax_apply,
     minmax_fit,
@@ -121,7 +121,7 @@ BOND_FDIM = 14
 def atom_prediction_from_profile(
     profile: NDArray[np.floating], sigma_values: NDArray[np.floating]
 ) -> AtomPrediction:
-    """Atom-level counterpart of ``chemprop_dmpnn.prediction_from_profile``:
+    """Atom-level counterpart of ``chemprop_cosmonet.prediction_from_profile``:
     area and charge are *derived* from the predicted profile, never predicted
     as their own quantities -- ``area = sum(p)``, ``charge = p @ sigma``, the
     same convention every profile-predicting model in this harness uses (and
@@ -197,7 +197,7 @@ class ChempropAtomPredictor(AtomPredictor):
     ``store``/``scheme`` are needed here (not just in the run config's
     ``data`` section) because atom-level truth for the training split has to
     be loaded independently -- ``load_molecule_set`` only ever supplies
-    molecule-level truth. Same reason ``DASHBackoffPredictor`` needs them.
+    molecule-level truth. Same reason ``DASHPredictor`` needs them.
 
     ``charge_reconciliation`` defaults to ``"none"`` so the reported charge
     metrics are the model's raw output, directly comparable to T10's.
@@ -375,7 +375,7 @@ class ChempropAtomPredictor(AtomPredictor):
             accelerator="auto",
             # devices=1 is load-bearing: "auto" silently launches multi-GPU
             # DDP on this machine and splits the eval batch across ranks --
-            # see chemprop_dmpnn.py, where that was first hit.
+            # see chemprop_cosmonet.py, where that was first hit.
             devices=1,
             enable_progress_bar=False,
             logger=False,

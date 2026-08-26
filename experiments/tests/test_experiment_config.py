@@ -93,7 +93,7 @@ def test_set_override_changes_nested_predictor_param():
     )
     assert cfg.predictor.params["max_depth"] == 8
     # unrelated params untouched
-    assert cfg.predictor.params["minimum_support"] == 5
+    assert cfg.predictor.params["attention_threshold"] == 5.2
 
 
 def test_set_override_parses_scalar_types():
@@ -124,7 +124,7 @@ def test_override_without_equals_raises():
 def test_to_flat_params_round_trips_predictor_params():
     cfg = load_config(CONFIGS_DIR / "dash-random.yaml")
     flat = to_flat_params(cfg)
-    assert flat["predictor.name"] == "dash_backoff"
+    assert flat["predictor.name"] == "dash"
     assert flat["predictor.params.max_depth"] == "16"
     assert flat["data.split_column"] == "split"
     assert flat["run.seed"] == "0"

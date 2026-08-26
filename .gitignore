@@ -14,9 +14,8 @@ sieve_*.ipynb
 .DS_Store
 
 # Experiment outputs and external checkouts (see experiments/README.md).
-# Note: experiments/pins.toml and experiments/cosmonet-requirements.txt are
-# tracked and live one level up, because git cannot un-ignore a file that sits
-# inside an ignored directory.
+# Note: experiments/pins.toml is tracked and lives one level up, because git
+# cannot un-ignore a file that sits inside an ignored directory.
 experiments/runs/
 experiments/mlruns/
 experiments/cache/

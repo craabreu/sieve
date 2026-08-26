@@ -1,0 +1,27 @@
+# T10: a Chemprop D-MPNN reimplementation of COSMO-NET's sigma-profile model.
+# Sanity-reference split (random, cluster-aware) -- see
+# chemprop-cosmonet-biased.yaml for the headline extrapolation split, and
+# predictors/chemprop_cosmonet.py's module docstring for what this predictor
+# is and why it exists.
+run:
+  experiment: milestone1-sigma-profile
+  seed: 0
+  tags:
+    stage: A
+
+data:
+  store: chaos-store
+  scheme: cosmo-sac-2010
+  split_column: split
+
+predictor:
+  name: chemprop_cosmonet
+  params:
+    store: chaos-store
+    scheme: cosmo-sac-2010
+    hidden_size: 300
+    depth: 3
+    dropout: 0.0
+    ffn_n_layers: 2
+    batch_size: 64
+    max_epochs: 100

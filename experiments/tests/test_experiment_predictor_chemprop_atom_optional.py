@@ -61,7 +61,7 @@ def test_paper_atom_featurizer_could_not_represent_hydrogen():
     paper's Table 1 vocabulary has no hydrogen, and a per-atom model runs on
     the explicit-H graph where most nodes are hydrogens."""
     from rdkit import Chem
-    from sieve_experiments.predictors.chemprop_dmpnn import PaperAtomFeaturizer
+    from sieve_experiments.predictors.chemprop_cosmonet import PaperAtomFeaturizer
 
     params = Chem.SmilesParserParams()
     params.removeHs = False
@@ -183,7 +183,7 @@ def test_nonneg_ffn_class_is_shared_with_the_molecule_level_predictor():
     """Both T10 and T11 must get their head from the same factory, so the
     activation-before-unscale invariant is defined exactly once."""
     from sieve_experiments.predictors.chemprop_atom import _build_model
-    from sieve_experiments.predictors.chemprop_dmpnn import (
+    from sieve_experiments.predictors.chemprop_cosmonet import (
         nonneg_regression_ffn_class,
     )
 
@@ -205,7 +205,7 @@ def test_squared_activation_reaches_exact_zero_but_softplus_cannot():
     vanishes and the head dies), while x**2 hits it at a finite x=0.
     """
     import torch
-    from sieve_experiments.predictors.chemprop_dmpnn import (
+    from sieve_experiments.predictors.chemprop_cosmonet import (
         nonneg_regression_ffn_class,
     )
 

@@ -5,7 +5,16 @@ COSMO-NET) on the chaos-store sigma-profile prediction task, evaluated on
 Sieve's own `biased_split` extrapolation split. Design doc:
 `docs/superpowers/specs/2026-08-24-baseline-experiment-harness-design.md`.
 
-## Status (2026-08-25, updated) — read this before continuing the work
+## Status (2026-08-26, updated) — read this before continuing the work
+
+**Note on task numbering:** T9 (a SMILES-keyed lookup against an
+externally-trained COSMO-NET checkpoint) was retired and folded into the
+COSMO-NET section below (T10, "reimplemented on Chemprop") once T10 was
+shown to fully supersede it — a trustworthy, checkpoint-verified-
+architecture baseline trained end-to-end on our own data, with no
+dependency on the external clone. T10/T11/T12 keep their existing labels
+for continuity with commit history and run-directory naming; the numbering
+is not closed up.
 
 **Done and verified (T0–T8 of the design doc's task table):**
 
@@ -38,84 +47,79 @@ Sieve's own `biased_split` extrapolation split. Design doc:
   download (Zenodo record 22050672 now resolves — see "Known external gap"
   below, updated). Verifies both Zenodo's published md5 and a
   trust-on-first-download sha256.
-- 215 tests passing (`uv run pytest -q`) against a fully-populated local
+- 292 tests passing (`uv run pytest -q`) against a fully-populated local
   environment (real `stores/chaos-store/` + the pinned DASH-tree clone under
   `experiments/external/`); 7 skipped are unrelated (`test_benchmark.py`'s
   own separate benchmark store, not chaos-store). Without those two present,
   the suite gracefully skips the optional-data tests instead of failing.
 
-**Done and verified — DASH-tree predictor (T8):**
+**Done and verified — DASH (T8):**
 
 `predictors/dash.py` is written and end-to-end tested against the real store
 and the real pinned DASH-tree clone
-(`experiments/tests/test_experiment_predictor_dash_optional.py`). Two layers:
+(`experiments/tests/test_experiment_predictor_dash_optional.py`).
+`DASHPredictor` reproduces DASH's own published algorithm as literally as
+possible, per an explicit design goal ("rely on their code as much as
+possible"): DASH-tree's own topology (`DASHTree.match_new_atom`, unmodified)
+for atom matching, and a back-off step that reproduces DASH's own real
+prediction-time fallback (`DASHTree.get_property_noNAN`'s deepest→shallowest
+walk, first populated node wins, else the global mean over all training
+atoms) — no support/count threshold anywhere, matching DASH's own code
+(`Node.prune()`, the one piece of code that would implement one, is
+confirmed dead: no caller anywhere in the repo).
 
-- `fit_backoff`/`predict_backoff` — pure numpy over pre-computed
-  `(branch_idx, node_id)` tree paths, no optional deps, fast-suite tested
-  (`experiments/tests/test_experiment_predictor_dash.py`). Walk training
-  atoms to their paths and accumulate per node (prune below
-  `minimum_support`), then at predict time walk the path deepest→shallowest,
-  take the first retained node (else the unconditional global mean), and
-  reconstruct a profile from it. Sieve's own back-off algorithm, applied to
-  DASH's published tree shape.
+- `populate_tree_with_sigma_properties` writes the raw (undecomposed) mean
+  sigma profile + charge std directly onto `tree.data_storage[branch_idx]`,
+  one row per node — the same shape DASH-properties' own paper describes its
+  own population process taking (re-matching atoms, averaging into existing
+  nodes). Fast-suite tested against a fake `data_storage`, no rdkit/DASH-tree
+  clone needed (`experiments/tests/test_experiment_predictor_dash.py`).
+- `predict_via_data_storage_walk` reimplements `get_property_noNAN`'s exact
+  fallback semantics as a fast, self-contained function rather than calling
+  it live — ~130× faster (0.35µs/call vs. ~47µs/call), the difference
+  between a ~2 minute and ~39 minute full-store predict step. Verified
+  bit-for-bit equivalent to a literal-call prototype's own output on a real
+  run before the swap, not just argued.
+- Wired onto real atoms via RDKit for the atom-index mapping
+  (`src/sieve/io/cosmolayer_adapter.py`'s atom-mapped-SMILES convention,
+  reused verbatim) and `DASHTree.match_new_atom` for the tree path. Needs
+  `store`/`scheme` in its own `predictor.params` (see
+  `configs/dash-{biased,random}.yaml`) — duplicating `data.store`/
+  `data.scheme` — because atom-level truth for the training split has to be
+  loaded independently (`data.load_atom_truth`; `load_molecule_set` never
+  populates it).
 
-  Each atom is decomposed into **shape** (its profile, shifted so its own
-  sigma-centroid sits at zero and divided by its own area — location- and
-  scale-invariant) / **location** (that sigma-centroid) / **magnitude**
-  (area) *before* averaging within a node, not averaged as raw unnormalized
-  vectors — atoms sharing a tree node rarely sit at the same sigma-centroid,
-  and bin-wise-averaging their raw profiles smears/widens the result by
-  however much those locations spread (measured 5–35% width inflation on
-  real chaos-store tree-node groups). `predict_backoff` reconstructs a
-  prediction by shifting the averaged shape template back out to a
-  predicted location and scaling by a predicted area.
+Full engineering history — the two real bugs found only by running
+end-to-end, DASH's paper-says-median-code-says-mean discrepancy, and the
+built/measured/replaced performance story — is in `pins.toml`'s
+`[dash_tree]` notes; not duplicated here.
 
-  `location_mode` (predictor param, default `"charge"`) picks how that
-  scalar location comes out of a node's stats: `"charge"` divides the mean
-  charge by the mean area (the natural way to combine an intensive quantity
-  across a heterogeneous population — total/total, using the same additive
-  charge the reconciliation machinery already relies on); `"sigma"` instead
-  averages each atom's own sigma-centroid directly. The two differ whenever
-  areas and locations both vary within a node (mean(charge)/mean(area) ≠
-  mean(charge/area) in general) — kept as a config option rather than
-  picking one, since it's a genuine, undecided modeling choice.
-- `DASHBackoffPredictor` — wires that onto real atoms: RDKit for the
-  atom-index mapping (`src/sieve/io/cosmolayer_adapter.py`'s
-  atom-mapped-SMILES convention, reused verbatim) and
-  `DASHTree.match_new_atom` for the tree path. Needs `store`/`scheme` in its
-  own `predictor.params` (see `configs/dash-{biased,random}.yaml`) —
-  duplicating `data.store`/`data.scheme` — because atom-level truth for the
-  training split has to be loaded independently
-  (`data.load_atom_truth`; `load_molecule_set` never populates it).
+**Full-store results, 2026-08-26.** `--config configs/dash-biased.yaml`, no
+`--limit`, full 53,079-molecule chaos-store, `attention_threshold=5.2` (the
+paper's tuned value), n_test 5333 molecules / 203,063 atoms, fit 93.5s,
+predict 16.2s, **0/271,983 rolled-up bins negative**:
 
-**First full-store pass, 2026-08-25 (superseding the earlier `--limit 300`
-numbers below).** `--config configs/dash-biased.yaml`, no `--limit`, full
-53,079-molecule chaos-store, `attention_threshold=5.2` (the paper's tuned
-value — see `pins.toml`'s `[dash_tree]` notes), `location_mode="charge"`
-(the default). A `--limit 5000` timing probe ran first (design.md risk #1):
-24s wall, extrapolated the full run to ~2-3 min, which held (`real 1m58s`).
-Test-split (`n_test` 5333 molecules) results, DASH vs. `global_mean` floor
-(`configs/global-mean-biased.yaml`, same split, `real 2.3s`):
-
-| metric | dash_backoff | global_mean |
+| metric | dash | global_mean |
 | --- | --- | --- |
-| `profile/w1_norm_mean` | 0.449 | 1.024 |
-| `area/r2` | 0.949 | 0.415 |
-| `atom/profile/w1_norm_mean` | 1.030 | — (no atom truth for global_mean's params) |
-| `charge/mae` | 0.102 | 0.00694 |
+| `profile/w1_norm_mean` | **0.407** | 1.024 |
+| `area/r2` | **0.952** | 0.415 |
+| `atom/profile/w1_norm_mean` | 1.012 | — (no atom truth for global_mean's params) |
+| `charge/mae` | **0.0922** | 0.00694* |
 
-DASH clearly wins on profile shape and area; `global_mean` beats DASH on
-molecule-level `charge/mae` for a mechanical reason, confirmed against
-`predictions.npz`'s `net_charge` array: **5296/5333 (99.3%) of test
-molecules have `net_charge` exactly 0** (chaos-store is almost entirely
-formally-neutral molecules). `global_mean`'s charge reconciliation
-effectively predicts a constant zero, so its "MAE" is just
-`mean(|true screening charge|)` = 0.00694 by construction — bit-for-bit the
-number reported (unaffected by the sign-convention fix below, since
-`mean(|0 - x|)` is sign-invariant). It isn't evidence `global_mean` models
-charge well; it's an artifact of the metric on a near-degenerate label
-distribution. `time/fit_s` 96.8s (includes the ~10s tree preload),
-`time/predict_s` 14.3s, `time/data_s` 0.41s.
+\* `global_mean`'s low `charge/mae` is a metric artifact, not a real win:
+**5296/5333 (99.3%) of test molecules have `net_charge` exactly 0**
+(chaos-store is almost entirely formally-neutral molecules), so
+`global_mean`'s charge reconciliation effectively predicts a constant zero
+and its "MAE" is just `mean(|true screening charge|)` by construction.
+
+Two Sieve-invented back-off variants — shape/location/area decomposition,
+and a plain bin-wise mean with a `minimum_support=5` safety threshold on top
+of the published topology — were tried and measured along the way. Both
+underperformed the design above on every metric shown, at both
+granularities, and have since been retired (their code and configs
+deleted) — the finding that settled removing `minimum_support` entirely
+was that it was measurably *costing* accuracy, not buying it. Full
+comparison table and the "why" in `pins.toml`'s `[dash_tree]` notes.
 
 **Charge sign-convention bug, found and fixed 2026-08-25.** Every "charge"
 metric above (and the charge-reconciliation target every predictor uses)
@@ -130,14 +134,11 @@ reconciliation/scoring target and fixed the three call sites that used
 `net_charge` directly (`reconcile_charge` via `roll_up`, `global_mean`'s
 `mol_charge`, `runner.py`'s `charge_true`), plus a real-data regression
 test (`test_screening_charge_is_the_negated_net_charge_on_real_molecules`).
-Effect on the numbers, re-run after the fix: DASH's `charge/mae` improved
-0.108 → **0.102**; `global_mean`'s is unchanged (0.00694, expected — see
-above); COSMO-NET's improved 3× (0.0172 → **0.00546**, see the T9 section
-below) since it makes a real, nontrivial charge prediction that was being
-scored against the wrong-signed target. Only 54/53,079 molecules are
-charged, which is why the aggregate MAE shift is modest for DASH even
-though the fix is substantively correct — the per-molecule effect on those
-54 is large.
+The COSMO-NET lookup baseline this bug also affected improved 3× on charge
+once fixed (see the `chemprop_cosmonet` section below for that history).
+Only 54/53,079 molecules are charged, so the aggregate MAE shift from this
+fix is modest even though it's substantively correct — the per-molecule
+effect on those 54 is large.
 
 **Coverage caveat — read before quoting any DASH number.** DASH cannot match
 every chaos-store atom: `init_neighbor_dict` rejects atoms whose feature
@@ -145,205 +146,52 @@ tuple is outside DASH's published vocabulary (boron, Si, Ge, Sb, Te), and it
 runs over the whole molecule, so one such atom disqualifies **all** of that
 molecule's atoms. Measured on the full store: **train 52103/1168845 atoms
 (4.5%) from 2082/42459 molecules (4.9%)**; **test 2114/203063 atoms (1.0%)
-from 51/5333 molecules (1.0%)** — close to the earlier `--limit 300`
-estimate (~4%), and confirmed not to be a small-sample artifact. Those atoms
-fall back to the unconditional global mean — i.e. part of any DASH score is
-really the floor predictor's score. Every run records this per split in its
-manifest's `match_stats` and logs a WARNING; the results table should carry
-it alongside the metrics rather than quoting DASH numbers as if coverage
-were 100%.
+from 51/5333 molecules (1.0%)**. Those atoms fall back to the unconditional
+global mean — i.e. part of any DASH score is really the floor predictor's
+score. Every run records this per split in its manifest's `match_stats` and
+logs a WARNING; the results table should carry it alongside the metrics
+rather than quoting DASH numbers as if coverage were 100%.
 
-**Profile-mode experiment, 2026-08-25.** Does the shape/location/area
-decomposition (`fit_backoff`/`predict_backoff`, `profile_mode="decomposed"`,
-the default) earn its keep over the simplest alternative — bin-wise-average
-each tree node's raw, unnormalized atom profiles directly, with area/charge
-only ever *derived* from the resulting profile (`sum`, `profile @
-sigma_values`), never fit as their own quantities
-(`fit_backoff_raw`/`predict_backoff_raw`, `profile_mode="raw"`)? Both run
-full-store, `biased_split` (`configs/dash-biased.yaml` vs.
-`configs/dash-raw-biased.yaml`):
+**Profile-mode experiment (summary; full writeup in `pins.toml`'s
+`[dash_tree]` notes).** Does the shape/location/area decomposition earn its
+keep over the simplest alternative — bin-wise-averaging each tree node's
+raw, unnormalized atom profiles directly? Both retired variants above were
+compared full-store: area/charge came out identical between them (a
+consequence of linearity, not a coincidence), but profile *shape* diverged
+in an unexpected direction — decomposition was better at the atom level but
+slightly worse at the molecule level, since summing atoms into a molecule
+doesn't let either mode's own approximation error wash out predictably.
+Neither variant survives in the current design, which supersedes both (see
+the full-store results above).
 
-| profile_mode | `atom/profile/w1_norm_mean` | `profile/w1_norm_mean` | `area/r2` | `charge/mae` |
-| --- | --- | --- | --- | --- |
-| decomposed (default) | 1.030 | 0.449 | 0.949 | 0.102 |
-| raw | 1.058 | **0.442** | 0.949 | 0.102 |
-
-`area/r2`/`charge/mae` are identical (to floating-point noise) either way —
-not a coincidence: molecule-level area/charge are additive rollups of
-atom-level area/charge, and "raw"'s derived charge (mean-profile @
-sigma_values) equals mean(individual atom charges) exactly by linearity,
-the same number "decomposed" fits directly. The decomposition changes
-nothing about area/charge, only how the profile bins are shaped. There, the
-two modes diverge in an unexpected direction: at the **atom** level "raw"
-is worse (1.058 vs 1.030 — the blur `fit_backoff`'s docstring predicts from
-averaging raw profiles across a node's differing sigma-centroids), but at
-the **molecule** level (after summing every atom into its molecule) "raw"
-comes out slightly *better* (0.442 vs 0.449) — "decomposed"'s own
-reconstruction (shifting a shape template to a *predicted* location, itself
-only ever an imperfect point estimate) introduces its own per-atom
-placement error that doesn't obviously wash out any better than raw's blur
-does once atoms are summed. `profile_mode="decomposed"` stays the default
-(atom-level accuracy is the more defensible thing to optimize for, and the
-molecule-level gap for "raw" is small), but `"raw"` stays available as a
-documented, cheaper alternative. Full writeup in `pins.toml`'s
-`[dash_tree]` notes.
-
-**All-atom vs united-atom, 2026-08-25.** A question surfaced while building
-T11: is DASH all-atom or united-atom (implicit H)? Traced directly against
-DASH-tree's source: DASH *predicts* a value for every hydrogen, but
-*represents* one purely as an attribute of its heavy-atom neighbor —
-`_get_init_layer` explicitly redirects an H's subgraph descent to its heavy
-atom (measured: 0/2930 real subgraphs ever contain a hydrogen), and all
-hydrogens share the tree's single H feature tuple, so 60.4% of hydrogens in
-a sampled molecule get a bit-identical prediction to another H in the same
-molecule. Since 56.8% of chaos-store atoms are hydrogen, `atom/*` metrics
-are majority-weighted by exactly the atoms DASH represents most crudely —
-worth scoring DASH (and T11) on a store that matches DASH's own
-united-atom design, rather than only on the all-atom one.
-
-Building the store for real first hit a genuine performance bug in
-`cosmolayer.SegmentStore.coarse_grain()` (O(n_molecules × n_segments), not
-O(n_segments) — 40-90 minutes extrapolated on the full store where it
-should take under a second). Fixed upstream and merged:
-[cosmolayer#55](https://github.com/craabreu/cosmolayer/pull/55) — real
-full-store build after the fix: **21.7s**. Verified on the real store:
-1,546,081 → 736,106 atoms (52.4% reduction), `split`/`biased_split` and
-molecule-level truth carried through unchanged/bit-identical.
-
-**DASH-UA result: worse across every metric, and NOT the clean "same
-model, native granularity" test it was expected to be.**
+**All-atom vs. united-atom (summary; full writeup in `pins.toml`'s
+`[chaos_store_ua]` notes).** A question surfaced while building T11: is
+DASH all-atom or united-atom (implicit H)? DASH *predicts* a value for
+every hydrogen but *represents* one purely as an attribute of its heavy-atom
+neighbor, so a real united-atom store (`coarse-grain-store`, built via a
+genuine cosmolayer perf fix —
+[cosmolayer#55](https://github.com/craabreu/cosmolayer/pull/55), 40-90 min
+→ 21.7s) was built to test DASH (and T11) at that native granularity fairly.
 
 | metric | DASH AA | DASH UA |
 | --- | --- | --- |
 | test molecules rejected outright | 1.0% | **4.6%** |
 | `atom/profile/w1_norm_mean` | 1.030 | 1.551 |
-| `atom/area/r2` | 0.945 | 0.906 |
 | `profile/w1_norm_mean` | 0.449 | 0.812 |
-| `area/r2` | 0.949 | 0.872 |
 | `charge/mae` | 0.102 | 0.153 |
 
-Root cause, confirmed from `AtomFeatures.return_atom_feature_tuple_from_
-molecule`'s source: DASH's feature tuple uses `atom.GetDegree()` (RDKit's
-*explicit-neighbor-only* count — does not include implicit H). DASH's
-published tree was built entirely from all-atom (explicit-H) COSMO data,
-where degree structurally *includes* bonded H. On the UA store, degree
-drops by however many H's got merged away, so nearly every heavy atom with
-a bonded H presents a tuple the published vocabulary was never built to
-see — outright rejection, or a match to a less-relevant node. **Confirmed
-in DASH's own paper**, not just the code (Lehner et al., *J. Chem. Inf.
-Model.* 63, 6014–6028 (2023), "Atom Features"): "Number of bonds" and
-"Number of attached hydrogens" are listed as two independent fields, with
-H₂'s own worked example — "a hydrogen atom with one bond… has the atom
-type 'H 1 0 False 0'" — only coherent if every atom, hydrogen included, is
-an explicit graph node. This is DASH's designed input contract, not an
-implementation detail to route around. My earlier claim in this section
-("DASH-on-UA is the same model, just scored at its own native
-granularity") was **wrong** — I'd verified only
-`GetTotalNumHs()` invariance, not `GetDegree()`'s. This is a genuine,
-useful negative result about DASH's own hand-built feature scheme, not
-evidence that hydrogens are harder to predict in general — see T11-UA
-below, whose feature scheme (chemprop's own `MultiHotAtomFeaturizer.v2()`)
-does not have this defect (message passing over real H graph nodes makes
-its own H-count field's representation-dependence harmless, unlike DASH's
-discrete tree lookup with no such mechanism — see `pins.toml`'s
-`[chaos_store_ua]` notes for the full trace of both).
-
-**Decision: DASH is AA-only for every comparison in this milestone.**
-`dash-ua-biased.yaml` is marked "not a benchmark config" in its own header
-and stays only to reproduce this diagnostic finding — its numbers must
-never appear in a results table alongside `dash_backoff`/`chemprop_dmpnn`/
-`chemprop_atom` as if it were comparable. T11 is unaffected (its feature
-scheme has no analogous defect), so `chemprop-atom-ua-biased.yaml` remains
-a legitimate comparison.
-
-**Literal-DASH predictor (`dash_literal`), 2026-08-26.** The user asked for
-a predictor that reproduces DASH literally, relying on their own code as
-much as possible — not `DASHBackoffPredictor`'s always-been-a-
-reimplementation of DASH's back-off (`fit_backoff*`/`predict_backoff*`,
-however faithful). Investigated piece by piece against the pinned DASH-tree
-clone, not assumed:
-
-- **Paper says median, code computes mean.** DASH-properties' own paper
-  states each node stores the "median" of matching atoms' values; grepping
-  the whole DASH-tree repo finds zero `median` calls anywhere —
-  `DevelopNode.update_average` computes `np.nanmean`. A real paper/code
-  discrepancy. "Rely on their code" means mean, not median.
-- **No DASH function populates an existing tree with a new property** —
-  DASH-properties itself gets new properties onto nodes by re-matching
-  atoms and averaging, the same shape our own accumulation already takes.
-  Some accumulation code is unavoidably ours.
-- **`Node.prune()`** — the one piece of DASH's own code that would
-  implement a support/count threshold — is confirmed dead: no caller
-  anywhere in the repo. `DASHTree.get_property_noNAN` (DASH's own real
-  prediction-time fallback) consults no count/std threshold at all; a node
-  with even a single matching atom is used at full confidence. There is no
-  `minimum_support` concept in this predictor.
-- **Built, measured, and replaced**: a first version genuinely called
-  `get_property_noNAN` 52 times per atom (51 profile bins + charge_std).
-  Measured at ~47 microseconds/call — a `--limit 5000` probe's predict step
-  alone extrapolated to ~39 minutes for the full store. Told "it doesn't
-  matter if it's mathematically equivalent, I want a simple function," the
-  final design instead reimplements `get_property_noNAN`'s exact walk
-  (deepest → shallowest, first populated node wins, else the global mean) —
-  verified bit-for-bit equivalent to the literal-call version's own output
-  on a real run, not just argued.
-- **Two real bugs, both found only by actually running end to end** (never
-  by fast-suite unit tests, which never touch a real `DASHTree`): (1)
-  `get_property_noNAN` expects DASH's own raw path format, not this
-  module's own `NodePath` conversion of it — calling their function with
-  our format raised `KeyError` deep inside their tree-loading code (moot
-  now that we no longer call it, but a real fact about their API). (2) A
-  full-store-only failure: a branch with zero training atoms never gets
-  the new columns written at all, so a test atom matching it hit a
-  missing-column `KeyError` a `--limit 5000` probe never happened to
-  trigger. (3) A performance trap in the *replacement* itself: the first
-  attempt (`df[cols].iloc[node_id]` inside the per-atom walk) measured
-  **467 microseconds/call — worse than the literal calls it was meant to
-  avoid**, since re-selecting 52 columns from a wide DataFrame on every
-  lookup dominates. Fixed by converting each branch's columns to a plain
-  numpy array once, outside the loop: 0.35 microseconds/call, ~1300× faster.
-- **`charge_std_floor=0.1`** (new `reconcile_charge`/`roll_up` parameter,
-  additive, `1e-12` default preserves every other predictor) matches
-  `get_molecules_partial_charges`'s own `default_std_value` — not the
-  `1e-12` every other predictor here uses.
-
-**Full-store results, 2026-08-26.** `--config configs/dash-literal-biased.yaml`,
-no `--limit`, n_test 5333 molecules / 203,063 atoms, fit 93.5s, predict
-16.2s, **0/271,983 rolled-up bins negative**:
-
-| metric | DASH decomposed | DASH raw (min_support=5) | **DASH literal** |
-| --- | --- | --- | --- |
-| `atom/profile/w1_norm_mean` | 1.030 | 1.058 | 1.012 |
-| `atom/area/r2` | 0.945 | 0.945 | 0.944 |
-| `profile/w1_norm_mean` | 0.449 | 0.442 | **0.407** |
-| `area/r2` | 0.949 | 0.949 | 0.952 |
-| `charge/mae` | 0.102 | 0.102 | **0.0922** |
-
-DASH's own real back-off — no support threshold at all, just the
-missing-value fallback — beats *both* of Sieve's own variants on every
-metric shown, at both granularities. The only structural difference from
-"raw" (`minimum_support=5`) is the support threshold itself. So Sieve's own
-safety threshold, added to avoid trusting thinly-supported nodes, is
-measurably *costing* accuracy here, not buying it — an unexpected, useful
-finding, not investigated further (why a thinly-supported node's raw mean
-would out-predict backing off to a coarser, better-supported ancestor isn't
-obvious).
-
-<details>
-<summary>Earlier <code>--limit 300</code> smoke numbers (superseded above,
-kept for the timing-probe methodology note)</summary>
-
-A real CLI run (`--config configs/dash-biased.yaml --limit 300`) beats the
-`global_mean` floor on the same slice: `profile/w1_norm_mean` 0.00054
-(`location_mode="charge"`, the default) vs. 0.00079, `area/r2` 0.96 vs. 0.69.
-`fit_s` ≈11s at this size, ~10s of which is the one-time DASHTree preload;
-`predict_s` is 0.05s. This predates the `attention_threshold` fix (was 10,
-now 5.2) and an earlier metrics-module revision, so the raw numbers aren't
-directly comparable to the full-store pass above — kept only as the
-worked example for "run a `--limit` timing probe before committing to a
-full run" (design.md risk #1).
-
-</details>
+DASH-UA is worse across every metric — root cause: DASH's own feature tuple
+uses `atom.GetDegree()` (RDKit's explicit-neighbor-only count), and its
+published tree was built entirely from all-atom (explicit-H) data where
+degree structurally includes bonded H. On a united-atom store, degree drops
+by however many H's got merged away, presenting the published vocabulary
+tuples it was never built to see — confirmed directly in DASH's own paper's
+"Atom Features" section, not just the code. **Decision: DASH is AA-only for
+every comparison in this milestone** — `dash-biased.yaml`/`dash-random.yaml`
+only. This is a genuine limitation of DASH's own hand-built feature scheme,
+not evidence that hydrogens are harder to predict in general — T11 (whose
+feature scheme has no analogous defect) genuinely improves on the same
+united-atom store; see the T11 section below.
 
 **Gotchas hit while building T8** (full detail in `pins.toml`'s
 `[dash_tree]` notes):
@@ -351,7 +199,7 @@ full run" (design.md risk #1).
 - At the pinned commit, `DASHTree(preload=False)` (the on-demand-load mode
   originally planned, since it needs no network access) raises `KeyError` on
   every hydrogen atom — an ordering bug in `_get_init_layer`'s H-atom
-  special case. Fixed by defaulting `DASHBackoffPredictor(preload=True)`
+  special case. Fixed by defaulting `DASHPredictor(preload=True)`
   (~10s, ~300MB into memory once, still no network). Note this is a
   *different* failure from the coverage caveat above — an early draft of
   this README conflated the two.
@@ -365,8 +213,7 @@ full run" (design.md risk #1).
   transposed mapping still produces perfectly finite metrics, so nothing
   else in the suite would catch it; the inverse convention mismatches ~36%
   of atoms, so the guard genuinely discriminates.
-- `fit_backoff`/`predict_backoff` live in a module (`dash.py`) that also
-  defines a `Path` type alias for tree paths — that shadowed
+- `dash.py` also defines a type alias for tree paths that once shadowed
   `pathlib.Path`'s import; renamed the alias to `NodePath`. Worth watching
   for in any module that both imports `pathlib.Path` and wants a short type
   alias name.
@@ -380,106 +227,52 @@ full run" (design.md risk #1).
   empty (e.g. `--limit 50` on chaos-store, still exercised as a regression
   test in `test_experiment_smoke.py`/`test_experiment_metrics.py`).
 
-**Done and verified — COSMO-NET predictor (T9), 2026-08-25:**
+**Done and verified — COSMO-NET, reimplemented on Chemprop (T10),
+2026-08-25.** Replaces what was originally planned as T10 (renumbered, now
+T12 below — originally to T11, then T11 itself was reassigned to per-atom
+Chemprop). Formerly two predictors — a since-retired SMILES-keyed lookup
+against an externally-trained checkpoint (T9), and this one — collapsed
+into a single, trustworthy baseline once investigating T9's negative-bins
+finding showed the external repo's own checkpoint could not be trusted at
+all (see below); T9's own numbers are kept as historical record in
+`pins.toml`'s `[cosmonet_investigation]` notes, not reproduced here.
 
-- `[cosmonet]` in `pins.toml` has a pinned commit (`366839a0e6f9...`,
-  re-cloned after the earlier disk-space incident — 106GB free this time,
-  no issue; actual checkout is ~14GB, not ~4.8GB, see `pins.toml` for why).
-- Dependency resolution (**design.md risk #3, the milestone's largest
-  schedule risk**) is **done and clean** — `experiments/
-  cosmonet-requirements.txt` has the full pin, repro steps, and a gotcha
-  (`torch-geometric` is required by `DMPNNModel` but missing from the
-  repo's own `requirements.txt`).
-- `sieve_experiments/cosmonet_data.py` (`category_labels` +
-  `write_cosmonet_csv`) converts a chaos-store `MoleculeSet` into COSMO-NET's
-  exact CSAC-CSV input format — confirmed the 51-point grid matches
-  COSMO-NET's own exactly, so it's a small join, not a real transform.
-- Trained the repo's own DMPNN (`Training/DMPNN/DMPNN-Train-pSigma.py
-  --splitter 4`, its documented default) on the **full** chaos-store,
-  `biased_split`-labeled, 100 epochs (~4h10m on "estes"'s GPU — confirmed
-  via `nvidia-smi` and deepchem's own cuda auto-detection, not a silent CPU
-  fallback). **The train/val/test split was certified against our own
-  `biased_split` column molecule-for-molecule, twice (after the 1-epoch
-  probe and again after the full run): 53,079/53,079 rows matched, 0
-  mismatches both times** — not just aggregate counts lining up.
-- `sieve_experiments/predictors/cosmonet.py` (`CosmonetPredictor`) wires
-  the trained checkpoint's own saved prediction CSV into the `Predictor`
-  seam as a SMILES-keyed lookup (not live re-inference — see its module
-  docstring for why that's numerically identical for any in-store molecule,
-  and where it stops generalizing). It **re-certifies every molecule's
-  CATEGORY against the run's own split at fit/predict time**, every run —
-  the same check done manually for this pass, now a permanent guard against
-  silently reusing a checkpoint trained on a *different* split_column
-  (which would leak train-set molecules into a "test" evaluation
-  undetectably). 7 tests, all passing, including both leakage-guard cases.
-- A real `--config configs/cosmonet-biased.yaml` harness run reproduces the
-  manually-verified numbers bit-for-bit (2.7s wall — pure lookup, no
-  training in the harness itself):
-
-  | metric | dash_backoff | global_mean | **cosmonet** |
-  | --- | --- | --- | --- |
-  | `profile/w1_norm_mean` | 0.449 | 1.024 | **0.224** |
-  | `area/r2` | 0.949 | 0.415 | 0.775 |
-  | `area/mae` | 8.41 | 31.30 | 15.56 |
-  | `charge/mae` | 0.102 | 0.00694* | **0.00546** |
-
-  Numbers above are post charge-sign-fix (see the DASH section's callout
-  above) — re-run after the fix, not just recomputed. COSMO-NET's
-  `charge/mae` improved 3× from the pre-fix number (0.0172 → 0.00546) since
-  it makes a real, nontrivial charge prediction (unlike `global_mean`'s
-  constant zero), so the wrong-signed target mattered far more for it than
-  for DASH. \* `global_mean`'s low `charge/mae` is a metric artifact, not a
-  real win — see the git history for the full explanation (99.3% of
-  chaos-store test molecules are exactly neutral). COSMO-NET wins clearly
-  on profile shape (about half DASH's W1) but loses to DASH on area —
-  expected, since this DMPNN was trained with a flat per-bin MSE loss
-  (`torch.nn.functional.mse_loss`, all 51 sigma bins weighted equally,
-  confirmed from `deepchem.models.torch_models.dmpnn`'s source), with no
-  explicit shape/location/magnitude decomposition the way DASH Stage A has.
-- **Correction, 2026-08-25 (found while investigating T10's W1 gap below):**
-  the claim above — that training used `MODEL_HPARAMS`'s smaller block
-  (`hidden_size=51, ffn_num_layers=1, dropout=0.1`) — is **wrong**.
-  `DMPNNModel.__init__`'s real parameter names (checked via
-  `inspect.signature`) are `enc_hidden`, `ffn_layers`, `enc_dropout_p`/
-  `ffn_dropout_p` — not `hidden_size`, `ffn_num_layers`, `dropout`. Those
-  three keys (plus `message_passing_steps`) get silently absorbed into
-  `**kwargs` and forwarded to `TorchModel.__init__`, never reaching the
-  encoder. Confirmed directly against our own trained checkpoint's weights:
-  `encoder.W_i.weight` is `(300, 147)` — deepchem's own defaults
-  (`enc_hidden=300`, `atom_fdim=133 + bond_fdim=14`), not the paper's
-  35/12-dim features either (`atom_fdim=35` alone is also ineffective
-  without `use_default_fdim=False`) — and `ffn.linears.0.weight` is
-  `(300, 300)`, a 3-layer FFN, not the claimed single layer. **T9's actual
-  model is deepchem's own default-sized DMPNN** (bigger and richer than
-  either the paper describes or T10 faithfully implements), not the paper's
-  claimed architecture — the numbers above are real, just mischaracterized
-  until now. `cosmonet-random.yaml` (the sanity split) has no trained
-  checkpoint yet — only `biased_split` has been trained so far.
-
-**Done and verified — Chemprop reimplementation of COSMO-NET (T10), 2026-08-25.**
-Replaces what was originally planned as T10 (renumbered, now T12 below —
-originally to T11, then T11 itself was reassigned to per-atom Chemprop).
-
-COSMO-NET-Paper's own repo has **three independently-confirmed
-reproducibility gaps**, found while investigating T9's negative-sigma-bin
-issue, that make it unsuitable as the sole D-MPNN sigma-profile baseline
-going forward:
+`predictors/chemprop_cosmonet.py` (`ChempropCosmonetPredictor`) is a
+Chemprop D-MPNN reimplementation of COSMO-NET's sigma-profile model — not
+an independent architecture inspired by the same idea, but a direct
+reproduction of the *real* architecture COSMO-NET-Paper's own published
+checkpoint was actually trained with, reverse-engineered from the
+checkpoint's own weight shapes. COSMO-NET-Paper's own repo (a real training
+run was carried out against it, on our own full chaos-store data, before
+this was understood — see `pins.toml`'s `[cosmonet_investigation]` notes)
+turned out to have **three independently-confirmed reproducibility gaps**,
+found while investigating a negative-sigma-bin discrepancy, that make it
+unsuitable to depend on directly:
 
 1. The shipped `Sigma_saved_model/StratifiedCATEGORY_CV5/` checkpoint's own
    weights don't match the hyperparameters printed in its own committed
    training log (log: `hidden_size=51, ffn_num_layers=1`; checkpoint
-   state_dict: `hidden_size=300, ffn_num_layers=3`) — root cause found
-   2026-08-25 (see T9's correction note above): `MODEL_HPARAMS`'s keys
-   mostly don't match real `DMPNNModel.__init__` parameter names, so they
-   never reach the encoder and every run silently builds deepchem's own
-   default-shaped model regardless of what the log echoes back. (The
-   commit-timing observation — `.pt` files added in a separate, later
-   commit than the log/results — was real but turned out not to be the
-   cause; it's a coincidence, not a swap between two different runs.)
+   state_dict: `hidden_size=300, ffn_num_layers=3`). Root cause:
+   `DMPNNModel.__init__`'s real parameter names (checked via
+   `inspect.signature`) are `enc_hidden`, `ffn_layers`, `enc_dropout_p`/
+   `ffn_dropout_p` — not `hidden_size`, `ffn_num_layers`, `dropout`. Those
+   three keys (plus `message_passing_steps`) get silently absorbed into
+   `**kwargs` and forwarded to `TorchModel.__init__`, never reaching the
+   encoder — every run, including one carried out independently on our own
+   data, silently builds deepchem's own default-shaped model regardless of
+   what the log echoes back. Confirmed directly against real trained
+   checkpoint weights (both the paper repo's own shipped one and the
+   independent run): `encoder.W_i.weight` is `(300, 147)` — deepchem's own
+   defaults (`enc_hidden=300`, `atom_fdim=133 + bond_fdim=14`), not the
+   paper's 35/12-dim features either (`atom_fdim=35` alone is also
+   ineffective without `use_default_fdim=False`) — and `ffn.linears.0.weight`
+   is `(300, 300)`, a 3-layer FFN, not the claimed single layer.
 2. The atom featurizer needed to reproduce that checkpoint's actual input
    dimension (`atom_fdim=35`, not deepchem's stock 133-dim) was never
    published — independently confirmed by a second party in the repo's own
-   GitHub issue #1 (opened 2026-08-09, still unanswered).
+   GitHub issue #1 (opened 2026-08-09, still unanswered). The mechanism is a
+   patched deepchem module (`GraphConvConstants.ATOM_FDIM` hardcoded to 35),
+   not a script-level flag.
 3. The published training script (`DMPNN-Train-pSigma.py`) has **no**
    non-negativity enforcement anywhere in its prediction path (no
    softplus/clamp/clip between `model.predict()` and the CSV write), yet
@@ -488,36 +281,33 @@ going forward:
    sigma-profile bins across all 5 folds — the published script cannot
    reproduce its own repo's published results.
 
-T9 (COSMO-NET, above) stays as-is: a real, honestly-documented baseline
-trained with what's actually publishable in that repo (stock deepchem, no
-softplus) — its negative-bin issue (19.6% of test-set bins, confirmed) is
-now a known, explained limitation, not silently swept under the rug.
-
-T10 is a from-scratch D-MPNN sigma-profile predictor built on
+This is exactly why `chemprop_cosmonet.py` reproduces the architecture from
+checkpoint-weight evidence rather than trusting either the paper's own text
+or the training script's own printed hyperparameters — both turned out to
+be wrong, independently of each other. Built on
 [Chemprop](https://github.com/chemprop/chemprop) (the actively-maintained,
-standard open-source D-MPNN implementation) instead of the
-deepchem-wrapped DMPNN stack, without depending on COSMO-NET-Paper's own
-unreproducible artifacts:
+standard open-source D-MPNN implementation) instead of the deepchem-wrapped
+DMPNN stack, trained end-to-end on our own chaos-store data, with no
+dependency on the external clone or its saved-CSV lookup convention (the
+21GB clone has since been deleted from disk — its findings are fully
+captured here and in `pins.toml`):
 
 - Dependency resolution (`uv sync --extra chemprop`, a new opt-in extra)
   was clean on the first try — chemprop 2.3.1 is compatible with the main
   venv's existing torch 2.13.0+cu130 (CUDA available) and lightning 2.6.5,
   both already present transitively via `cosmolayer`. No separate venv,
-  unlike T9 — training runs in-process.
-- **Revised 2026-08-25** (prompted by the user pointing out that T10's
-  original W1-vs-T9 comparison "makes no sense"): T10 originally targeted
-  the architecture the peer-reviewed paper's own text specifies (Tables
-  1–2, Section 2.2.2 — `hidden_size=51`, `ffn_num_layers=1`, `dropout=0.1`,
-  sum pooling, 12-dim bond features). Investigating why that scored worse
-  than T9 found T9's actual trained model was never running that
-  architecture at all (see T9's correction note above) — every real run of
-  `DMPNN-Train-pSigma.py`, ours included, silently trains deepchem's own
-  default-shaped DMPNN instead, because most of `MODEL_HPARAMS`'s keys
-  aren't real parameter names on the installed deepchem version. **T10 now
-  targets that real, empirically-verified architecture instead** — the one
-  thing in this whole picture with direct evidence (trained checkpoint
-  weights, from both the paper repo's own shipped one and our independent
-  T9 run) behind it, rather than prose that neither run actually followed:
+  training runs in-process.
+- **Revised 2026-08-25** (prompted by the user pointing out that an early
+  W1 comparison "makes no sense"): originally targeted the architecture the
+  peer-reviewed paper's own text specifies (Tables 1–2, Section 2.2.2 —
+  `hidden_size=51`, `ffn_num_layers=1`, `dropout=0.1`, sum pooling, 12-dim
+  bond features). Investigating that gap led directly to gap 1 above — the
+  independently-trained checkpoint was never running that architecture at
+  all. **This predictor now targets that real, empirically-verified
+  architecture instead** — the one thing in this whole picture with direct
+  evidence (trained checkpoint weights, from both the paper repo's own
+  shipped one and the independent run) behind it, rather than prose that
+  neither run actually followed:
 
   | | originally targeted (paper's text) | now targeted (verified real) |
   | --- | --- | --- |
@@ -563,28 +353,21 @@ unreproducible artifacts:
   the original, much smaller model's 127.8s at the same scale (small-batch
   GPU training here is overhead-bound, not compute-bound).
 - **Full-store run (revised architecture): 1337.8s (22.3 min)**, matching
-  the probe's extrapolation almost exactly. **T10 now beats T9** on both
-  profile shape and area — unsurprising once the correction above is
-  understood: T10 now runs the real architecture T9 accidentally used,
-  built deliberately (proper softplus, proper min-max scaling, no
-  silently-broken kwargs) rather than by accident.
+  the probe's extrapolation almost exactly.
 
-  | metric | dash_backoff | global_mean | cosmonet (T9) | **chemprop_dmpnn (T10)** |
-  | --- | --- | --- | --- | --- |
-  | `profile/w1_norm_mean` | 0.449 | 1.024 | 0.224 | **0.2194** |
-  | `area/r2` | 0.949 | 0.415 | 0.775 | **0.828** |
-  | `charge/mae` | 0.102 | 0.00694* | 0.00546 | 0.0201 |
-  | negative sigma bins | — | — | 19.6% | **0%** |
+  | metric | dash | global_mean | **chemprop_cosmonet** |
+  | --- | --- | --- | --- |
+  | `profile/w1_norm_mean` | 0.407 | 1.024 | **0.2194** |
+  | `area/r2` | 0.952 | 0.415 | **0.828** |
+  | `charge/mae` | 0.0922 | 0.00694* | 0.0201 |
+  | negative sigma bins | — | — | **0%** |
 
-  The comparison that originally "made no sense" is fully resolved: T10
-  and T9 were never comparable before (different real architectures under
-  an identical-looking config — T9 secretly 300 hidden units/3 FFN
-  layers/mean pooling, T10 faithfully 51/1/sum), and now they are (same
-  real architecture, T10 the deliberate version of it). T10 is still the
-  only one of the two whose non-negativity is a structural guarantee
-  rather than a discovered gap — now it also happens to score better,
-  though that was never the point.
-- **Loss-function experiment**: `ChempropDMPNNPredictor` now has a
+  Non-negativity here is a structural guarantee (softplus before
+  unscaling, `y_min ≥ 0` for every profile bin) rather than a discovered
+  gap — the retired lookup baseline (T9) had a real, unexplained 19.6%
+  negative-bin rate on its own published-checkpoint predictions; see
+  `pins.toml`'s `[cosmonet_investigation]` notes for that history.
+- **Loss-function experiment**: `ChempropCosmonetPredictor` now has a
   `loss_mode` option (`"mse"` default, `"w1_normalized"`, `"mse_cumsum"`) —
   tried against the default MSE. `w1_normalized` (Wasserstein-1 on each
   profile normalized by its own row sum — a pure shape loss) reached the
@@ -599,11 +382,11 @@ unreproducible artifacts:
   supervise magnitude and landed worse on shape and only marginally better
   on area than plain MSE. Neither replaces the default; both stay
   available as documented options. Full numbers and the mechanistic
-  explanation in `pins.toml`'s `[chemprop]` notes.
+  explanation in `pins.toml`'s `[chemprop_cosmonet]` notes.
 
-See `pins.toml`'s `[chemprop]` notes for the full gotcha writeup, including
-the first (now-superseded) paper-faithful run's own numbers, kept as the
-record of what "faithfully implementing the paper's own claimed
+See `pins.toml`'s `[chemprop_cosmonet]` notes for the full gotcha writeup,
+including the first (now-superseded) paper-faithful run's own numbers, kept
+as the record of what "faithfully implementing the paper's own claimed
 hyperparameters" actually produces.
 
 **Done and verified — per-atom Chemprop (T11), 2026-08-25.**
@@ -677,7 +460,7 @@ no `--limit`, `n_test` 5333 molecules / 203,063 atoms. `time/fit_s` 2048s
 6.5s. **0/271,983 rolled-up bins negative**; predicted molecule areas span
 103–551 against a true 114–520.
 
-| metric | DASH decomposed | DASH raw | **chemprop_atom (T11)** | chemprop_dmpnn (T10) |
+| metric | DASH decomposed (retired) | DASH raw (retired) | **chemprop_atom (T11)** | chemprop_cosmonet (T10) |
 | --- | --- | --- | --- | --- |
 | `atom/profile/w1_norm_mean` | **1.030** | 1.058 | 1.055 | — (molecule-level) |
 | `atom/area/r2` | 0.945 | 0.945 | **0.956** | — |
@@ -695,9 +478,11 @@ Reading these honestly:
   which is a more interesting result than if it had.
 - **But T11 is clearly ahead once rolled up to molecules** (`profile/
   w1_norm_mean` 0.380 vs DASH's 0.449/0.442) — the same atom-level-vs-
-  molecule-level decoupling the `profile_mode` experiment turned up in T8:
-  the two granularities' shape errors do not move together, because per-atom
-  errors can cancel or compound when summed into a molecule.
+  molecule-level decoupling T8's own profile-mode experiment found (atom
+  shape and molecule shape moved in *opposite* directions between DASH's two
+  retired variants — see T8's section above): the two granularities' shape
+  errors do not move together, because per-atom errors can cancel or
+  compound when summed into a molecule.
 - **T10 still owns molecule-level shape and charge** (0.219, 0.0201) by a
   wide margin — unsurprising, since it optimizes the molecule profile
   directly, whereas T11's molecule numbers are an unoptimized by-product of
@@ -730,7 +515,7 @@ surface plus its former hydrogens' merged surface — a "chunkier," less
 sparse/degenerate regression target than an individual hydrogen's own
 often-small profile.
 
-Full gotcha writeup in `pins.toml`'s `[chemprop]` notes.
+Full gotcha writeup in `pins.toml`'s `[chemprop_cosmonet]` notes.
 
 **Not started — T12** (`summarize` polish, results table, this README's
 final form).
@@ -754,7 +539,7 @@ uv run python -m sieve_experiments prepare-store                # downloads + sp
 uv run pytest -q                                                 # fast suite + optional-data suite (skips gracefully without the store)
 
 # DASH-tree clone, needed for predictors/dash.py's optional-data tests and
-# real dash_backoff runs (see pins.toml's [dash_tree] for the pinned commit):
+# real dash runs (see pins.toml's [dash_tree] for the pinned commit):
 git clone https://github.com/rinikerlab/DASH-tree.git experiments/external/DASH-tree
 git -C experiments/external/DASH-tree checkout 6cf1b2351c4674e602153dd493c06d9c020fc9ce
 
@@ -763,14 +548,21 @@ uv run python -m sieve_experiments run \
     --config experiments/configs/global-mean-biased.yaml \
     --allow-dirty --no-tracking --limit 500
 
-# DASH Stage A, once the clone above is present:
+# DASH, once the clone above is present:
 uv run python -m sieve_experiments run \
     --config experiments/configs/dash-biased.yaml \
     --allow-dirty --no-tracking --limit 500
 
+# Chemprop reimplementation of COSMO-NET (T10), needs `uv sync --extra
+# chemprop`; --set overrides max_epochs for a fast smoke check:
+uv run python -m sieve_experiments run \
+    --config experiments/configs/chemprop-cosmonet-biased.yaml \
+    --allow-dirty --no-tracking --limit 500 \
+    --set predictor.params.max_epochs=1
+
 # united-atom store (H merged into their heavy-atom neighbor), needed for
-# dash-ua-biased.yaml / chemprop-atom-ua-biased.yaml -- requires chaos-store
-# already prepared above; idempotent, see pins.toml's [chaos_store_ua]:
+# chemprop-atom-ua-biased.yaml -- requires chaos-store already prepared
+# above; idempotent, see pins.toml's [chaos_store_ua]:
 uv run python -m sieve_experiments coarse-grain-store chaos-store
 ```
 

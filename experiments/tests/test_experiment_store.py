@@ -285,9 +285,9 @@ def test_end_to_end_run_on_real_store_limit_50(tmp_path):
 def test_screening_charge_is_the_negated_net_charge_on_real_molecules():
     """Empirical confirmation of the COSMO screening-charge sign convention.
 
-    Sum(sigma * mol_profile) -- the same quantity atom_table.charges,
-    mol_charge_raw, and DASH's NodeStat.charge all use -- tracks
-    -net_charge on real chaos-store molecules, not net_charge itself. This
+    Sum(sigma * mol_profile) -- the same quantity atom_table.charges and
+    mol_charge_raw both use -- tracks -net_charge on real chaos-store
+    molecules, not net_charge itself. This
     is the real-data check behind MoleculeSet.screening_charge; loads the
     full store (not the module's LIMIT=200 fixture) since a small slice of
     biased_split's smallest-molecules-first train partition may contain no

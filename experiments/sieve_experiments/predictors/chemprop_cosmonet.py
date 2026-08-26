@@ -1,37 +1,46 @@
-"""T10: a from-scratch D-MPNN sigma-profile predictor on Chemprop, reproducing
-the architecture COSMO-NET-Paper's own script *actually trains* -- not the
-architecture the peer-reviewed paper's text claims (Naseri Boroujeni et al.,
-*Mol. Syst. Des. Eng.*, 2026, DOI 10.1039/d6me00088f, Tables 1-2 and Section
-2.2.2). Those two disagree, and not by a little: see pins.toml's
-``[cosmonet]`` CORRECTION note for the full derivation. In short,
-``DMPNN-Train-pSigma.py``'s ``MODEL_HPARAMS`` dict passes several keys
-(``dropout``, ``message_passing_steps``, ``hidden_size``, ``ffn_num_layers``)
-that are not real ``DMPNNModel.__init__`` parameter names on the installed
-deepchem version -- they get silently absorbed into ``**kwargs`` and never
-reach the encoder, which is built from deepchem's own defaults instead.
-``message_passing_steps=3`` is the one of the four whose failure has no
-visible symptom: deepchem's real parameter (``depth``) also defaults to 3,
-so the "right" value comes out by coincidence, not because the script
-successfully passed it through -- it did not, and a different intended
-value would have silently trained with ``depth=3`` regardless. Confirmed
-directly against real trained checkpoint weights (both the paper
-repo's own shipped one and ours, independently): the model that was *really*
-trained -- and that generated T9's numbers, and plausibly the paper's own
-reported results too -- has `hidden_size=300` (not 51), a 3-layer FFN (not
-1), no dropout (not 0.1), and mean-pooling readout (not the sum pooling the
-paper's own eqn 11 specifies). This module now reproduces *that* real
-architecture, since it is the one thing in this whole picture with direct
-empirical evidence (checkpoint weights) behind it -- the paper's own prose
-does not.
+"""A Chemprop D-MPNN reimplementation of COSMO-NET's sigma-profile model --
+not an independent architecture inspired by the same idea, but a direct
+reproduction of the *real* architecture COSMO-NET-Paper's own published
+checkpoint was actually trained with, reverse-engineered from the
+checkpoint's own weight shapes rather than trusted from either the paper's
+text or the training script's own printed hyperparameters. Both of those
+turned out to be wrong, and independently of each other:
+
+- The peer-reviewed paper's text (Naseri Boroujeni et al., *Mol. Syst. Des.
+  Eng.*, 2026, DOI 10.1039/d6me00088f, Tables 1-2 and Section 2.2.2) claims
+  `hidden_size=51, ffn_num_layers=1, dropout=0.1`, sum pooling, and 12-dim
+  bond features.
+- COSMO-NET-Paper's own shipped training script, ``DMPNN-Train-pSigma.py``,
+  claims to train that architecture via a ``MODEL_HPARAMS`` dict -- but its
+  keys (``dropout``, ``message_passing_steps``, ``hidden_size``,
+  ``ffn_num_layers``) are not real ``DMPNNModel.__init__`` parameter names on
+  the installed deepchem version. They get silently absorbed into
+  ``**kwargs`` and never reach the encoder, which is built from deepchem's
+  own defaults instead. ``message_passing_steps=3`` is the one of the four
+  whose failure has no visible symptom: deepchem's real parameter
+  (``depth``) also defaults to 3, so the "right" value comes out by
+  coincidence, not because the script successfully passed it through.
+
+Confirmed directly against real trained checkpoint weights (both the paper
+repo's own shipped one and an independently-trained one, run months apart):
+the model that was *really* trained -- and that plausibly produced the
+paper's own reported results too -- has `hidden_size=300` (not 51), a
+3-layer FFN (not 1), no dropout (not 0.1), and mean-pooling readout (not the
+sum pooling the paper's own eqn 11 specifies). This module reproduces *that*
+real architecture, since it is the one thing in this whole picture with
+direct empirical evidence (checkpoint weights) behind it -- neither the
+paper's own prose nor the training script's own printed log is trustworthy.
+Full derivation, including the checkpoint-weight evidence and the atom
+featurizer's own patched-vocabulary discovery, in ``pins.toml``'s
+``[cosmonet_investigation]`` notes.
 
 Two layers, deliberately split so the featurization is testable without the
-optional dependency (mirrors predictors/dash.py's ``fit_backoff``/
-``DASHBackoffPredictor`` split):
+optional dependency:
 
 - ``PaperAtomFeaturizer``, ``minmax_*``, ``prediction_from_profile`` -- pure
   numpy + rdkit, no chemprop import at module scope. Fast-suite tested
   (experiments/tests/test_experiment_predictor_chemprop.py).
-- ``ChempropDMPNNPredictor`` -- wires those onto a real chemprop ``MPNN`` and
+- ``ChempropCosmonetPredictor`` -- wires those onto a real chemprop ``MPNN`` and
   a lightning ``Trainer``. Needs the ``chemprop`` extra
   (``uv sync --extra chemprop``). Optional-data tested only.
 
@@ -86,7 +95,7 @@ Architecture:
   clip, which is exactly the demonstration COSMO-NET-Paper's own repo could
   not produce (its published results have 0% negative bins; its published
   script has no non-negativity enforcement anywhere in its prediction
-  path). This part of T10's design is unaffected by the architecture
+  path). This part of this module's design is unaffected by the architecture
   correction above -- softplus is our own addition either way, not
   something deepchem's real run had.
 - chemprop's ``normalize_targets()`` is z-score only; per-task min-max
@@ -460,13 +469,13 @@ def _build_model(
     return MPNN(message_passing, agg, predictor)
 
 
-class ChempropDMPNNPredictor(MoleculePredictor):
+class ChempropCosmonetPredictor(MoleculePredictor):
     """Trains and predicts the architecture COSMO-NET-Paper's script
     actually trains (see the module docstring for why that's the target,
     not the paper's own claimed hyperparameters).
     """
 
-    name = "chemprop_dmpnn"
+    name = "chemprop_cosmonet"
 
     def __init__(
         self,
@@ -529,7 +538,7 @@ class ChempropDMPNNPredictor(MoleculePredictor):
         from chemprop.nn.transforms import UnscaleTransform
 
         if train.mol_profile is None:
-            raise ValueError("chemprop_dmpnn requires train.mol_profile")
+            raise ValueError("chemprop_cosmonet requires train.mol_profile")
         if not np.allclose(train.grid.values, self.grid.values):
             raise ValueError("train.grid does not match this predictor's grid")
 
@@ -598,8 +607,8 @@ class ChempropDMPNNPredictor(MoleculePredictor):
         return prediction_from_profile(profile, self.grid.values)
 
 
-def _build(params: Mapping[str, Any]) -> ChempropDMPNNPredictor:
-    return ChempropDMPNNPredictor(**params)
+def _build(params: Mapping[str, Any]) -> ChempropCosmonetPredictor:
+    return ChempropCosmonetPredictor(**params)
 
 
-register("chemprop_dmpnn", _build)
+register("chemprop_cosmonet", _build)

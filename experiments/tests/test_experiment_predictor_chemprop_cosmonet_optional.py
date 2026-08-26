@@ -1,4 +1,4 @@
-"""End-to-end ChempropDMPNNPredictor test against the real chaos-store.
+"""End-to-end ChempropCosmonetPredictor test against the real chaos-store.
 Skipped unless rdkit, cosmolayer, chemprop, and the store are all present --
 same pattern as test_experiment_predictor_dash_optional.py.
 
@@ -30,7 +30,7 @@ TEST_LIMIT = 10
 
 def test_bond_fdim_matches_chemprops_own_default_featurizer():
     from chemprop.featurizers import MultiHotBondFeaturizer
-    from sieve_experiments.predictors.chemprop_dmpnn import BOND_FDIM
+    from sieve_experiments.predictors.chemprop_cosmonet import BOND_FDIM
 
     assert len(MultiHotBondFeaturizer()) == BOND_FDIM
 
@@ -39,16 +39,16 @@ def test_default_ffn_has_the_deepchem_equivalent_layer_count():
     """deepchem's real ffn_layers=3 means 3 TOTAL Linear layers
     (PositionwiseFeedForward.__init__ treats n_layers as the total count).
     chemprop's own MLP.build(n_layers=N) instead yields N+1 total layers (an
-    *additional*-hidden-layers count). ChempropDMPNNPredictor's default
+    *additional*-hidden-layers count). ChempropCosmonetPredictor's default
     ffn_n_layers=2 must therefore produce exactly 3 nn.Linear sublayers --
     getting this offset wrong in either direction silently changes the
     trained model's depth. See the module docstring for the full trace.
     """
     from chemprop.nn.predictors import RegressionFFN
-    from sieve_experiments.predictors.chemprop_dmpnn import ChempropDMPNNPredictor
+    from sieve_experiments.predictors.chemprop_cosmonet import ChempropCosmonetPredictor
     from torch import nn
 
-    predictor = ChempropDMPNNPredictor(store="chaos-store", scheme="cosmo-sac-2010")
+    predictor = ChempropCosmonetPredictor(store="chaos-store", scheme="cosmo-sac-2010")
     ffn = RegressionFFN(
         n_tasks=51,
         input_dim=predictor.hidden_size,
@@ -73,7 +73,7 @@ def _tiny_model(loss_mode: str, y_min: np.ndarray, scale: np.ndarray):
     this is the only way to get a real instance to test directly.
     """
     from chemprop.nn.transforms import UnscaleTransform
-    from sieve_experiments.predictors.chemprop_dmpnn import _build_model
+    from sieve_experiments.predictors.chemprop_cosmonet import _build_model
 
     output_transform = UnscaleTransform(mean=y_min, scale=scale)
     return _build_model(
@@ -166,7 +166,7 @@ def test_fit_predict_produces_no_negative_bins(tmp_path, loss_mode):
             store=STORE_NAME, scheme="cosmo-sac-2010", split_column="biased_split"
         ),
         predictor=PredictorCfg(
-            name="chemprop_dmpnn",
+            name="chemprop_cosmonet",
             params={
                 "store": STORE_NAME,
                 "scheme": "cosmo-sac-2010",

@@ -6,8 +6,8 @@ when its own module is imported -- so importing ``sieve_experiments.predictors``
 alone never pulls those dependencies in. Only ``global_mean`` (no optional
 deps at all) is registered eagerly, here.
 
-As predictors/dash.py and predictors/cosmonet.py are added, ``build`` grows
-one more explicit lazy-import branch each -- see the comment below.
+As a predictor module is added, ``build`` grows one more explicit
+lazy-import branch -- see the comment below.
 """
 
 from __future__ import annotations
@@ -34,16 +34,12 @@ def register(name: str, builder: Callable[[Mapping[str, Any]], Predictor]) -> No
 
 def build(name: str, params: Mapping[str, Any]) -> Predictor:
     # Add one branch per optional-dependency predictor module as it is built
-    # (predictors/dash.py -> "dash_backoff", predictors/cosmonet.py ->
-    # "cosmonet"); each module calls register() on import.
-    if name == "dash_backoff" and name not in REGISTRY:
+    # (predictors/dash.py -> "dash", predictors/chemprop_cosmonet.py ->
+    # "chemprop_cosmonet"); each module calls register() on import.
+    if name == "dash" and name not in REGISTRY:
         import sieve_experiments.predictors.dash
-    if name == "dash_literal" and name not in REGISTRY:
-        import sieve_experiments.predictors.dash
-    if name == "cosmonet" and name not in REGISTRY:
-        import sieve_experiments.predictors.cosmonet
-    if name == "chemprop_dmpnn" and name not in REGISTRY:
-        import sieve_experiments.predictors.chemprop_dmpnn
+    if name == "chemprop_cosmonet" and name not in REGISTRY:
+        import sieve_experiments.predictors.chemprop_cosmonet
     if name == "chemprop_atom" and name not in REGISTRY:
         import sieve_experiments.predictors.chemprop_atom  # noqa: F401
     if name not in REGISTRY:

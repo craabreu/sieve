@@ -1,4 +1,4 @@
-"""Fast tests for predictors/chemprop_dmpnn.py's pure, chemprop-free half:
+"""Fast tests for predictors/chemprop_cosmonet.py's pure, chemprop-free half:
 the atom featurizer that reproduces the paper's Table 1 (the one part of
 its claimed architecture that was genuinely realized -- see the module
 docstring), min-max helpers, and the profile -> Prediction conversion. No
@@ -6,7 +6,7 @@ chemprop import at module scope -- these must pass without chemprop
 installed. Bond featurization now uses chemprop's own built-in
 MultiHotBondFeaturizer directly (matches deepchem's real, never-patched
 14-dim bond features), so there's no custom bond featurizer left to test
-here -- see test_experiment_predictor_chemprop_optional.py for the
+here -- see test_experiment_predictor_chemprop_cosmonet_optional.py for the
 BOND_FDIM/MultiHotBondFeaturizer length assertion.
 """
 
@@ -15,9 +15,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from rdkit import Chem
-from sieve_experiments.predictors.chemprop_dmpnn import (
+from sieve_experiments.predictors.chemprop_cosmonet import (
     ATOM_FDIM,
-    ChempropDMPNNPredictor,
+    ChempropCosmonetPredictor,
     PaperAtomFeaturizer,
     minmax_apply,
     minmax_fit,
@@ -140,18 +140,18 @@ def test_prediction_from_profile_area_and_charge():
     np.testing.assert_allclose(pred.mol_charge_raw, np.array([2.0, 0.0]))  # -1+0+3
 
 
-# --- ChempropDMPNNPredictor construction (no chemprop import needed) ----
+# --- ChempropCosmonetPredictor construction (no chemprop import needed) ----
 
 
 def test_rejects_an_unknown_loss_mode():
     with pytest.raises(ValueError, match="loss_mode"):
-        ChempropDMPNNPredictor(
+        ChempropCosmonetPredictor(
             store="chaos-store", scheme="cosmo-sac-2010", loss_mode="bogus"
         )
 
 
 def test_default_loss_mode_is_mse():
-    predictor = ChempropDMPNNPredictor(store="chaos-store", scheme="cosmo-sac-2010")
+    predictor = ChempropCosmonetPredictor(store="chaos-store", scheme="cosmo-sac-2010")
     assert predictor.loss_mode == "mse"
 
 

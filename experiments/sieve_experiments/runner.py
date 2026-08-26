@@ -217,7 +217,7 @@ def _atom_metrics_from_truth(
 
 
 def _check_predictor_store_scheme(predictor: Any, cfg: ExperimentCfg) -> None:
-    """Some predictors (DASHBackoffPredictor) need their own store/scheme
+    """Some predictors (DASHPredictor) need their own store/scheme
     (predictor.params) because they load atom-level truth independently of
     data.store/data.scheme -- see dash.py's own docstring. That's a
     duplicated value with nothing enforcing the two copies agree: a config

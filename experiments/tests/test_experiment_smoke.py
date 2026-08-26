@@ -448,7 +448,7 @@ def test_smoke_handles_an_empty_train_split_without_crashing_manifest(
 
 # --- predictor store/scheme cross-check -------------------------------------
 #
-# DASHBackoffPredictor carries its own store/scheme (predictor.params),
+# DASHPredictor carries its own store/scheme (predictor.params),
 # duplicating data.store/data.scheme, because it has to load atom-level
 # truth independently (see dash.py's own docstring). Nothing enforced the
 # two copies actually agree -- a config edit to data.store with the
@@ -459,7 +459,7 @@ def test_smoke_handles_an_empty_train_split_without_crashing_manifest(
 
 class _StoreSchemePredictor:
     """A minimal predictor exposing store/scheme attributes, the same duck
-    type DASHBackoffPredictor has -- without needing DASH's real machinery
+    type DASHPredictor has -- without needing DASH's real machinery
     (rdkit, the tree clone) just to test the cross-check."""
 
     name = "fake_store_scheme"

@@ -37,7 +37,7 @@ experiments = [
     "tqdm>=4.65",
     "pillow>=10",
 ]
-# T10's from-scratch D-MPNN baseline (predictors/chemprop_dmpnn.py). Separate
+# T10's Chemprop reimplementation of COSMO-NET (predictors/chemprop_cosmonet.py). Separate
 # from `experiments` on purpose: it pulls torch/lightning (already present
 # transitively via cosmolayer, so no new heavy stack) plus its own tail
 # (myerson, descriptastorus, astartes, cuik_molmaker_pin) -- opt in only when
@@ -103,7 +103,7 @@ allowed-unresolved-imports = [
     # rather than pip-installed -- see predictors/dash.py.
     "serenityff",
     "serenityff.**",
-    # T10's `chemprop` extra (predictors/chemprop_dmpnn.py) -- torch/lightning
+    # T10's `chemprop` extra (predictors/chemprop_cosmonet.py) -- torch/lightning
     # are transitively present via cosmolayer's `experiments` extra too, but
     # CI's lint job installs [dev,chem] only, so neither is resolvable there.
     "chemprop",
@@ -137,7 +137,7 @@ invalid-argument-type = "ignore"
 # confirmed empirically: a plain __call__+__len__ class with no inheritance
 # works at runtime). PaperAtomFeaturizer deliberately doesn't inherit
 # VectorFeaturizer so it stays importable without chemprop -- see
-# predictors/chemprop_dmpnn.py's module docstring. Also covers the loss
+# predictors/chemprop_cosmonet.py's module docstring. Also covers the loss
 # classes' nn.Module.register_buffer()/torchmetrics.Metric.add_state()
 # attributes (self.scale, self.y_min, self.total_loss, self.num_samples):
 # both are dynamic-attribute mechanisms resolved via __getattr__ at
@@ -145,7 +145,7 @@ invalid-argument-type = "ignore"
 # declaring class instead (Module/Metric) and flags every arithmetic use
 # as unsupported-operator -- a well-known false-positive class for any
 # static checker over PyTorch's buffer/state APIs, not a real bug.
-include = ["experiments/sieve_experiments/predictors/chemprop_dmpnn.py"]
+include = ["experiments/sieve_experiments/predictors/chemprop_cosmonet.py"]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
