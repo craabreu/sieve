@@ -169,10 +169,12 @@ def execute(
 AtomTruth = tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
 
 
-def _load_atom_truth_or_none(cfg: ExperimentCfg, test: MoleculeSet) -> AtomTruth | None:
-    """Atom-level ground truth (profile, area, charge) for the test split,
-    used for both atom-level metrics and atom-level parity plots.
-    ``load_molecule_set`` never populates it (see data.py's module
+def _load_atom_truth_or_none(
+    cfg: ExperimentCfg, mset: MoleculeSet, *, split: str = "test"
+) -> AtomTruth | None:
+    """Atom-level ground truth (profile, area, charge) for ``mset`` (whatever
+    split it holds), used for both atom-level metrics and atom-level parity
+    plots. ``load_molecule_set`` never populates it (see data.py's module
     docstring), so it's loaded here the same way DASH's own ``fit_atoms``
     already loads it for train -- once, reused for both purposes rather
     than hitting the store twice.
@@ -185,12 +187,13 @@ def _load_atom_truth_or_none(cfg: ExperimentCfg, test: MoleculeSet) -> AtomTruth
         return load_atom_truth(
             cfg.data.store,
             scheme=cfg.data.scheme,
-            smiles=test.smiles,
-            num_atoms=test.num_atoms,
+            smiles=mset.smiles,
+            num_atoms=mset.num_atoms,
         )
     except Exception:
         logger.warning(
-            "could not load atom-level truth for atom metrics/plots; skipping",
+            "could not load atom-level truth for %s atom metrics/plots; skipping",
+            split,
             exc_info=True,
         )
         return None
@@ -214,6 +217,119 @@ def _atom_metrics_from_truth(
         charge_true=atom_charge_true if pred.atom_charge is not None else None,
         charge_pred=pred.atom_charge,
     )
+
+
+@dataclass(frozen=True)
+class _SplitScore:
+    """One split's own metrics plus the parity-plot inputs that produced
+    them -- ``_write_plots`` needs the latter (area_true/pred, charge_true/
+    pred, atom_truth) alongside test's own prediction; val scoring only
+    needs ``metrics``, so it discards the rest."""
+
+    metrics: dict[str, float]
+    area_true: NDArray[np.float64] | None
+    area_pred: NDArray[np.float64] | None
+    charge_true: NDArray[np.float64] | None
+    charge_pred: NDArray[np.float64] | None
+    atom_truth: AtomTruth | None
+
+
+def _score_split(
+    cfg: ExperimentCfg, mset: MoleculeSet, pred: Prediction, *, split: str
+) -> _SplitScore:
+    """molecule_metrics + the free atom-area self-consistency check + atom
+    metrics (if the predictor supplies atom-level output) for one split's
+    own prediction -- the one scoring path shared by test (the run's
+    headline metrics) and, optionally, val (see ``_score_val_split``), so
+    the two are computed identically and stay directly comparable.
+    """
+    if mset.mol_profile is None:
+        raise ValueError(f"{split} split has no mol_profile ground truth")
+
+    area_true = (
+        mset.mol_area
+        if (mset.mol_area is not None and pred.mol_area is not None)
+        else None
+    )
+    area_pred = pred.mol_area if area_true is not None else None
+    # screening_charge (-net_charge), not net_charge itself: mol_charge_raw
+    # is a sigma-derived charge, opposite in sign from the molecule's own
+    # formal charge -- see MoleculeSet.screening_charge's docstring.
+    charge_true = mset.screening_charge if pred.mol_charge_raw is not None else None
+    charge_pred = pred.mol_charge_raw
+
+    split_metrics = metrics_mod.molecule_metrics(
+        profile_true=mset.mol_profile,
+        profile_pred=pred.mol_profile,
+        area_true=area_true,
+        area_pred=area_pred,
+        charge_true=charge_true,
+        charge_pred=charge_pred,
+    )
+    # A free correctness signal on any predictor that supplies both
+    # per-atom and per-molecule area: they should already agree.
+    if pred.atom_area is not None and pred.mol_area is not None:
+        atom_sum = molecule_sum(pred.atom_area, mset.atom_mol_id, mset.n_molecules)
+        split_metrics["area/self_consistency_mae"] = float(
+            np.mean(np.abs(atom_sum - pred.mol_area))
+        )
+
+    atom_truth = (
+        _load_atom_truth_or_none(cfg, mset, split=split)
+        if pred.atom_profile is not None
+        else None
+    )
+    if atom_truth is not None:
+        atom_metrics = _atom_metrics_from_truth(atom_truth, pred)
+        # atom/-prefixed, flat: molecule-level keys stay exactly as they
+        # are (unprefixed, unchanged -- widely referenced already) and
+        # MLflow's own log_metrics needs flat float values anyway, not a
+        # nested dict.
+        split_metrics.update({f"atom/{k}": v for k, v in atom_metrics.items()})
+
+    return _SplitScore(
+        metrics=split_metrics,
+        area_true=area_true,
+        area_pred=area_pred,
+        charge_true=charge_true,
+        charge_pred=charge_pred,
+        atom_truth=atom_truth,
+    )
+
+
+def _score_extra_split(
+    cfg: ExperimentCfg, predictor: Any, mset: MoleculeSet, *, split: str
+) -> dict[str, float]:
+    """Predict + score ``mset`` (train or val) the same way test is scored,
+    so all three are directly comparable -- e.g. to check whether val
+    performance predicts test performance, or an extrapolation split
+    (biased_split) makes them diverge more than a representative one
+    (split) does. Keys come back ``{split}/``-prefixed so they sit in the
+    same flat metrics.json/MLflow dict as the unprefixed test metrics,
+    without colliding.
+
+    Returns ``{}`` (no keys added) rather than raising if ``mset`` is
+    empty -- a small ``--limit`` run can land zero molecules in val (see
+    the "Known external gap"/empty-eval-split handling elsewhere in this
+    module); train/val-vs-test comparison is a bonus, not something that
+    should fail an otherwise-valid run.
+
+    Predicted separately from (and, by the caller, strictly before) test
+    on purpose: a predictor that keeps only its most recent ``predict()``
+    call's own bookkeeping (``DASHPredictor.match_stats``, keyed by a
+    hardcoded ``"test"``/``"train"`` label baked into its own
+    ``predict_atoms``/``fit_atoms`` rather than whatever split is actually
+    passed in) must have *test* be the last predict call of the run, or
+    match_stats would silently describe train/val instead. The caller
+    (``_execute_inner``) enforces this by calling train, then val, then
+    test, in that order.
+    """
+    if mset.n_molecules == 0 or mset.mol_profile is None:
+        logger.debug("%s split is empty; skipping %s-split scoring", split, split)
+        return {}
+    pred = predictor.predict(mset)
+    score = _score_split(cfg, mset, pred, split=split)
+    return {f"{split}/{k}": v for k, v in score.metrics.items()}
 
 
 def _check_predictor_store_scheme(predictor: Any, cfg: ExperimentCfg) -> None:
@@ -265,51 +381,34 @@ def _execute_inner(
     predictor.fit(train, val, rng=rng)
     fit_s = time.perf_counter() - t0
 
+    # Train and val scored (and predicted) before test, in that order --
+    # see _score_extra_split's own docstring for why the order matters.
+    t0 = time.perf_counter()
+    train_metrics = _score_extra_split(cfg, predictor, train, split="train")
+    train_predict_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    val_metrics = _score_extra_split(cfg, predictor, val, split="val")
+    val_predict_s = time.perf_counter() - t0
+
     t0 = time.perf_counter()
     pred = predictor.predict(test)
     predict_s = time.perf_counter() - t0
 
-    if test.mol_profile is None:
-        raise ValueError("test split has no mol_profile ground truth")
+    test_score = _score_split(cfg, test, pred, split="test")
+    run_metrics = test_score.metrics
+    area_true = test_score.area_true
+    area_pred = test_score.area_pred
+    charge_true = test_score.charge_true
+    charge_pred = test_score.charge_pred
+    atom_truth = test_score.atom_truth
 
-    area_true = (
-        test.mol_area
-        if (test.mol_area is not None and pred.mol_area is not None)
-        else None
-    )
-    area_pred = pred.mol_area if area_true is not None else None
-    # screening_charge (-net_charge), not net_charge itself: mol_charge_raw
-    # is a sigma-derived charge, opposite in sign from the molecule's own
-    # formal charge -- see MoleculeSet.screening_charge's docstring.
-    charge_true = test.screening_charge if pred.mol_charge_raw is not None else None
-    charge_pred = pred.mol_charge_raw
-
-    run_metrics = metrics_mod.molecule_metrics(
-        profile_true=test.mol_profile,
-        profile_pred=pred.mol_profile,
-        area_true=area_true,
-        area_pred=area_pred,
-        charge_true=charge_true,
-        charge_pred=charge_pred,
-    )
-    # A free correctness signal on any predictor that supplies both
-    # per-atom and per-molecule area: they should already agree.
-    if pred.atom_area is not None and pred.mol_area is not None:
-        atom_sum = molecule_sum(pred.atom_area, test.atom_mol_id, test.n_molecules)
-        run_metrics["area/self_consistency_mae"] = float(
-            np.mean(np.abs(atom_sum - pred.mol_area))
-        )
-
-    atom_truth = (
-        _load_atom_truth_or_none(cfg, test) if pred.atom_profile is not None else None
-    )
-    if atom_truth is not None:
-        atom_metrics = _atom_metrics_from_truth(atom_truth, pred)
-        # atom/-prefixed, flat: molecule-level keys stay exactly as they
-        # are (unprefixed, unchanged -- widely referenced already) and
-        # MLflow's own log_metrics needs flat float values anyway, not a
-        # nested dict.
-        run_metrics.update({f"atom/{k}": v for k, v in atom_metrics.items()})
+    run_metrics.update(train_metrics)
+    if train_metrics:
+        run_metrics["time/train_predict_s"] = train_predict_s
+    run_metrics.update(val_metrics)
+    if val_metrics:
+        run_metrics["time/val_predict_s"] = val_predict_s
 
     run_metrics["time/fit_s"] = fit_s
     run_metrics["time/predict_s"] = predict_s

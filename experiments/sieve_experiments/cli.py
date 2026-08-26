@@ -29,8 +29,19 @@ SUMMARY_COLUMNS = [
     "atom/profile/w1_norm_mean",
     "atom/area/r2",
     "atom/charge/mae",
+    # train/val/* mirror the test-split columns above -- see runner.py's
+    # _score_extra_split. Absent (blank in the CSV) for a run whose split
+    # was empty, or for any run predating these columns.
+    "train/profile/w1_norm_mean",
+    "train/area/r2",
+    "train/charge/mae",
+    "val/profile/w1_norm_mean",
+    "val/area/r2",
+    "val/charge/mae",
     "time/fit_s",
     "time/predict_s",
+    "time/train_predict_s",
+    "time/val_predict_s",
     "time/data_s",
     "git_commit",
     "run_dir",

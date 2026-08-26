@@ -129,6 +129,56 @@ def test_smoke_handles_an_empty_test_split(tmp_path):
     assert manifest["data"]["test_mean_num_atoms"] is None
 
 
+def test_smoke_computes_train_and_val_prefixed_metrics_alongside_test(tmp_path):
+    """execute() scores train and val the same way it scores test, so all
+    three can be compared directly (e.g. to check whether an extrapolation
+    split makes val a worse proxy for test than a representative split
+    does) -- see runner.py's _score_extra_split docstring."""
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = _tiny_cfg()
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    train_split = mset.select(masks["train"])
+    val_split = mset.select(masks["val"])
+    assert train_split.n_molecules > 0, "test fixture must exercise a non-empty train"
+    assert val_split.n_molecules > 0, "test fixture must exercise a non-empty val"
+    assert result.metrics["train/n_test"] == train_split.n_molecules
+    assert result.metrics["val/n_test"] == val_split.n_molecules
+    assert np.isfinite(result.metrics["train/profile/w1_norm_mean"])
+    assert np.isfinite(result.metrics["val/profile/w1_norm_mean"])
+    # test's own keys stay unprefixed and unaffected by train/val scoring
+    assert np.isfinite(result.metrics["profile/w1_norm_mean"])
+    assert "time/train_predict_s" in result.metrics
+    assert "time/val_predict_s" in result.metrics
+
+    on_disk = json.loads((result.run_dir / "metrics.json").read_text())
+    assert on_disk == result.metrics
+
+
+def test_smoke_omits_val_metrics_when_val_split_is_empty(tmp_path):
+    """_score_extra_split's empty-split skip is one shared code path for
+    both train and val (see its docstring) -- exercised here via val, since
+    global_mean.fit itself requires a non-empty train and so can't be used
+    to exercise the empty-train case the same way."""
+    mset = synthetic_molecule_set(n_mol=10, seed=0)
+    all_train = np.ones(10, dtype=bool)
+    none = np.zeros(10, dtype=bool)
+    masks = {"train": all_train, "val": none, "test": none}
+    cfg = _tiny_cfg()
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert not any(k.startswith("val/") for k in result.metrics)
+    assert "time/val_predict_s" not in result.metrics
+    # train is non-empty here, so train/* metrics are present
+    assert any(k.startswith("train/") for k in result.metrics)
+
+
 def test_smoke_metrics_json_matches_returned_metrics(tmp_path):
     mset = synthetic_molecule_set(n_mol=15, seed=2)
     masks = _synthetic_masks(15, seed=3)
@@ -204,9 +254,25 @@ def test_smoke_computes_atom_prefixed_metrics_for_an_atom_level_predictor(
 
     test_split = mset.select(masks["test"])
 
+    # Real load_atom_truth joins by SMILES, so it correctly returns whatever
+    # split (val or test) actually asked -- mirror that here using mset's own
+    # full atom-level truth (synthetic_molecule_set populates it for every
+    # molecule), rather than hardcoding test's truth regardless of which
+    # split's smiles come in. execute() now scores val too, so a fake that
+    # ignores its own smiles/num_atoms args and always returns test-shaped
+    # truth breaks the moment val and test have different atom counts.
+    offsets = np.concatenate([[0], np.cumsum(mset.num_atoms)])
+    smiles_to_idx = {s: i for i, s in enumerate(mset.smiles)}
+
     def fake_load_atom_truth(store, *, scheme, smiles, num_atoms, **kwargs):
-        del store, scheme, smiles, num_atoms, kwargs
-        return test_split.atom_profile, test_split.atom_area, test_split.atom_charge
+        del store, scheme, num_atoms, kwargs
+        idx = [smiles_to_idx[s] for s in smiles]
+        slices = [slice(offsets[i], offsets[i + 1]) for i in idx]
+        return (
+            np.concatenate([mset.atom_profile[s] for s in slices]),
+            np.concatenate([mset.atom_area[s] for s in slices]),
+            np.concatenate([mset.atom_charge[s] for s in slices]),
+        )
 
     monkeypatch.setattr(runner_mod, "load_atom_truth", fake_load_atom_truth)
 

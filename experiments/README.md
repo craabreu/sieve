@@ -116,6 +116,34 @@ genuinely improves there, at both granularities.
 Full investigation, including a real quadratic-time performance bug found
 and fixed upstream in cosmolayer: `docs/chaos_store_ua.md`.
 
+## Train/val vs. test
+
+Every run's `metrics.json` carries `train/*` and `val/*` metrics alongside
+the usual (unprefixed) test ones, scored identically (`runner.py`'s
+`_score_extra_split`) — so all three can be compared directly for any
+predictor/config. `biased_split` deliberately sorts train (smallest) < val
+< test (largest) by molecule size; `split` (the Butina-cluster split) does
+not. DASH's full-store numbers confirm the expected consequence: under
+`biased_split`, val is a **systematically easier, less test-like proxy**
+than under `split` — a 4-8x larger relative val-test gap on profile shape
+and charge:
+
+| metric | biased_split Δ(val,test)/test | split Δ(val,test)/test |
+| --- | --- | --- |
+| `profile/w1_norm_mean` | **14.0%** | 0.8% |
+| `charge/mae` | **28.8%** | 4.1% |
+| `area/r2` | 1.4% | 3.4% |
+
+Train's own numbers are *not* part of this reading for DASH specifically —
+its back-off directly averages train molecules into the tree nodes it
+later queries, so train looks unusually good regardless of split scheme
+(a "seen data" effect, not a generalization signal).
+
+Full derivation (including the mean-molecule-size evidence that confirms
+*why*, and the train-vs-val/test "seen data" effect) and the practical
+implication for anything (e.g. early stopping) that reads val during
+training: `docs/val_test_comparison.md`.
+
 ## Running today's working pieces
 
 ```bash
