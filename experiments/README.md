@@ -5,6 +5,34 @@ COSMO-NET) on the chaos-store sigma-profile prediction task, evaluated on
 Sieve's own `biased_split` extrapolation split. Design doc:
 `docs/superpowers/specs/2026-08-24-baseline-experiment-harness-design.md`.
 
+## Headline results
+
+Full chaos-store (53,079 molecules), `biased_split` (the extrapolation
+split — train on the smallest molecules, evaluate on the largest), test
+split 5333 molecules / 203,063 atoms. Full derivations, engineering
+history, and the retired variants these numbers superseded are in the
+per-predictor sections below and in `pins.toml`.
+
+| metric | global_mean | dash (T8) | chemprop_cosmonet (T10) | chemprop_atom (T11) |
+| --- | --- | --- | --- | --- |
+| `profile/w1_norm_mean` | 1.024 | 0.407 | **0.2194** | 0.380 |
+| `area/r2` | 0.415 | 0.952 | 0.828 | **0.943** |
+| `charge/mae` | 0.00694* | 0.0922 | **0.0201** | 0.0792 |
+| `atom/profile/w1_norm_mean` | — (no atom truth) | 1.012 | — (molecule-level only) | **1.055**\*\* |
+| `atom/area/r2` | — | — (no atom truth) | — (molecule-level only) | 0.956 |
+| `atom/charge/mae` | — | — (no atom truth) | — (molecule-level only) | 0.00726 |
+| negative sigma bins (rolled-up) | — | 0% | 0% | 0% |
+
+\* `global_mean`'s low `charge/mae` is a metric artifact, not a real win —
+99.3% of test molecules have `net_charge` exactly 0, so it's effectively
+scoring a constant-zero prediction. \*\* Not directly comparable to DASH's
+atom-level number: DASH covers ~99% of test atoms (its own published
+feature vocabulary rejects a small fraction — see T8's coverage caveat);
+chemprop_atom covers 100%. `chemprop_atom` wins molecule-level `area/r2`
+and atom-level shape/area/charge; `chemprop_cosmonet` wins molecule-level
+profile shape and charge by a wide margin, since it optimizes the molecule
+profile directly rather than rolling one up from atoms.
+
 ## Status (2026-08-26, updated) — read this before continuing the work
 
 **Note on task numbering:** T9 (a SMILES-keyed lookup against an
@@ -517,8 +545,16 @@ often-small profile.
 
 Full gotcha writeup in `pins.toml`'s `[chemprop_cosmonet]` notes.
 
-**Not started — T12** (`summarize` polish, results table, this README's
-final form).
+**Done — T12.** `summarize`'s `SUMMARY_COLUMNS` now covers the atom-level
+and timing metrics quoted throughout this README (`atom/profile/
+w1_norm_mean`, `atom/area/r2`, `atom/charge/mae`, `time/fit_s`,
+`time/predict_s`, `time/data_s`), backed by a real test
+(`test_experiment_cli_summarize.py`, since `_cmd_summarize` had none
+before). The "Headline results" table above is this README's final form
+for T12's results-table ask — a single canonical comparison replacing the
+scattered per-section tables as the one place to read final numbers from;
+`experiments/results/` (the CSV `summarize` writes) is git-ignored like
+`runs/`/`mlruns/`/`cache/`, since it's a generated artifact, not source.
 
 **Known external gap, resolved 2026-08-24:** Zenodo record 22050672 (the
 chaos-store's official source) returned HTTP 404 on an earlier dev machine;

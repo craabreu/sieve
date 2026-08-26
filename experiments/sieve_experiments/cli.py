@@ -26,6 +26,12 @@ SUMMARY_COLUMNS = [
     "area/r2",
     "charge/mae",
     "charge/max_abs_residual",
+    "atom/profile/w1_norm_mean",
+    "atom/area/r2",
+    "atom/charge/mae",
+    "time/fit_s",
+    "time/predict_s",
+    "time/data_s",
     "git_commit",
     "run_dir",
 ]
