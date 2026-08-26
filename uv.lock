@@ -740,8 +740,8 @@ wheels = [
 
 [[package]]
 name = "cosmolayer"
-version = "0.0.0+54.gd3c06e3.dirty"
-source = { git = "ssh://git@github.com/craabreu/cosmolayer?rev=d3c06e3#d3c06e39f89e366acc1f05aa18ef79aacc279b2c" }
+version = "0.0.0+55.g37be9f7.dirty"
+source = { git = "ssh://git@github.com/craabreu/cosmolayer?rev=37be9f7#37be9f7f762e438eff4dfefed07bc80c47412ac5" }
 dependencies = [
     { name = "cmap" },
     { name = "lightning" },
@@ -4009,7 +4009,7 @@ sklearn = [
 [package.metadata]
 requires-dist = [
     { name = "chemprop", marker = "extra == 'chemprop'", specifier = ">=2.3,<3" },
-    { name = "cosmolayer", marker = "extra == 'experiments'", git = "ssh://git@github.com/craabreu/cosmolayer?rev=d3c06e3" },
+    { name = "cosmolayer", marker = "extra == 'experiments'", git = "ssh://git@github.com/craabreu/cosmolayer?rev=37be9f7" },
     { name = "matplotlib", marker = "extra == 'experiments'", specifier = ">=3.8" },
     { name = "mlflow", marker = "extra == 'experiments'", specifier = ">=2.14" },
     { name = "numpy", specifier = ">=1.24" },

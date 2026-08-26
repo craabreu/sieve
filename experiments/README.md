@@ -199,19 +199,62 @@ a sampled molecule get a bit-identical prediction to another H in the same
 molecule. Since 56.8% of chaos-store atoms are hydrogen, `atom/*` metrics
 are majority-weighted by exactly the atoms DASH represents most crudely —
 worth scoring DASH (and T11) on a store that matches DASH's own
-united-atom design, rather than only on the all-atom one. See
-`configs/dash-ua-biased.yaml` / `configs/chemprop-atom-ua-biased.yaml` and
-`pins.toml`'s `[chaos_store_ua]` notes for the united-atom store and the
-full mechanism.
+united-atom design, rather than only on the all-atom one.
 
-**Blocked, not run yet.** Building the store for real hit a genuine
-performance bug in `cosmolayer.SegmentStore.coarse_grain()` (an
-O(n_molecules × n_segments) loop, not O(n_segments) — 40-90 minutes
-extrapolated on the full store where it should take under a second). Fixed
-upstream: [cosmolayer#55](https://github.com/craabreu/cosmolayer/pull/55),
-open, not yet merged. `dash-ua-biased.yaml`/`chemprop-atom-ua-biased.yaml`
-exist but have not been run — no UA numbers to report yet. Full account in
-`pins.toml`'s `[chaos_store_ua]` notes.
+Building the store for real first hit a genuine performance bug in
+`cosmolayer.SegmentStore.coarse_grain()` (O(n_molecules × n_segments), not
+O(n_segments) — 40-90 minutes extrapolated on the full store where it
+should take under a second). Fixed upstream and merged:
+[cosmolayer#55](https://github.com/craabreu/cosmolayer/pull/55) — real
+full-store build after the fix: **21.7s**. Verified on the real store:
+1,546,081 → 736,106 atoms (52.4% reduction), `split`/`biased_split` and
+molecule-level truth carried through unchanged/bit-identical.
+
+**DASH-UA result: worse across every metric, and NOT the clean "same
+model, native granularity" test it was expected to be.**
+
+| metric | DASH AA | DASH UA |
+| --- | --- | --- |
+| test molecules rejected outright | 1.0% | **4.6%** |
+| `atom/profile/w1_norm_mean` | 1.030 | 1.551 |
+| `atom/area/r2` | 0.945 | 0.906 |
+| `profile/w1_norm_mean` | 0.449 | 0.812 |
+| `area/r2` | 0.949 | 0.872 |
+| `charge/mae` | 0.102 | 0.153 |
+
+Root cause, confirmed from `AtomFeatures.return_atom_feature_tuple_from_
+molecule`'s source: DASH's feature tuple uses `atom.GetDegree()` (RDKit's
+*explicit-neighbor-only* count — does not include implicit H). DASH's
+published tree was built entirely from all-atom (explicit-H) COSMO data,
+where degree structurally *includes* bonded H. On the UA store, degree
+drops by however many H's got merged away, so nearly every heavy atom with
+a bonded H presents a tuple the published vocabulary was never built to
+see — outright rejection, or a match to a less-relevant node. **Confirmed
+in DASH's own paper**, not just the code (Lehner et al., *J. Chem. Inf.
+Model.* 63, 6014–6028 (2023), "Atom Features"): "Number of bonds" and
+"Number of attached hydrogens" are listed as two independent fields, with
+H₂'s own worked example — "a hydrogen atom with one bond… has the atom
+type 'H 1 0 False 0'" — only coherent if every atom, hydrogen included, is
+an explicit graph node. This is DASH's designed input contract, not an
+implementation detail to route around. My earlier claim in this section
+("DASH-on-UA is the same model, just scored at its own native
+granularity") was **wrong** — I'd verified only
+`GetTotalNumHs()` invariance, not `GetDegree()`'s. This is a genuine,
+useful negative result about DASH's own hand-built feature scheme, not
+evidence that hydrogens are harder to predict in general — see T11-UA
+below, whose feature scheme (chemprop's own `MultiHotAtomFeaturizer.v2()`)
+does not have this defect (message passing over real H graph nodes makes
+its own H-count field's representation-dependence harmless, unlike DASH's
+discrete tree lookup with no such mechanism — see `pins.toml`'s
+`[chaos_store_ua]` notes for the full trace of both).
+
+**Decision: DASH is AA-only for every comparison in this milestone.**
+`dash-ua-biased.yaml` is marked "not a benchmark config" in its own header
+and stays only to reproduce this diagnostic finding — its numbers must
+never appear in a results table alongside `dash_backoff`/`chemprop_dmpnn`/
+`chemprop_atom` as if it were comparable. T11 is unaffected (its feature
+scheme has no analogous defect), so `chemprop-atom-ua-biased.yaml` remains
+a legitimate comparison.
 
 <details>
 <summary>Earlier <code>--limit 300</code> smoke numbers (superseded above,
@@ -588,6 +631,31 @@ Reading these honestly:
   summing atoms. **T11 owns area** (0.943 vs 0.828). So the atom-level head
   buys area accuracy and per-atom detail at a real cost in molecule-level
   shape; it does not dominate T10, and shouldn't be reported as if it did.
+
+**T11 on the united-atom store, 2026-08-25.** Unlike DASH (AA-only per the
+decision in T8's section — see there for why), T11's feature scheme has no
+representation-dependence defect to correct for, so `chemprop-atom-ua-
+biased.yaml` is a legitimate comparison. Full-store, `biased_split`,
+n_test 5333 molecules / 108,347 atoms, fit 19.6 min, **0/271,983 rolled-up
+bins negative**:
+
+| metric | T11 AA | T11 UA |
+| --- | --- | --- |
+| `atom/profile/w1_norm_mean` | 1.055 | **0.989** |
+| `atom/area/r2` | 0.956 | **0.976** |
+| `atom/charge/mae` | **0.0073** | 0.0107 |
+| `profile/w1_norm_mean` | 0.380 | **0.330** |
+| `area/r2` | 0.943 | **0.949** |
+| `charge/mae` | 0.0792 | **0.0673** |
+
+T11 genuinely *improves* on the united-atom store — at both granularities,
+on every metric except atom-level charge. This is a real signal, not an
+artifact of the kind that sank DASH-UA: confirmed above that T11's
+featurizer has no analogous representation-dependence. Plausible mechanism
+(not investigated further): a UA atom's target is a heavy atom's own
+surface plus its former hydrogens' merged surface — a "chunkier," less
+sparse/degenerate regression target than an individual hydrogen's own
+often-small profile.
 
 Full gotcha writeup in `pins.toml`'s `[chemprop]` notes.
 

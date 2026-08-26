@@ -63,7 +63,7 @@ exclude = ["experiments/external/*"]
 # The pin is the reproducible path. For day-to-day work against a local
 # checkout, override it with:
 #     uv pip install -e /Users/charlles/MIT/cosmolayer
-cosmolayer = { git = "ssh://git@github.com/craabreu/cosmolayer", rev = "d3c06e3" }
+cosmolayer = { git = "ssh://git@github.com/craabreu/cosmolayer", rev = "37be9f7" }
 
 [tool.pytest.ini_options]
 # experiments/tests holds every experiment-related test (kept contained
