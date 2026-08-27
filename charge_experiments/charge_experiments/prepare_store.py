@@ -132,6 +132,9 @@ def _parse_one_record(mol: Any) -> dict[str, Any] | None:
         )
         return None
 
+    chembl_id = mol.GetProp("CHEMBL_ID")
+    conf_id = mol.GetProp("CONF_ID")
+
     for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
         atom.SetDoubleProp("MBIScharge", charge)
 
@@ -139,11 +142,27 @@ def _parse_one_record(mol: Any) -> dict[str, Any] | None:
 
     from rdkit import Chem
 
+    net_charge = float(Chem.GetFormalCharge(mol))
+
+    # ForwardSDMolSupplier auto-attaches every ">  <TAG>" block in the
+    # record as a mol-level property -- not just the three read above, but
+    # every GFN2:*/DFT:* quantum-chemistry field too (energies, dipoles,
+    # bond orders, Mulliken/Loewdin charges, ...). mol_to_blob's
+    # PropertyPickleOptions.MolProps would otherwise serialize all of them
+    # into the stored blob, unused, bloating every row several-fold beyond
+    # what this series actually needs (chembl_id/conf_id/net_charge already
+    # live in their own parquet columns; nothing reads them back off the
+    # Mol). Clear every mol-level property before serializing -- atom-level
+    # MBIScharge (set just above) is unaffected, it lives on the Atom
+    # objects, not the Mol's own property dict.
+    for name in list(mol.GetPropNames()):
+        mol.ClearProp(name)
+
     return {
-        "chembl_id": mol.GetProp("CHEMBL_ID"),
-        "conf_id": mol.GetProp("CONF_ID"),
+        "chembl_id": chembl_id,
+        "conf_id": conf_id,
         "mol": mol_to_blob(mol),
-        "net_charge": float(Chem.GetFormalCharge(mol)),
+        "net_charge": net_charge,
     }
 
 
