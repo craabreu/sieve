@@ -90,6 +90,7 @@ def _savez_run(path: Path, test: MoleculeSet, pred: Prediction, /) -> None:
         path,
         chembl_id=np.array(test.chembl_id),
         conf_id=np.array(test.conf_id),
+        dash_id=np.array(test.dash_id),
         num_atoms=test.num_atoms,
         net_charge=test.net_charge,
         atom_charge_true=test.atom_charge,
@@ -318,6 +319,7 @@ def load_molecule_set(
         conf_id=list(df["conf_id"]),
         mols=mols,
         net_charge=df["net_charge"].to_numpy(dtype=np.float64),
+        dash_id=list(df["dash_id"]),
         split=list(df[split_column]),
     )
     masks = {name: (df[split_column] == name).to_numpy() for name in splits}

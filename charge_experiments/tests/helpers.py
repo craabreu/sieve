@@ -38,9 +38,15 @@ def synthetic_molecule_set(n_mol: int = 8, seed: int = 0):
     mol_id = np.repeat(np.arange(n_mol), num_atoms)
     net_charge = molecule_sum(atom_charge, mol_id, n_mol)
 
-    chembl_id = [f"CHEMBL{1000 + i // 2}" for i in range(n_mol)]  # 2 conformers/id
+    chembl_id: list[str | None] = [
+        f"CHEMBL{1000 + i // 2}" for i in range(n_mol)
+    ]  # 2 conformers/id
     conf_id = [f"conf_{i % 2:02d}" for i in range(n_mol)]
 
     return MoleculeSet(
-        chembl_id=chembl_id, conf_id=conf_id, mols=mols, net_charge=net_charge
+        chembl_id=chembl_id,
+        conf_id=conf_id,
+        mols=mols,
+        net_charge=net_charge,
+        dash_id=[None] * n_mol,  # every row is chembl_id-schema in this fixture
     )

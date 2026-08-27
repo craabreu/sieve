@@ -71,12 +71,22 @@ class MoleculeSet:
     double property -- there is no separate, position-aligned target array
     to keep in sync (contrast cosmo_experiments' ``MoleculeSet``, which
     carries ``mol_profile``/``atom_profile`` as arrays parallel to
-    ``smiles``)."""
+    ``smiles``).
 
-    chembl_id: list[str]
+    The source SDF turns out to hold two record schemas (see
+    ``prepare_store._parse_one_record``'s docstring): ChEMBL-sourced rows
+    carry a ``CHEMBL_ID``, the rest carry a ``DASH_IDX`` instead. Exactly
+    one of ``chembl_id``/``dash_id`` is set per conformer, the other
+    ``None`` -- both are carried through purely as provenance; nothing in
+    this harness groups/clusters by them at this point (that already
+    happened once, at ``prepare_store`` time, and is baked into ``split``).
+    """
+
+    chembl_id: list[str | None]
     conf_id: list[str]
     mols: list[Any]
     net_charge: NDArray[np.float64]
+    dash_id: list[str | None]
     split: list[str] | None = None
 
     def __post_init__(self) -> None:
@@ -87,6 +97,8 @@ class MoleculeSet:
             raise ValueError("conf_id must have one entry per conformer")
         if len(self.net_charge) != n:
             raise ValueError("net_charge must have one entry per conformer")
+        if len(self.dash_id) != n:
+            raise ValueError("dash_id must have one entry per conformer")
         if self.split is not None and len(self.split) != n:
             raise ValueError("split must have one entry per conformer")
 
@@ -133,5 +145,6 @@ class MoleculeSet:
             conf_id=[self.conf_id[i] for i in idx],
             mols=[self.mols[i] for i in idx],
             net_charge=np.asarray(self.net_charge)[mol_mask],
+            dash_id=[self.dash_id[i] for i in idx],
             split=None if self.split is None else [self.split[i] for i in idx],
         )

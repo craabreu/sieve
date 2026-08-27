@@ -98,42 +98,81 @@ def _assign_stereo_if_needed(mol: Any) -> None:
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
 
 
-def _parse_one_record(mol: Any) -> dict[str, Any] | None:
+def _parse_one_record(
+    mol: Any, *, dash_conf_counters: dict[str, int]
+) -> dict[str, Any] | None:
     """Extract one row's worth of data from an already-parsed rdkit ``Mol``
     (one ``ForwardSDMolSupplier`` record). Returns ``None`` (and logs a
-    warning) for a record missing ``MBIScharge``/``CHEMBL_ID``/``CONF_ID``
+    warning) for a record missing an identity (see below) or ``MBIScharge``,
     or whose atom count disagrees with its ``MBIScharge`` count, rather than
     raising -- a handful of malformed records should not abort an
-    hours-long parse of an 8.3GB file."""
+    hours-long parse of an 8.3GB file.
+
+    The real SDF turns out to hold two distinct record schemas, confirmed
+    against the DASH paper's own stated dataset composition (arXiv:2305.15981):
+    the training set was assembled from four sources -- QMugs, a prior
+    paper's training set, lead-like ChEMBL v30 molecules, and organic
+    liquids -- and only the ChEMBL-sourced third of records carry a
+    ``CHEMBL_ID``/``CONF_ID`` pair. The other three sources' records instead
+    carry a ``DASH_IDX`` property (e.g. ``"Rest_2"``) which plays the exact
+    same per-molecule grouping role ``CHEMBL_ID`` does -- confirmed
+    empirically: ~3 rows share each ``DASH_IDX`` value, the same "a few
+    conformers per molecule" pattern ``CHEMBL_ID`` rows show. Those records
+    have no ``CONF_ID`` at all, so one is synthesized here
+    (``dash_conf_counters``, keyed by ``DASH_IDX``, hands out sequential
+    ``"conf_N"`` labels per group in file order) -- ``conf_id`` is purely
+    informational downstream (no predictor/metric reads it back), so a
+    synthesized label is exactly as good as a real one for that purpose.
+    A row's ``chembl_id``/``dash_id`` columns are populated from whichever
+    scheme its own record used; the other is left ``None`` -- see
+    ``assign_splits`` for how the two are reconciled into one clustering key.
+    """
     from charge_experiments.data import mol_to_blob
 
     if mol is None:
         return None
-    for required in ("CHEMBL_ID", "CONF_ID", "MBIScharge"):
-        if not mol.HasProp(required):
-            logger.warning("record missing %s property; skipping", required)
+    if not mol.HasProp("MBIScharge"):
+        logger.warning("record missing MBIScharge property; skipping")
+        return None
+
+    has_chembl_id = mol.HasProp("CHEMBL_ID")
+    if has_chembl_id:
+        if not mol.HasProp("CONF_ID"):
+            logger.warning(
+                "record has CHEMBL_ID (%s) but missing CONF_ID; skipping",
+                mol.GetProp("CHEMBL_ID"),
+            )
             return None
+        chembl_id: str | None = mol.GetProp("CHEMBL_ID")
+        conf_id = mol.GetProp("CONF_ID")
+        dash_id: str | None = None
+        identity = chembl_id
+    elif mol.HasProp("DASH_IDX"):
+        chembl_id = None
+        dash_id = mol.GetProp("DASH_IDX")
+        count = dash_conf_counters.get(dash_id, 0)
+        conf_id = f"conf_{count}"
+        dash_conf_counters[dash_id] = count + 1
+        identity = dash_id
+    else:
+        logger.warning("record has neither CHEMBL_ID nor DASH_IDX; skipping")
+        return None
 
     try:
         charges = [float(x) for x in mol.GetProp("MBIScharge").split("|")]
     except ValueError:
         logger.warning(
-            "MBIScharge could not be parsed as floats; skipping (chembl_id=%s)",
-            mol.GetProp("CHEMBL_ID"),
+            "MBIScharge could not be parsed as floats; skipping (id=%s)", identity
         )
         return None
     if len(charges) != mol.GetNumAtoms():
         logger.warning(
-            "MBIScharge has %d values but molecule has %d atoms; skipping "
-            "(chembl_id=%s)",
+            "MBIScharge has %d values but molecule has %d atoms; skipping (id=%s)",
             len(charges),
             mol.GetNumAtoms(),
-            mol.GetProp("CHEMBL_ID"),
+            identity,
         )
         return None
-
-    chembl_id = mol.GetProp("CHEMBL_ID")
-    conf_id = mol.GetProp("CONF_ID")
 
     for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
         atom.SetDoubleProp("MBIScharge", charge)
@@ -161,6 +200,7 @@ def _parse_one_record(mol: Any) -> dict[str, Any] | None:
     return {
         "chembl_id": chembl_id,
         "conf_id": conf_id,
+        "dash_id": dash_id,
         "mol": mol_to_blob(mol),
         "net_charge": net_charge,
     }
@@ -168,11 +208,15 @@ def _parse_one_record(mol: Any) -> dict[str, Any] | None:
 
 def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
     """Stream-parse ``sdf_path`` (never loading it whole into memory) into
-    ``out_path``, a parquet file with columns ``chembl_id, conf_id, mol,
-    net_charge`` (no ``split`` column yet -- see ``assign_splits``). Written
-    in batches via a ``pyarrow.parquet.ParquetWriter`` so peak memory is
-    bounded by ``PARQUET_BATCH_SIZE`` rows, not the whole (multi-million-row)
-    dataset."""
+    ``out_path``, a parquet file with columns ``chembl_id, conf_id, dash_id,
+    mol, net_charge`` (no ``split`` column yet -- see ``assign_splits``).
+    Exactly one of ``chembl_id``/``dash_id`` is set per row (see
+    ``_parse_one_record``'s docstring for why the SDF has two record
+    schemas). Written in batches via a ``pyarrow.parquet.ParquetWriter`` so
+    peak memory is bounded by ``PARQUET_BATCH_SIZE`` rows, not the whole
+    (multi-million-row) dataset -- ``dash_conf_counters`` is the one piece of
+    state carried across the whole streaming pass, and it's small (one int
+    per unique ``DASH_IDX``, not per row)."""
     import pyarrow as pa
     import pyarrow.parquet as pq
     from rdkit import Chem
@@ -181,6 +225,7 @@ def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
         [
             ("chembl_id", pa.string()),
             ("conf_id", pa.string()),
+            ("dash_id", pa.string()),
             ("mol", pa.binary()),
             ("net_charge", pa.float64()),
         ]
@@ -192,11 +237,12 @@ def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
     batch: list[dict[str, Any]] = []
     n_written = 0
     n_skipped = 0
+    dash_conf_counters: dict[str, int] = {}
     try:
         with open(sdf_path, "rb") as f:
             supplier = Chem.ForwardSDMolSupplier(f, sanitize=True, removeHs=False)
             for mol in supplier:
-                row = _parse_one_record(mol)
+                row = _parse_one_record(mol, dash_conf_counters=dash_conf_counters)
                 if row is None:
                     n_skipped += 1
                     continue
@@ -250,19 +296,28 @@ def assign_splits(
 ) -> str:
     """Compute (or refresh) the ``split`` column on ``store_dir /
     'molecules.parquet'`` and overwrite it in place; return the summary
-    text. Clustering fingerprints come from each unique ``chembl_id``'s
+    text. Clustering fingerprints come from each unique molecule's
     first-seen conformer only (any one conformer's connectivity suffices --
     clustering is graph-level, computed achiral so different stereoisomers
     of the same 2D graph land in the same cluster). Splits are then assigned
     per-cluster via the vendored ``greedy_cluster_split`` and joined back
-    onto every row by ``chembl_id``, so a molecule's conformers/
-    stereoisomers never span two splits. Loads the entire parsed store into
-    memory at once (via ``pd.read_parquet``) rather than streaming, since by
-    this point it is the much-smaller already-parsed parquet, not the raw
-    8.3GB SDF that ``parse_dash_molecules`` streams. The fraction targets
-    are cluster/chembl_id-level, so the resulting row-level
-    ``split_summary.txt`` fractions may diverge somewhat from the requested
-    train/val/test fractions if conformer counts per chembl_id vary."""
+    onto every row by molecule identity, so a molecule's conformers/
+    stereoisomers never span two splits.
+
+    A row's identity is ``chembl_id`` when set, else ``dash_id`` (exactly
+    one is set per row -- see ``_parse_one_record``'s docstring for why the
+    store has two identity schemes). That coalesced key (``mol_key`` below)
+    is what clustering, splitting, and this function's own uniqueness/
+    grouping all operate on -- ``chembl_id``/``dash_id`` themselves stay in
+    the output purely as provenance, never read back for grouping elsewhere.
+
+    Loads the entire parsed store into memory at once (via
+    ``pd.read_parquet``) rather than streaming, since by this point it is
+    the much-smaller already-parsed parquet, not the raw 8.3GB SDF that
+    ``parse_dash_molecules`` streams. The fraction targets are
+    cluster/mol_key-level, so the resulting row-level ``split_summary.txt``
+    fractions may diverge somewhat from the requested train/val/test
+    fractions if conformer counts per molecule vary."""
     if abs(train + val + test - 1) >= 1e-6:
         raise ValueError("the fractions must sum to 1")
     import pandas as pd
@@ -275,36 +330,40 @@ def assign_splits(
 
     molecules_path = store_dir / "molecules.parquet"
     df = pd.read_parquet(molecules_path)
+    mol_key = df["chembl_id"].fillna(df["dash_id"])
 
-    first_seen = df.drop_duplicates(subset="chembl_id", keep="first")
-    unique_chembl_ids = first_seen["chembl_id"].to_numpy()
-    first_mols = [blob_to_mol(b) for b in first_seen["mol"]]
+    first_seen_mask = ~mol_key.duplicated(keep="first")
+    unique_keys = mol_key[first_seen_mask].to_numpy()
+    first_mols = [blob_to_mol(b) for b in df.loc[first_seen_mask, "mol"]]
     fingerprints = _achiral_fingerprints(first_mols)
 
     cluster_ids = butina_cluster(fingerprints, cutoff=0.65)
     split_by_index = greedy_cluster_split(
         cluster_ids, fractions={"train": train, "val": val, "test": test}
     )
-    chembl_to_split: dict[str, str] = {}
+    key_to_split: dict[str, str] = {}
     for split_name, indices in split_by_index.items():
         for i in indices:
-            chembl_to_split[unique_chembl_ids[i]] = split_name
+            key_to_split[unique_keys[i]] = split_name
 
-    df["split"] = df["chembl_id"].map(chembl_to_split)
+    df["split"] = mol_key.map(key_to_split)
 
     unmapped = df[df["split"].isna()]
     if not unmapped.empty:
         n_rows = len(unmapped)
-        n_ids = unmapped["chembl_id"].nunique()
+        n_ids = mol_key[df["split"].isna()].nunique()
         raise ValueError(
-            f"{n_rows} row(s) ({n_ids} chembl_id(s)) were not assigned a "
+            f"{n_rows} row(s) ({n_ids} molecule(s)) were not assigned a "
             "split by clustering"
         )
 
     summary = (
         df.groupby("split")
-        .agg(n_conformers=("chembl_id", "size"), n_chembl_ids=("chembl_id", "nunique"))
+        .agg(n_conformers=("mol", "size"))
         .reindex(["train", "val", "test"])
+    )
+    summary["n_molecules"] = mol_key.groupby(df["split"]).nunique().reindex(
+        ["train", "val", "test"]
     )
     summary["fraction"] = summary["n_conformers"] / len(df)
     summary_text = summary.to_string()

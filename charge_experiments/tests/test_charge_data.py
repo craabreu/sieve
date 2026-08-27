@@ -60,6 +60,7 @@ def test_synthetic_molecule_set_select_preserves_alignment():
     sub = mset.select(mask)
     assert sub.n_conformers == 4
     assert sub.chembl_id == [mset.chembl_id[i] for i in range(8) if mask[i]]
+    assert sub.dash_id == [mset.dash_id[i] for i in range(8) if mask[i]]
     np.testing.assert_array_equal(sub.net_charge, mset.net_charge[mask])
     # atom_charge stays consistent with net_charge after selection
     from charge_experiments.data import molecule_sum
