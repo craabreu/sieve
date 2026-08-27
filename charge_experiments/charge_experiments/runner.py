@@ -356,6 +356,29 @@ def _execute_inner(
     return RunResult(run_dir=run_dir, metrics=run_metrics, manifest=manifest)
 
 
+def _log_mlflow_run(
+    tags: dict[str, str],
+    params: dict[str, str],
+    run_metrics: dict[str, float],
+    run_dir: Path,
+) -> None:
+    """Log tags/params/metrics/artifacts onto whatever MLflow run is
+    currently open (inside ``mlflow.start_run``'s own context) -- shared by
+    the flat run path (``_log_mlflow``, below) and nested_runner.py's own
+    parent/child ``mlflow.start_run(nested=True)`` contexts."""
+    import mlflow
+
+    mlflow.set_tags(tags)
+    mlflow.log_params(params)
+    clean_metrics = {
+        k: v
+        for k, v in run_metrics.items()
+        if isinstance(v, float) and not np.isnan(v)
+    }
+    mlflow.log_metrics({f"test/{k}": v for k, v in clean_metrics.items()})
+    mlflow.log_artifacts(str(run_dir))
+
+
 def _log_mlflow(
     cfg: ExperimentCfg, run_metrics: dict[str, float], run_dir: Path, tracking: str
 ) -> None:
@@ -367,24 +390,16 @@ def _log_mlflow(
 
     mlflow.set_tracking_uri(tracking)
     mlflow.set_experiment(cfg.run.experiment)
+    tags = {
+        "predictor": cfg.predictor.name,
+        "split_column": cfg.data.split_column,
+        "store": cfg.data.store,
+        "seed": str(cfg.run.seed),
+        "run_dir": str(run_dir),
+        **{f"tag.{k}": v for k, v in cfg.run.tags.items()},
+    }
     with mlflow.start_run(run_name=_run_name(cfg)):
-        tags = {
-            "predictor": cfg.predictor.name,
-            "split_column": cfg.data.split_column,
-            "store": cfg.data.store,
-            "seed": str(cfg.run.seed),
-            "run_dir": str(run_dir),
-            **{f"tag.{k}": v for k, v in cfg.run.tags.items()},
-        }
-        mlflow.set_tags(tags)
-        mlflow.log_params(to_flat_params(cfg))
-        clean_metrics = {
-            k: v
-            for k, v in run_metrics.items()
-            if isinstance(v, float) and not np.isnan(v)
-        }
-        mlflow.log_metrics({f"test/{k}": v for k, v in clean_metrics.items()})
-        mlflow.log_artifacts(str(run_dir))
+        _log_mlflow_run(tags, to_flat_params(cfg), run_metrics, run_dir)
 
 
 def load_molecule_set(
