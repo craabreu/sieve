@@ -26,6 +26,16 @@ DOWNLOAD_URL = (
 EXPECTED_BYTES = 8_278_301_584
 EXPECTED_MD5 = "305f521c6b422546bdf09c1e87eb922d"
 SDF_FILENAME = "dashMoleculesSDF_v2.sdf"
+# The ETH Research Collection server 403s a request carrying urllib's default
+# User-Agent (python-urllib/x.y) -- matches the UA the original
+# download_dash_molecules.sh bash script already had to set for the same
+# reason (see that script's own comment: the plain bitstream-content URL
+# still needs a browser-shaped UA even though it isn't the HTML app-shell
+# page that 500s under wget).
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 CHUNK_SIZE = 1 << 20  # 1 MiB
 PARQUET_BATCH_SIZE = 50_000  # rows buffered before each parquet write
@@ -50,7 +60,8 @@ def download_dash_sdf(dest_dir: Path, *, url: str = DOWNLOAD_URL) -> Path:
         return out_path
 
     md5 = hashlib.md5()
-    with urllib.request.urlopen(url) as response, out_path.open("wb") as f:
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(request) as response, out_path.open("wb") as f:
         while chunk := response.read(CHUNK_SIZE):
             f.write(chunk)
             md5.update(chunk)
