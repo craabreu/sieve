@@ -22,12 +22,15 @@ dev = [
 # so a plain `pip install sieve` stays light. tables/tqdm/pillow are runtime
 # deps of the pinned rinikerlab/DASH-tree clone
 # (charge_experiments/predictors/dash.py), added to sys.path rather than
-# pip-installed -- see charge_experiments/pins.toml.
+# pip-installed -- see charge_experiments/pins.toml. matplotlib backs
+# plots.py's parity_panel, imported lazily there so its absence only skips
+# plotting, never fails a run.
 charges = [
     "rdkit>=2023.3",
     "pandas>=2",
     "pyarrow>=14",
     "mlflow>=2.14",
+    "matplotlib>=3.8",
     "tables>=3.9",
     "tqdm>=4.65",
     "pillow>=10",
@@ -84,6 +87,8 @@ allowed-unresolved-imports = [
     "pandas.**",
     "pyarrow",
     "pyarrow.**",
+    "matplotlib",
+    "matplotlib.**",
     # rinikerlab/DASH-tree, sys.path-shimmed from
     # charge_experiments/external/DASH-tree rather than pip-installed --
     # see charge_experiments/predictors/dash.py.

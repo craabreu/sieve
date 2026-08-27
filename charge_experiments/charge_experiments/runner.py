@@ -5,8 +5,10 @@ optionally an MLflow record) out.
 and split masks in, so the smoke test never touches the real store).
 ``run`` is the real entry point: loads the store via
 ``data.load_molecule_set`` then calls ``execute``. Mirrors
-cosmo_experiments/sieve_experiments/runner.py's shape, much smaller: no
-plots, no profile/area rollup, no train/val parity-plot bookkeeping.
+cosmo_experiments/sieve_experiments/runner.py's shape, still much smaller:
+no profile/area rollup, no train/val parity-plot bookkeeping -- plots.py's
+own ``parity_panel`` is reused as-is (it's fully domain-agnostic), just
+fed a smaller, scalar-charge-shaped set of panels here.
 """
 
 from __future__ import annotations
@@ -30,8 +32,9 @@ import yaml
 from numpy.typing import NDArray
 
 from charge_experiments import metrics as metrics_mod
+from charge_experiments import plots
 from charge_experiments.config import ExperimentCfg, to_dict, to_flat_params
-from charge_experiments.data import REPO_ROOT, MoleculeSet
+from charge_experiments.data import REPO_ROOT, MoleculeSet, molecule_sum
 from charge_experiments.predictors import build
 from charge_experiments.predictors.base import Prediction
 
@@ -138,6 +141,7 @@ def execute(
     run_id = uuid.uuid4().hex[:8]
     run_dir = runs_root / cfg.run.experiment / f"{_run_name(cfg)}__{stamp}__{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "plots").mkdir(exist_ok=True)
 
     file_handler = logging.FileHandler(run_dir / "stdout.log")
     file_handler.setFormatter(
@@ -174,6 +178,68 @@ def _score_extra_split(
     pred = predictor.predict(mset)
     score = _score(mset, pred)
     return {f"{split}/{k}": v for k, v in score.items()}
+
+
+def _build_parity_panels(
+    test: MoleculeSet, pred: Prediction, run_metrics: dict[str, float]
+) -> list[dict[str, Any]]:
+    """Which hexbin parity panels a run's ``parity_panel.png`` gets: atom
+    charge always (the primary prediction target -- ``test`` is assumed
+    non-empty, ``_write_plots`` checks that before calling this); molecule
+    charge conservation as a secondary diagnostic (sum of a conformer's own
+    predicted atom charges vs. its real ``net_charge`` -- the same pairing
+    ``metrics.charge_conservation_metrics`` already scores). Pure numpy --
+    no matplotlib -- so this is testable independent of ``plots.py``
+    actually rendering anything."""
+    panels: list[dict[str, Any]] = [
+        {
+            "y_true": test.atom_charge,
+            "y_pred": pred.atom_charge,
+            "quantity": "charge (e)",
+            "title": "atom charge",
+            "metrics": {
+                k: v for k, v in run_metrics.items() if k in ("mae", "rmse", "r2")
+            },
+        }
+    ]
+    pred_net_charge = molecule_sum(
+        pred.atom_charge, test.atom_mol_id, test.n_conformers
+    )
+    panels.append(
+        {
+            "y_true": test.net_charge,
+            "y_pred": pred_net_charge,
+            "quantity": "net charge (e)",
+            "title": "molecule charge conservation",
+            "metrics": {
+                k.removeprefix("charge_conservation/"): v
+                for k, v in run_metrics.items()
+                if k.startswith("charge_conservation/")
+            },
+        }
+    )
+    return panels
+
+
+def _write_plots(
+    run_dir: Path,
+    test: MoleculeSet,
+    pred: Prediction,
+    run_metrics: dict[str, float],
+    cfg: ExperimentCfg,
+) -> None:
+    if test.n_conformers == 0:
+        return  # nothing to plot on an empty eval split (e.g. a small
+        # --limit run whose split happens to land entirely in train)
+    try:
+        panels = _build_parity_panels(test, pred, run_metrics)
+        plots.parity_panel(
+            panels,
+            run_dir / "plots" / "parity_panel.png",
+            suptitle=f"{cfg.predictor.name} ({cfg.data.split_column})",
+        )
+    except ImportError:
+        logger.warning("matplotlib not installed; skipping plots for this run")
 
 
 def _execute_inner(
@@ -255,6 +321,7 @@ def _execute_inner(
         json.dumps(manifest, indent=2, sort_keys=True)
     )
     _savez_run(run_dir / "predictions.npz", test, pred)
+    _write_plots(run_dir, test, pred, run_metrics, cfg)
 
     if tracking is not None:
         _log_mlflow(cfg, run_metrics, run_dir, tracking)
