@@ -11,7 +11,7 @@ directly, and the molecule-level charge-conservation check
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,3 +35,24 @@ class Predictor(Protocol):
     ) -> None: ...
 
     def predict(self, test: MoleculeSet) -> Prediction: ...
+
+
+@dataclass(frozen=True)
+class RawPrediction:
+    """What a normalizable predictor's own ``predict_raw`` returns: the
+    unnormalized per-atom walk output, plus its per-atom std (needed by
+    ``normalize.std_weighted_normalize``) -- both required before any
+    function in ``normalize.NORMALIZERS`` can be applied."""
+
+    atom_charge: NDArray[np.float64]
+    atom_std: NDArray[np.float64]
+
+
+@runtime_checkable
+class NormalizableChargePredictor(Predictor, Protocol):
+    """A ``Predictor`` that can also return its raw, unnormalized walk
+    output separately -- ``predictors/dash.py``'s ``DASHChargePredictor`` and
+    ``predictors/dash_pretrained.py``'s ``DASHPretrainedChargePredictor``
+    both implement this; ``nested_runner.py`` requires it."""
+
+    def predict_raw(self, test: MoleculeSet) -> RawPrediction: ...
