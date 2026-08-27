@@ -25,6 +25,11 @@ charges_experiments/results/
 charges_experiments/stores/
 charges_experiments/external/
 
+# cosmo_experiments/ isn't part of this branch (it lives on experiments/
+# dash-charges) -- ignored here so a shared checkout's leftover copy never
+# gets accidentally staged on this branch.
+cosmo_experiments/
+
 # Python
 .venv/
 .venv311/
