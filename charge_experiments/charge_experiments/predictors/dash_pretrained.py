@@ -56,13 +56,39 @@ poison a whole run's aggregate MAE/RMSE/R2 -- see that module's own
 docstring. ``match_stats`` (from ``_atom_paths``) still counts unmatched
 atoms/molecules -- bookkeeping about coverage, not a predicted value.
 
-Deliberately does not apply DASH's own ``std_weighted`` charge-conservation
-renormalization (the residual-redistribution step
-``get_molecules_partial_charges`` layers on top of its raw per-atom
-values, using each molecule's own formal charge): this predictor returns
-the tree's raw, unreconciled ``"result"`` values, same as
-``DASHChargePredictor``'s own current output shape -- consistent between
-the two DASH baselines, not a new inconsistency introduced here.
+**Applies DASH's own ``std_weighted`` charge-conservation renormalization**
+(the paper's eq 4) after the raw per-atom walk above -- the paper states
+explicitly that this, not raw per-atom values, is what its own reported
+results use: "Normalizing the DASH charges with eq 4 reduces the errors
+slightly... we used normalization with eq 4 in the remainder of this
+work" (Lehner et al., J. Chem. Inf. Model. 2023, 63, 6014-6028). Skipping
+it, as an earlier version of this predictor did, would not be faithful to
+the authors' own reported performance.
+
+The paper's own printed eq 2/3 have a sign error, though, confirmed two
+ways: (1) reading ``get_molecules_partial_charges``'s actual ``symmetric``
+branch (``x + (tot_charge_mol - tot_charge_tree) / N``, i.e.
+``Q_formal - sum(Q)``) against the paper's printed
+``ΔQ = sum(Q) - Q_formal`` then ``Q_i' = Q_i + ΔQ/N`` -- literally the
+opposite sign; (2) a direct arithmetic check: applying the paper's printed
+formula to a toy 3-atom example whose raw charges sum to 0.0 against a
+target formal charge of 1.0 gives a renormalized sum of -1.0, not 1.0 --
+it does not conserve charge, while the code's actual (opposite-sign)
+formula gives 1.0 exactly. This predictor follows the real, shipped code
+(ground truth: it actually runs, and actually conserves charge), not the
+paper's printed equation.
+
+``default_std_value=0.1`` guards a non-positive (including NaN, since
+``nan > 0`` is always ``False``) per-atom std before it's used as a
+normalization weight -- this mirrors ``get_molecules_partial_charges``'s
+own hardcoded default for that exact situation (``tmp_tree_std if
+tmp_tree_std > 0 else default_std_value``), so it is the authors' own
+published fallback for *that* quantity, not one invented here. It is not
+a fallback for a missing *charge*: an atom whose raw ``"result"`` walk
+itself came back NaN still propagates NaN through the whole molecule's
+renormalized output (the residual sum ``ΣQ_i`` is NaN, so every atom in
+that molecule ends up NaN too) -- exactly ``get_molecules_partial_charges``'s
+own real behavior for that case, verified by tracing its actual code path.
 """
 
 from __future__ import annotations
@@ -74,7 +100,7 @@ from typing import Any, ClassVar
 import numpy as np
 from numpy.typing import NDArray
 
-from charge_experiments.data import MoleculeSet
+from charge_experiments.data import MoleculeSet, molecule_sum
 from charge_experiments.predictors import register
 from charge_experiments.predictors.base import Prediction
 from charge_experiments.predictors.dash import (
@@ -84,6 +110,40 @@ from charge_experiments.predictors.dash import (
 )
 
 logger = logging.getLogger("charge_experiments")
+
+# get_molecules_partial_charges' own hardcoded default -- see module
+# docstring's note on why using it here is faithful, not invented.
+_DEFAULT_STD_VALUE = 0.1
+
+
+def std_weighted_normalize(
+    raw_charge: NDArray[np.floating],
+    raw_std: NDArray[np.floating],
+    net_charge: NDArray[np.floating],
+    mol_id: NDArray[np.int64],
+    n_conformers: int,
+) -> NDArray[np.float64]:
+    """DASH's own eq 4 (std-weighted normalization), pure numpy -- no tree,
+    no rdkit, so this is fast-suite tested independent of the real
+    DASH-tree clone (see module docstring for the sign-convention and
+    ``default_std_value`` notes this implements).
+
+    A non-positive (including NaN) entry in ``raw_std`` is floored to
+    ``get_molecules_partial_charges``'s own ``default_std_value`` (0.1) --
+    the authors' own published fallback for *that* quantity. A NaN entry
+    in ``raw_charge`` is not floored or substituted at all: it propagates
+    through ``molecule_sum`` into that whole conformer's residual, so
+    every atom in a conformer with even one unmatched raw charge ends up
+    NaN -- exactly ``get_molecules_partial_charges``'s own real behavior
+    for that case.
+    """
+    raw_charge = np.asarray(raw_charge, dtype=np.float64)
+    raw_std = np.asarray(raw_std, dtype=np.float64)
+    effective_std = np.where(raw_std > 0, raw_std, _DEFAULT_STD_VALUE)
+    tot_charge_tree = molecule_sum(raw_charge, mol_id, n_conformers)
+    tot_std_tree = molecule_sum(effective_std, mol_id, n_conformers)
+    residual = np.asarray(net_charge, dtype=np.float64) - tot_charge_tree
+    return raw_charge + (residual[mol_id] * effective_std / tot_std_tree[mol_id])
 
 
 class DASHPretrainedChargePredictor:
@@ -159,11 +219,17 @@ class DASHPretrainedChargePredictor:
                 stats["n_unmatched_molecules"],
                 stats["n_conformers"],
             )
-        props = LiteralTreeChargeProperties(
+        value_props = LiteralTreeChargeProperties(
             charge_column=tree.default_value_column, fallback_charge=float("nan")
         )
-        atom_charge: NDArray[np.float64] = predict_via_data_storage_walk(
-            tree, paths, props
+        std_props = LiteralTreeChargeProperties(
+            charge_column=tree.default_std_column, fallback_charge=float("nan")
+        )
+        raw_charge = predict_via_data_storage_walk(tree, paths, value_props)
+        raw_std = predict_via_data_storage_walk(tree, paths, std_props)
+
+        atom_charge = std_weighted_normalize(
+            raw_charge, raw_std, test.net_charge, test.atom_mol_id, test.n_conformers
         )
         return Prediction(atom_charge=atom_charge)
 
