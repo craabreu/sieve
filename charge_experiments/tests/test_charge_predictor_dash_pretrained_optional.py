@@ -112,3 +112,29 @@ def test_dash_pretrained_predictor_runs_end_to_end_via_run(tmp_path):
     )
     assert "mae" in result.metrics
     assert "n_nan" in result.metrics
+
+
+def test_dash_pretrained_predict_raw_matches_predict_before_normalization():
+    from charge_experiments.normalize import std_weighted_normalize
+    from charge_experiments.predictors.dash_pretrained import (
+        DASHPretrainedChargePredictor,
+    )
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    rng = np.random.default_rng(0)
+    predictor = DASHPretrainedChargePredictor()
+    predictor.fit(mset, mset, rng=rng)
+
+    raw = predictor.predict_raw(mset)
+    pred = predictor.predict(mset)
+
+    expected = std_weighted_normalize(
+        raw.atom_charge, raw.atom_std, mset.net_charge, mset.atom_mol_id,
+        mset.n_conformers,
+    )
+    np.testing.assert_array_equal(pred.atom_charge, expected)
+    assert predictor.match_stats["n_final_nan_atoms"] == int(
+        np.isnan(pred.atom_charge).sum()
+    )

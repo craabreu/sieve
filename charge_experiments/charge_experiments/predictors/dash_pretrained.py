@@ -111,12 +111,12 @@ import numpy as np
 from charge_experiments.data import MoleculeSet
 from charge_experiments.normalize import std_weighted_normalize
 from charge_experiments.predictors import register
-from charge_experiments.predictors.base import Prediction
+from charge_experiments.predictors.base import Prediction, RawPrediction
 from charge_experiments.predictors.dash import (
-    LiteralTreeChargeProperties,
     _atom_paths,
     predict_via_data_storage_walk,
 )
+from charge_experiments.tree_artifact import LiteralTreeChargeProperties
 
 logger = logging.getLogger("charge_experiments")
 
@@ -176,7 +176,7 @@ class DASHPretrainedChargePredictor:
         del train, val, rng
         self._load_tree()
 
-    def predict(self, test: MoleculeSet) -> Prediction:
+    def predict_raw(self, test: MoleculeSet) -> RawPrediction:
         tree = self._load_tree()
         paths, stats = _atom_paths(
             test,
@@ -202,21 +202,25 @@ class DASHPretrainedChargePredictor:
         )
         raw_charge = predict_via_data_storage_walk(tree, paths, value_props)
         raw_std = predict_via_data_storage_walk(tree, paths, std_props)
+        return RawPrediction(atom_charge=raw_charge, atom_std=raw_std)
 
+    def predict(self, test: MoleculeSet) -> Prediction:
+        raw = self.predict_raw(test)
         atom_charge = std_weighted_normalize(
-            raw_charge, raw_std, test.net_charge, test.atom_mol_id, test.n_conformers
+            raw.atom_charge, raw.atom_std, test.net_charge, test.atom_mol_id,
+            test.n_conformers,
         )
 
-        # match_stats' own n_unmatched_atoms (above) only counts atoms
-        # whose path-matching itself failed -- a strict undercount of the
-        # real NaN rate: raw_charge is also NaN for a matched-but-nothing-
-        # populated path, and atom_charge is NaN for every atom in a
-        # conformer where even one other atom's raw_charge was NaN (see
-        # std_weighted_normalize's own docstring). Tracked here so
-        # match_stats -- the one place a run's manifest.json reports
+        # match_stats' own n_unmatched_atoms (set in predict_raw) only
+        # counts atoms whose path-matching itself failed -- a strict
+        # undercount of the real NaN rate: raw_charge is also NaN for a
+        # matched-but-nothing-populated path, and atom_charge is NaN for
+        # every atom in a conformer where even one other atom's raw_charge
+        # was NaN (see std_weighted_normalize's own docstring). Tracked here
+        # so match_stats -- the one place a run's manifest.json reports
         # coverage -- reflects the true, final NaN rate, not just its
         # path-matching-failure subset.
-        n_walk_nan_atoms = int(np.isnan(raw_charge).sum())
+        n_walk_nan_atoms = int(np.isnan(raw.atom_charge).sum())
         n_final_nan_atoms = int(np.isnan(atom_charge).sum())
         self.match_stats["n_walk_nan_atoms"] = n_walk_nan_atoms
         self.match_stats["n_final_nan_atoms"] = n_final_nan_atoms
@@ -227,9 +231,9 @@ class DASHPretrainedChargePredictor:
                 "a successful match); these are reported as NaN, not "
                 "guessed at",
                 n_final_nan_atoms,
-                stats["n_atoms"],
-                stats["n_unmatched_atoms"],
-                n_walk_nan_atoms - stats["n_unmatched_atoms"],
+                self.match_stats["n_atoms"],
+                self.match_stats["n_unmatched_atoms"],
+                n_walk_nan_atoms - self.match_stats["n_unmatched_atoms"],
             )
         return Prediction(atom_charge=atom_charge)
 
