@@ -18,14 +18,14 @@ The sigma-profile tree has already been renamed from `experiments/` to
 top-level `cosmo_experiments/` (freeing the `experiments` name, and kept
 around, tracked, purely as reference material for this series — deletable
 later if it turns out not to be needed). This spec covers scaffolding the
-new, sibling `charges_experiments/` series: its data pipeline and its
+new, sibling `charge_experiments/` series: its data pipeline and its
 first two predictors (DASH-tree, Sieve).
 
 ## Decisions (settled by conversation)
 
 | Question | Decision |
 |---|---|
-| Code sharing between series | None at the harness level. `charges_experiments/` is a fully independent package (`charge_experiments`), no imports from `sieve_experiments`/`cosmo_experiments`. Registered in the same root `pyproject.toml` (packages.find, testpaths, ruff include, ty overrides) alongside the cosmo series — same repo, same CI, zero cross-imports. (Both series *do* depend on the core `sieve` package, same as today — that's a shared dependency, not shared harness code.) |
+| Code sharing between series | None at the harness level. `charge_experiments/` is a fully independent package (`charge_experiments`), no imports from `sieve_experiments`/`cosmo_experiments`. Registered in the same root `pyproject.toml` (packages.find, testpaths, ruff include, ty overrides) alongside the cosmo series — same repo, same CI, zero cross-imports. (Both series *do* depend on the core `sieve` package, same as today — that's a shared dependency, not shared harness code.) |
 | Charge target column | `MBIScharge` (the SDF's per-atom MBIS charge property), not the DFT Lowdin/Mulliken columns also present. |
 | Source data | `~/tmp/dash_molecules/dashMoleculesSDF_v2.sdf` (8.3GB, DASH's own published training set, ETH Research Collection), fetched via the download logic already in `~/tmp/dash_molecules/download_dash_molecules.sh` (streaming wget, size + md5 check), ported into the new series' `prepare-store` step the same way `prepare_store.py` already streams+verifies the chaos-store zip. |
 | Per-conformer rows | Every conformer keeps its own row — **not** averaged, **not** deduplicated to one conformer per molecule. Two reasons: (a) a topology-only predictor's own tree/regressogram already aggregates repeated observations per node (mean/variance/shrinkage) more informatively than a pre-average would; (b) different conformers of the same `chembl_id` can genuinely perceive to different stereoisomers once stereo is assigned from 3D coordinates — they are not noisy repeats of one fixed graph. |
@@ -49,7 +49,7 @@ cosmo_experiments/           # existing, already renamed -- kept as reference
   pins.toml
   README.md
   ...
-charges_experiments/         # new, fully independent, top-level sibling
+charge_experiments/         # new, fully independent, top-level sibling
   charge_experiments/
     __init__.py
     cli.py                # run / prepare-store / summarize subcommands
@@ -79,9 +79,9 @@ charges_experiments/         # new, fully independent, top-level sibling
 `pyproject.toml` gains a second set of the same reference kinds the cosmo
 rename already needed (`packages.find`'s `where`, `testpaths`, ruff
 `include`, `ty` `overrides`/`extra-paths`), pointed at
-`charges_experiments/...` alongside the existing `cosmo_experiments/...`
+`charge_experiments/...` alongside the existing `cosmo_experiments/...`
 entries. `.gitignore` gains
-`charges_experiments/{runs,mlruns,cache,results}/` alongside the existing
+`charge_experiments/{runs,mlruns,cache,results}/` alongside the existing
 `cosmo_experiments/...` entries.
 
 ### Vendoring `_chalcedon`

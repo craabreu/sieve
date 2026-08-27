@@ -1,4 +1,4 @@
-"""Fixtures shared across charges_experiments' test suite."""
+"""Fixtures shared across charge_experiments' test suite."""
 
 from __future__ import annotations
 

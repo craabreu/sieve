@@ -50,7 +50,7 @@ def test_mol_to_blob_round_trip_preserves_chiral_tags():
 
 
 def test_synthetic_molecule_set_select_preserves_alignment():
-    from charges_experiments.tests.helpers import synthetic_molecule_set
+    from charge_experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=8, seed=0)
     assert mset.n_conformers == 8

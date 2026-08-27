@@ -35,8 +35,8 @@ from charge_experiments.data import REPO_ROOT, MoleculeSet
 from charge_experiments.predictors import build
 from charge_experiments.predictors.base import Prediction
 
-DEFAULT_TRACKING_URI = f"file:{REPO_ROOT / 'charges_experiments' / 'mlruns'}"
-DEFAULT_RUNS_ROOT = REPO_ROOT / "charges_experiments" / "runs"
+DEFAULT_TRACKING_URI = f"file:{REPO_ROOT / 'charge_experiments' / 'mlruns'}"
+DEFAULT_RUNS_ROOT = REPO_ROOT / "charge_experiments" / "runs"
 
 logger = logging.getLogger("charge_experiments")
 

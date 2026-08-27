@@ -1,4 +1,4 @@
-# charges_experiments/tests/test_charge_smoke.py
+# charge_experiments/tests/test_charge_smoke.py
 """End-to-end smoke test on a synthetic store -- no download, no network,
 no mlflow required (tracking=None)."""
 
@@ -10,7 +10,7 @@ import numpy as np
 from charge_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
 from charge_experiments.runner import execute
 
-from charges_experiments.tests.helpers import synthetic_molecule_set
+from charge_experiments.tests.helpers import synthetic_molecule_set
 
 
 def _tiny_cfg() -> ExperimentCfg:

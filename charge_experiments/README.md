@@ -1,4 +1,4 @@
-# charges_experiments
+# charge_experiments
 
 A second, independent experiment series: predicting DASH's MBIS atomic
 partial charges (the `MBIScharge` SDF property) on DASH's own published

@@ -18,11 +18,11 @@ dev = [
     # (config/metrics/data/smoke) without that heavier extra.
     "pyyaml>=6",
 ]
-# The charges_experiments series' own runtime deps, kept out of `dev`/`chem`
+# The charge_experiments series' own runtime deps, kept out of `dev`/`chem`
 # so a plain `pip install sieve` stays light. tables/tqdm/pillow are runtime
 # deps of the pinned rinikerlab/DASH-tree clone
 # (charge_experiments/predictors/dash.py), added to sys.path rather than
-# pip-installed -- see charges_experiments/pins.toml.
+# pip-installed -- see charge_experiments/pins.toml.
 charges = [
     "rdkit>=2023.3",
     "pandas>=2",
@@ -38,27 +38,27 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src", "charges_experiments"]
+where = ["src", "charge_experiments"]
 
 [tool.uv.workspace]
 # The pinned rinikerlab/DASH-tree checkout lives under
-# charges_experiments/external/ (git-ignored) and ships its own
+# charge_experiments/external/ (git-ignored) and ships its own
 # pyproject.toml. Without this exclusion uv silently treats it as an
 # implicit workspace member and tries to build/install "serenityff" into
 # this project's venv and lockfile -- it's an inert clone used via
 # sys.path (predictors/dash.py), not a dependency of `sieve`.
-exclude = ["charges_experiments/external/*"]
+exclude = ["charge_experiments/external/*"]
 
 [tool.pytest.ini_options]
-# charges_experiments/tests holds every charges-series test, kept contained
-# under charges_experiments/ per the harness's own design.
-testpaths = ["tests", "charges_experiments/tests"]
+# charge_experiments/tests holds every charges-series test, kept contained
+# under charge_experiments/ per the harness's own design.
+testpaths = ["tests", "charge_experiments/tests"]
 filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-include = ["src/**/*.py", "tests/**/*.py", "charges_experiments/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "charge_experiments/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
@@ -68,7 +68,7 @@ ignore = ["E402"]
 # Vendored verbatim from cosmolayer/chalcedon (see NOTICE in that
 # directory) -- kept byte-for-byte except one import path, including
 # upstream's own line lengths.
-"charges_experiments/charge_experiments/_chalcedon/**" = ["E501"]
+"charge_experiments/charge_experiments/_chalcedon/**" = ["E501"]
 
 [tool.ty.analysis]
 # CI's lint job installs [dev,chem] only, not the heavier `charges` extra
@@ -85,7 +85,7 @@ allowed-unresolved-imports = [
     "pyarrow",
     "pyarrow.**",
     # rinikerlab/DASH-tree, sys.path-shimmed from
-    # charges_experiments/external/DASH-tree rather than pip-installed --
+    # charge_experiments/external/DASH-tree rather than pip-installed --
     # see charge_experiments/predictors/dash.py.
     "serenityff",
     "serenityff.**",
@@ -107,13 +107,11 @@ invalid-argument-type = "ignore"
 #   fingerprint step) -- a real, long-standing AllChem function the stubs
 #   simply omit.
 include = [
-    "charges_experiments/charge_experiments/data.py",
-    "charges_experiments/charge_experiments/prepare_store.py",
+    "charge_experiments/charge_experiments/data.py",
+    "charge_experiments/charge_experiments/prepare_store.py",
 ]
 
 [tool.ty.overrides.rules]
 no-matching-overload = "ignore"
 unresolved-attribute = "ignore"
 
-[tool.ty.environment]
-extra-paths = ["charges_experiments"]

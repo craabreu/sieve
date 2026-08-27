@@ -13,17 +13,17 @@ sieve_*.ipynb
 # UV lock files
 uv.lock
 
-# Experiment outputs and external checkout for the charges_experiments series
-# (see charges_experiments/README.md). Note: charges_experiments/pins.toml is
+# Experiment outputs and external checkout for the charge_experiments series
+# (see charge_experiments/README.md). Note: charge_experiments/pins.toml is
 # tracked despite living inside this otherwise-ignored tree -- git cannot
 # un-ignore a file that sits inside an ignored directory, so only the leaf
-# dirs below are listed, not charges_experiments/ itself.
-charges_experiments/runs/
-charges_experiments/mlruns/
-charges_experiments/cache/
-charges_experiments/results/
-charges_experiments/stores/
-charges_experiments/external/
+# dirs below are listed, not charge_experiments/ itself.
+charge_experiments/runs/
+charge_experiments/mlruns/
+charge_experiments/cache/
+charge_experiments/results/
+charge_experiments/stores/
+charge_experiments/external/
 
 # cosmo_experiments/ isn't part of this branch (it lives on experiments/
 # dash-charges) -- ignored here so a shared checkout's leftover copy never

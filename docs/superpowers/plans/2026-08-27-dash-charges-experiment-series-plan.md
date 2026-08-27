@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Scaffold `charges_experiments/`, a second, fully independent experiment
+**Goal:** Scaffold `charge_experiments/`, a second, fully independent experiment
 series that reproduces DASH's MBIS atomic-partial-charge prediction task on
 DASH's own published training SDF, with a data pipeline and two predictors
 (DASH-tree, Sieve).
@@ -26,7 +26,7 @@ reference for shape and convention.
 
 ## Global Constraints
 
-- `charges_experiments/` is a fully independent package (`charge_experiments`)
+- `charge_experiments/` is a fully independent package (`charge_experiments`)
   — zero imports from `sieve_experiments`/`cosmo_experiments`, at the harness
   level. Both series share only the core `sieve` package as a dependency.
 - Charge target column is `MBIScharge` (verified against the real SDF at
@@ -58,7 +58,7 @@ reference for shape and convention.
 ## File Structure
 
 ```
-charges_experiments/
+charge_experiments/
   charge_experiments/
     __init__.py
     __main__.py                # python -m charge_experiments ...
@@ -108,11 +108,11 @@ Modified existing files: root `pyproject.toml`, root `.gitignore`,
 ### Task 1: Vendor `_chalcedon`
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/_chalcedon/__init__.py`
-- Create: `charges_experiments/charge_experiments/_chalcedon/tanimoto_similarity.py`
-- Create: `charges_experiments/charge_experiments/_chalcedon/butina_cluster.py`
-- Create: `charges_experiments/charge_experiments/_chalcedon/greedy_cluster_split.py`
-- Create: `charges_experiments/charge_experiments/_chalcedon/NOTICE`
+- Create: `charge_experiments/charge_experiments/_chalcedon/__init__.py`
+- Create: `charge_experiments/charge_experiments/_chalcedon/tanimoto_similarity.py`
+- Create: `charge_experiments/charge_experiments/_chalcedon/butina_cluster.py`
+- Create: `charge_experiments/charge_experiments/_chalcedon/greedy_cluster_split.py`
+- Create: `charge_experiments/charge_experiments/_chalcedon/NOTICE`
 
 **Interfaces:**
 - Produces: `_chalcedon.butina_cluster.butina_cluster(fingerprints, cutoff=0.65, ...) -> NDArray[np.intp]`
@@ -126,11 +126,11 @@ Copy byte-for-byte from
 `tanimoto_similarity.py`, `butina_cluster.py`, `greedy_cluster_split.py`.
 
 ```bash
-mkdir -p charges_experiments/charge_experiments/_chalcedon
+mkdir -p charge_experiments/charge_experiments/_chalcedon
 cp /home/craabreu/github-repos/cosmolayer/cosmolayer/store/_chalcedon/tanimoto_similarity.py \
    /home/craabreu/github-repos/cosmolayer/cosmolayer/store/_chalcedon/butina_cluster.py \
    /home/craabreu/github-repos/cosmolayer/cosmolayer/store/_chalcedon/greedy_cluster_split.py \
-   charges_experiments/charge_experiments/_chalcedon/
+   charge_experiments/charge_experiments/_chalcedon/
 ```
 
 - [ ] **Step 2: Fix the one intra-package import in `butina_cluster.py`**
@@ -205,7 +205,7 @@ SOFTWARE.
 
 - [ ] **Step 5: Write a smoke test for the vendored glue**
 
-Create `charges_experiments/tests/test_charge_chalcedon.py`:
+Create `charge_experiments/tests/test_charge_chalcedon.py`:
 
 ```python
 """The vendored _chalcedon modules import cleanly under this package's own
@@ -244,7 +244,7 @@ def test_greedy_cluster_split_matches_upstream_doctest_example():
 - [ ] **Step 7: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/_chalcedon charges_experiments/tests/test_charge_chalcedon.py
+git add charge_experiments/charge_experiments/_chalcedon charge_experiments/tests/test_charge_chalcedon.py
 git commit -m "feat(charges): vendor cosmolayer's _chalcedon clustering module
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -256,17 +256,17 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 2: Package scaffolding and repo registration
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/__init__.py`
-- Create: `charges_experiments/charge_experiments/__main__.py`
-- Create: `charges_experiments/README.md`
-- Create: `charges_experiments/pins.toml`
+- Create: `charge_experiments/charge_experiments/__init__.py`
+- Create: `charge_experiments/charge_experiments/__main__.py`
+- Create: `charge_experiments/README.md`
+- Create: `charge_experiments/pins.toml`
 - Modify: `pyproject.toml`
 - Modify: `.gitignore`
 
 **Interfaces:**
 - Consumes: nothing new.
 - Produces: `charge_experiments` importable as a package; `pytest` collects
-  `charges_experiments/tests`; `python -m charge_experiments` resolves (even
+  `charge_experiments/tests`; `python -m charge_experiments` resolves (even
   though `cli.py` doesn't exist until Task 8 — `__main__.py` imports it
   lazily inside `main()`, matching `sieve_experiments/__main__.py`'s shape,
   so this task can land before `cli.py` exists as long as nothing calls
@@ -306,20 +306,20 @@ if __name__ == "__main__":
 
 - [ ] **Step 3: Update `pyproject.toml`**
 
-Add `"charges_experiments"` to `packages.find`'s `where`, add
-`"charges_experiments/tests"` to `testpaths`, add
-`"charges_experiments/**/*.py"` to ruff's `include`, add
-`"charges_experiments"` to `[tool.ty.environment].extra-paths`:
+Add `"charge_experiments"` to `packages.find`'s `where`, add
+`"charge_experiments/tests"` to `testpaths`, add
+`"charge_experiments/**/*.py"` to ruff's `include`, add
+`"charge_experiments"` to `[tool.ty.environment].extra-paths`:
 
 ```toml
 [tool.setuptools.packages.find]
-where = ["src", "cosmo_experiments", "charges_experiments"]
+where = ["src", "cosmo_experiments", "charge_experiments"]
 ```
 ```toml
 [tool.pytest.ini_options]
-# cosmo_experiments/tests and charges_experiments/tests each hold one
+# cosmo_experiments/tests and charge_experiments/tests each hold one
 # series' own tests, kept contained under their own series directory.
-testpaths = ["tests", "cosmo_experiments/tests", "charges_experiments/tests"]
+testpaths = ["tests", "cosmo_experiments/tests", "charge_experiments/tests"]
 filterwarnings = ["error::RuntimeWarning"]
 ```
 ```toml
@@ -330,15 +330,15 @@ include = [
     "src/**/*.py",
     "tests/**/*.py",
     "cosmo_experiments/**/*.py",
-    "charges_experiments/**/*.py",
+    "charge_experiments/**/*.py",
 ]
 ```
 ```toml
 [tool.ty.environment]
-extra-paths = ["cosmo_experiments", "charges_experiments"]
+extra-paths = ["cosmo_experiments", "charge_experiments"]
 ```
 
-No new `[tool.ty.overrides]` entry is needed yet (charges_experiments has no
+No new `[tool.ty.overrides]` entry is needed yet (charge_experiments has no
 pandas/mlflow-typed module comparable to `runner.py`'s `np.savez` false
 positive until Task 8 proves otherwise — revisit then if `ty` actually
 flags it).
@@ -359,26 +359,26 @@ cosmo_experiments/results/
 Add immediately after it:
 ```
 
-# Same shape for the charges series (see charges_experiments/README.md).
-# charges_experiments/pins.toml is tracked, same as cosmo_experiments/pins.toml.
-charges_experiments/runs/
-charges_experiments/mlruns/
-charges_experiments/cache/
-charges_experiments/results/
-charges_experiments/stores/
+# Same shape for the charges series (see charge_experiments/README.md).
+# charge_experiments/pins.toml is tracked, same as cosmo_experiments/pins.toml.
+charge_experiments/runs/
+charge_experiments/mlruns/
+charge_experiments/cache/
+charge_experiments/results/
+charge_experiments/stores/
 ```
 
-(`charges_experiments/stores/` is new relative to the cosmo series' list:
+(`charge_experiments/stores/` is new relative to the cosmo series' list:
 this series' `molecules.parquet` — parsed from an 8.3GB SDF — lives under
 its own `stores/` the same way `cosmo_experiments`' chaos-store does under
 the shared top-level `stores/`, which is already git-ignored elsewhere in
 this file; add the charges-local one explicitly for clarity even if
 redundant with any existing top-level `stores/` ignore.)
 
-- [ ] **Step 5: `charges_experiments/README.md`**
+- [ ] **Step 5: `charge_experiments/README.md`**
 
 ```markdown
-# charges_experiments
+# charge_experiments
 
 A second, independent experiment series: predicting DASH's MBIS atomic
 partial charges (the `MBIScharge` SDF property) on DASH's own published
@@ -397,14 +397,14 @@ for the full design.
     uv run python -m charge_experiments summarize
 ```
 
-- [ ] **Step 6: `charges_experiments/pins.toml`**
+- [ ] **Step 6: `charge_experiments/pins.toml`**
 
 ```toml
 # Pinned external repos for the charges experiments (see predictors/dash.py).
 # Mirrors cosmo_experiments/pins.toml's [dash_tree] entry -- both series use
 # the same rinikerlab/DASH-tree clone (its published topology, not its
 # training pipeline), but each series pins and clones it independently
-# (charges_experiments/external/, not shared with cosmo_experiments/external/)
+# (charge_experiments/external/, not shared with cosmo_experiments/external/)
 # to keep the two series' import/build graphs fully separate.
 
 [dash_tree]
@@ -424,7 +424,7 @@ predict a different (scalar, not profile) property.
 
 ```bash
 uv run python -c "import charge_experiments; print('ok')"
-uv run pytest charges_experiments/tests/test_charge_chalcedon.py -v
+uv run pytest charge_experiments/tests/test_charge_chalcedon.py -v
 ```
 
 Expected: both tests from Task 1 now PASS.
@@ -432,9 +432,9 @@ Expected: both tests from Task 1 now PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/__init__.py \
-  charges_experiments/charge_experiments/__main__.py \
-  charges_experiments/README.md charges_experiments/pins.toml \
+git add charge_experiments/charge_experiments/__init__.py \
+  charge_experiments/charge_experiments/__main__.py \
+  charge_experiments/README.md charge_experiments/pins.toml \
   pyproject.toml .gitignore
 git commit -m "feat(charges): scaffold charge_experiments package, register in pyproject
 
@@ -447,9 +447,9 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 3: `data.py` — Mol-blob `MoleculeSet`
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/data.py`
-- Create: `charges_experiments/tests/helpers.py`
-- Create: `charges_experiments/tests/test_charge_data.py`
+- Create: `charge_experiments/charge_experiments/data.py`
+- Create: `charge_experiments/tests/helpers.py`
+- Create: `charge_experiments/tests/test_charge_data.py`
 
 **Interfaces:**
 - Produces:
@@ -459,14 +459,14 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
   `conf_id: list[str]`, `mols: list[Any]`, `net_charge: NDArray[np.float64]`,
   `split: list[str] | None`, properties `n_conformers`, `num_atoms`,
   `n_atoms`, `atom_mol_id`, `atom_charge`, method `select(mask)`.
-  `REPO_ROOT`, `DEFAULT_STORES_ROOT = REPO_ROOT / "charges_experiments" / "stores"`.
+  `REPO_ROOT`, `DEFAULT_STORES_ROOT = REPO_ROOT / "charge_experiments" / "stores"`.
 - Consumed by: Task 6 (`prepare_store.py` writes/reads rows this shape
   describes), Task 8 (`runner.py`), Task 10/12 (predictors).
 
 - [ ] **Step 1: Write the failing round-trip test**
 
 ```python
-# charges_experiments/tests/test_charge_data.py
+# charge_experiments/tests/test_charge_data.py
 """Pure-rdkit tests for data.py's Mol-blob serialize/deserialize round trip
 and MoleculeSet -- no store, no download needed."""
 
@@ -522,7 +522,7 @@ def test_mol_to_blob_round_trip_preserves_chiral_tags():
 - [ ] **Step 2: Run it to see it fail**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_data.py -v
+uv run pytest charge_experiments/tests/test_charge_data.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'charge_experiments.data'`.
@@ -535,8 +535,8 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'charge_experiments.da
 ``MoleculeSet``, ``molecule_sum``, ``mol_to_blob``/``blob_to_mol`` are pure
 rdkit + numpy -- no pandas, no network -- so they are importable and
 testable without touching the real (8.3GB source / parsed parquet) store.
-See charges_experiments/tests/test_charge_data.py and the
-``synthetic_molecule_set`` fixture in charges_experiments/tests/helpers.py.
+See charge_experiments/tests/test_charge_data.py and the
+``synthetic_molecule_set`` fixture in charge_experiments/tests/helpers.py.
 
 Unlike cosmo_experiments' MoleculeSet, there is no SMILES field anywhere: a
 conformer's target (``MBIScharge``) rides directly on its own RDKit ``Mol``
@@ -554,8 +554,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_STORES_ROOT = REPO_ROOT / "charges_experiments" / "stores"
-DEFAULT_CACHE_DIR = REPO_ROOT / "charges_experiments" / "cache"
+DEFAULT_STORES_ROOT = REPO_ROOT / "charge_experiments" / "stores"
+DEFAULT_CACHE_DIR = REPO_ROOT / "charge_experiments" / "cache"
 
 # AtomProps carries MBIScharge (set via atom.SetDoubleProp); MolProps is
 # cheap to include too and covers any future mol-level property. Chiral
@@ -673,7 +673,7 @@ class MoleculeSet:
 - [ ] **Step 4: Run the tests again**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_data.py -v
+uv run pytest charge_experiments/tests/test_charge_data.py -v
 ```
 
 Expected: PASS.
@@ -681,8 +681,8 @@ Expected: PASS.
 - [ ] **Step 5: Write the `synthetic_molecule_set` fixture**
 
 ```python
-# charges_experiments/tests/helpers.py
-"""Fixtures shared across charges_experiments' test suite."""
+# charge_experiments/tests/helpers.py
+"""Fixtures shared across charge_experiments' test suite."""
 
 from __future__ import annotations
 
@@ -733,7 +733,7 @@ def synthetic_molecule_set(n_mol: int = 8, seed: int = 0):
 
 - [ ] **Step 6: Add a test exercising the fixture + `select`**
 
-Append to `charges_experiments/tests/test_charge_data.py`:
+Append to `charge_experiments/tests/test_charge_data.py`:
 
 ```python
 def test_synthetic_molecule_set_select_preserves_alignment():
@@ -758,7 +758,7 @@ def test_synthetic_molecule_set_select_preserves_alignment():
 - [ ] **Step 7: Run the whole data test file**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_data.py -v
+uv run pytest charge_experiments/tests/test_charge_data.py -v
 ```
 
 Expected: all PASS.
@@ -766,7 +766,7 @@ Expected: all PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/data.py charges_experiments/tests/helpers.py charges_experiments/tests/test_charge_data.py
+git add charge_experiments/charge_experiments/data.py charge_experiments/tests/helpers.py charge_experiments/tests/test_charge_data.py
 git commit -m "feat(charges): add Mol-blob MoleculeSet (data.py)
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -778,8 +778,8 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 4: `metrics.py`
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/metrics.py`
-- Create: `charges_experiments/tests/test_charge_metrics.py`
+- Create: `charge_experiments/charge_experiments/metrics.py`
+- Create: `charge_experiments/tests/test_charge_metrics.py`
 
 **Interfaces:**
 - Consumes: `charge_experiments.data.molecule_sum`.
@@ -791,7 +791,7 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# charges_experiments/tests/test_charge_metrics.py
+# charge_experiments/tests/test_charge_metrics.py
 """Pure-numpy metrics tests -- hand-computed numbers, no rdkit needed."""
 
 from __future__ import annotations
@@ -864,7 +864,7 @@ def test_charge_conservation_metrics_perfect_conservation_is_zero_error():
 - [ ] **Step 2: Run to see it fail**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_metrics.py -v
+uv run pytest charge_experiments/tests/test_charge_metrics.py -v
 ```
 
 Expected: FAIL, `ModuleNotFoundError: No module named 'charge_experiments.metrics'`.
@@ -875,7 +875,7 @@ Expected: FAIL, `ModuleNotFoundError: No module named 'charge_experiments.metric
 """Shared metrics for the charges experiment harness.
 
 Pure numpy: no rdkit, no pandas, no mlflow -- unit-testable with hand
-computed numbers (see charges_experiments/tests/test_charge_metrics.py).
+computed numbers (see charge_experiments/tests/test_charge_metrics.py).
 
 Unlike cosmo_experiments' ``charge_metrics`` (MAE/RMSE/max_abs_residual, no
 R2 -- net *molecular* charge clusters near zero, destabilizing ss_tot), this
@@ -934,7 +934,7 @@ def charge_conservation_metrics(
 - [ ] **Step 4: Run again**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_metrics.py -v
+uv run pytest charge_experiments/tests/test_charge_metrics.py -v
 ```
 
 Expected: PASS.
@@ -942,7 +942,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/metrics.py charges_experiments/tests/test_charge_metrics.py
+git add charge_experiments/charge_experiments/metrics.py charge_experiments/tests/test_charge_metrics.py
 git commit -m "feat(charges): add metrics.py (MAE/RMSE/R2, charge conservation)
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -954,8 +954,8 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 5: `config.py`
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/config.py`
-- Create: `charges_experiments/tests/test_charge_config.py`
+- Create: `charge_experiments/charge_experiments/config.py`
+- Create: `charge_experiments/tests/test_charge_config.py`
 
 **Interfaces:**
 - Produces: `RunCfg(experiment, seed, tags)`, `DataCfg(store, split_column,
@@ -973,7 +973,7 @@ the `scheme` field (no sigma-averaging scheme concept in this series) and
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# charges_experiments/tests/test_charge_config.py
+# charge_experiments/tests/test_charge_config.py
 from __future__ import annotations
 
 import pytest
@@ -1052,7 +1052,7 @@ def test_to_dict_and_to_flat_params_round_trip(tmp_path):
 - [ ] **Step 2: Run to see it fail**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_config.py -v
+uv run pytest charge_experiments/tests/test_charge_config.py -v
 ```
 
 Expected: FAIL, `ModuleNotFoundError`.
@@ -1252,7 +1252,7 @@ def to_flat_params(cfg: ExperimentCfg) -> dict[str, str]:
 - [ ] **Step 4: Run again**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_config.py -v
+uv run pytest charge_experiments/tests/test_charge_config.py -v
 ```
 
 Expected: PASS.
@@ -1260,7 +1260,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/config.py charges_experiments/tests/test_charge_config.py
+git add charge_experiments/charge_experiments/config.py charge_experiments/tests/test_charge_config.py
 git commit -m "feat(charges): add config.py (YAML load, --set overrides)
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -1272,8 +1272,8 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 6: `prepare_store.py` — download, streaming parse, cluster+split
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/prepare_store.py`
-- Create: `charges_experiments/tests/test_charge_prepare_store.py`
+- Create: `charge_experiments/charge_experiments/prepare_store.py`
+- Create: `charge_experiments/tests/test_charge_prepare_store.py`
 
 **Interfaces:**
 - Consumes: `charge_experiments.data.mol_to_blob`,
@@ -1299,7 +1299,7 @@ assignment and the parquet-round-trip shape, using tiny hand-built SDF text
 and a tiny synthetic fingerprint/cluster case.
 
 ```python
-# charges_experiments/tests/test_charge_prepare_store.py
+# charge_experiments/tests/test_charge_prepare_store.py
 """Fast-suite tests for prepare_store.py's pure-logic pieces -- no download,
 no real 8.3GB SDF needed. The real end-to-end parse/cluster/split path is
 covered by test_charge_prepare_store_optional.py, gated on that file's
@@ -1418,7 +1418,7 @@ def test_assign_splits_never_splits_a_chembl_id_across_splits(tmp_path):
 - [ ] **Step 2: Run to see it fail**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_prepare_store.py -v
+uv run pytest charge_experiments/tests/test_charge_prepare_store.py -v
 ```
 
 Expected: FAIL, `ModuleNotFoundError`.
@@ -1712,7 +1712,7 @@ def prepare_store(
 - [ ] **Step 4: Run the fast-suite prepare_store tests**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_prepare_store.py -v
+uv run pytest charge_experiments/tests/test_charge_prepare_store.py -v
 ```
 
 Expected: PASS.
@@ -1720,7 +1720,7 @@ Expected: PASS.
 - [ ] **Step 5: Write the download/full-pipeline `_optional` test**
 
 ```python
-# charges_experiments/tests/test_charge_prepare_store_optional.py
+# charge_experiments/tests/test_charge_prepare_store_optional.py
 """End-to-end prepare_store test against the real, already-downloaded
 dashMoleculesSDF_v2.sdf. Skipped entirely if that file is absent -- matches
 cosmo_experiments' *_optional.py pattern for tests needing the real store."""
@@ -1764,7 +1764,7 @@ def test_parse_first_n_records_of_the_real_sdf(tmp_path):
 - [ ] **Step 6: Run the optional test**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_prepare_store_optional.py -v
+uv run pytest charge_experiments/tests/test_charge_prepare_store_optional.py -v
 ```
 
 Expected: PASS (the real file is present at
@@ -1773,9 +1773,9 @@ Expected: PASS (the real file is present at
 - [ ] **Step 7: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/prepare_store.py \
-  charges_experiments/tests/test_charge_prepare_store.py \
-  charges_experiments/tests/test_charge_prepare_store_optional.py
+git add charge_experiments/charge_experiments/prepare_store.py \
+  charge_experiments/tests/test_charge_prepare_store.py \
+  charge_experiments/tests/test_charge_prepare_store_optional.py
 git commit -m "feat(charges): add prepare_store.py (download, streaming parse, cluster+split)
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -1945,10 +1945,10 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 8: `runner.py` + `cli.py` + smoke test
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/runner.py`
-- Create: `charges_experiments/charge_experiments/cli.py`
-- Create: `charges_experiments/tests/conftest.py`
-- Create: `charges_experiments/tests/test_charge_smoke.py`
+- Create: `charge_experiments/charge_experiments/runner.py`
+- Create: `charge_experiments/charge_experiments/cli.py`
+- Create: `charge_experiments/tests/conftest.py`
+- Create: `charge_experiments/tests/test_charge_smoke.py`
 
 **Interfaces:**
 - Consumes: `charge_experiments.config.ExperimentCfg/to_dict/to_flat_params`,
@@ -1975,7 +1975,7 @@ write manifest/metrics/predictions, optional MLflow log.
   9 only adds the `dash` registry branch)
 
 ```python
-# charges_experiments/charge_experiments/predictors/base.py
+# charge_experiments/charge_experiments/predictors/base.py
 """The predictor seam: one interface, one scalar-per-atom output.
 
 Unlike cosmo_experiments' base.py, there is no AtomPredictor/
@@ -2016,7 +2016,7 @@ class Predictor(Protocol):
 ```
 
 ```python
-# charges_experiments/charge_experiments/predictors/global_mean.py
+# charge_experiments/charge_experiments/predictors/global_mean.py
 """The simplest possible baseline: predict the training set's own mean
 MBIScharge for every atom. No optional dependency, so this is the one
 predictor registered eagerly (see predictors/__init__.py)."""
@@ -2052,7 +2052,7 @@ class GlobalMeanPredictor:
 ```
 
 ```python
-# charges_experiments/charge_experiments/predictors/__init__.py
+# charge_experiments/charge_experiments/predictors/__init__.py
 """Predictor registry. Lazy imports: a predictor module needing an optional
 dependency (rdkit, the DASH-tree clone) registers itself via ``register``
 only when its own module is imported. Only ``global_mean`` (no optional
@@ -2130,8 +2130,8 @@ from charge_experiments.data import REPO_ROOT, MoleculeSet, molecule_sum
 from charge_experiments.predictors import build
 from charge_experiments.predictors.base import Prediction
 
-DEFAULT_TRACKING_URI = f"file:{REPO_ROOT / 'charges_experiments' / 'mlruns'}"
-DEFAULT_RUNS_ROOT = REPO_ROOT / "charges_experiments" / "runs"
+DEFAULT_TRACKING_URI = f"file:{REPO_ROOT / 'charge_experiments' / 'mlruns'}"
+DEFAULT_RUNS_ROOT = REPO_ROOT / "charge_experiments" / "runs"
 
 logger = logging.getLogger("charge_experiments")
 
@@ -2576,7 +2576,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: `tests/conftest.py`**
 
 ```python
-"""Empty on purpose -- present so pytest treats charges_experiments/tests as
+"""Empty on purpose -- present so pytest treats charge_experiments/tests as
 a package root the same way cosmo_experiments/tests does, for
 `from charge_experiments.tests.helpers import ...`-style imports."""
 ```
@@ -2584,7 +2584,7 @@ a package root the same way cosmo_experiments/tests does, for
 - [ ] **Step 5: Write the smoke test**
 
 ```python
-# charges_experiments/tests/test_charge_smoke.py
+# charge_experiments/tests/test_charge_smoke.py
 """End-to-end smoke test on a synthetic store -- no download, no network,
 no mlflow required (tracking=None)."""
 
@@ -2692,7 +2692,7 @@ def test_smoke_metrics_json_matches_returned_metrics(tmp_path):
 - [ ] **Step 6: Run the smoke suite**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_smoke.py -v
+uv run pytest charge_experiments/tests/test_charge_smoke.py -v
 ```
 
 Expected: all PASS.
@@ -2700,8 +2700,8 @@ Expected: all PASS.
 - [ ] **Step 7: Run the whole fast suite so far**
 
 ```bash
-uv run pytest charges_experiments/tests -v
-uv run ruff check charges_experiments/
+uv run pytest charge_experiments/tests -v
+uv run ruff check charge_experiments/
 ```
 
 Expected: all PASS, no lint errors.
@@ -2709,11 +2709,11 @@ Expected: all PASS, no lint errors.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/runner.py \
-  charges_experiments/charge_experiments/cli.py \
-  charges_experiments/charge_experiments/predictors \
-  charges_experiments/tests/conftest.py \
-  charges_experiments/tests/test_charge_smoke.py
+git add charge_experiments/charge_experiments/runner.py \
+  charge_experiments/charge_experiments/cli.py \
+  charge_experiments/charge_experiments/predictors \
+  charge_experiments/tests/conftest.py \
+  charge_experiments/tests/test_charge_smoke.py
 git commit -m "feat(charges): add runner.py, cli.py, global_mean predictor, smoke test
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -2731,13 +2731,13 @@ against a real (once prepared) store using `global_mean`.
 ### Task 9: Clone the pinned DASH-tree checkout for this series
 
 **Files:**
-- No tracked files (this task's output, `charges_experiments/external/`, is
+- No tracked files (this task's output, `charge_experiments/external/`, is
   git-ignored — add the ignore entry here since Task 2 didn't need it yet).
 - Modify: `.gitignore`
 
 **Interfaces:**
-- Produces: `charges_experiments/external/DASH-tree/` on disk, a plain git
-  clone at the commit `charges_experiments/pins.toml`'s `[dash_tree]`
+- Produces: `charge_experiments/external/DASH-tree/` on disk, a plain git
+  clone at the commit `charge_experiments/pins.toml`'s `[dash_tree]`
   section pins (`6cf1b2351c4674e602153dd493c06d9c020fc9ce`), matching
   `cosmo_experiments/external/DASH-tree`'s own role — cloned independently
   per series (never shared), per the "no shared harness code" constraint.
@@ -2747,15 +2747,15 @@ against a real (once prepared) store using `global_mean`.
 In `.gitignore`, extend the block added in Task 2:
 
 ```
-charges_experiments/external/
+charge_experiments/external/
 ```
 
 - [ ] **Step 2: Clone the pinned commit**
 
 ```bash
-mkdir -p charges_experiments/external
-git clone https://github.com/rinikerlab/DASH-tree.git charges_experiments/external/DASH-tree
-git -C charges_experiments/external/DASH-tree checkout 6cf1b2351c4674e602153dd493c06d9c020fc9ce
+mkdir -p charge_experiments/external
+git clone https://github.com/rinikerlab/DASH-tree.git charge_experiments/external/DASH-tree
+git -C charge_experiments/external/DASH-tree checkout 6cf1b2351c4674e602153dd493c06d9c020fc9ce
 ```
 
 - [ ] **Step 3: Verify `uv sync` doesn't try to absorb it as a workspace member**
@@ -2765,7 +2765,7 @@ git -C charges_experiments/external/DASH-tree checkout 6cf1b2351c4674e602153dd49
 
 ```toml
 [tool.uv.workspace]
-exclude = ["cosmo_experiments/external/*", "charges_experiments/external/*"]
+exclude = ["cosmo_experiments/external/*", "charge_experiments/external/*"]
 ```
 
 ```bash
@@ -2773,14 +2773,14 @@ uv sync --extra dev --extra chem
 ```
 
 Expected: completes without trying to build/install `serenityff` from
-`charges_experiments/external/DASH-tree`.
+`charge_experiments/external/DASH-tree`.
 
 - [ ] **Step 4: Commit the ignore/exclude changes** (the clone itself is
   git-ignored, not committed)
 
 ```bash
 git add .gitignore pyproject.toml
-git commit -m "chore(charges): gitignore/exclude charges_experiments/external
+git commit -m "chore(charges): gitignore/exclude charge_experiments/external
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
@@ -2791,8 +2791,8 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 10: `predictors/dash.py` — scalar DASH-tree charge predictor
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/predictors/dash.py`
-- Create: `charges_experiments/tests/test_charge_predictor_dash.py`
+- Create: `charge_experiments/charge_experiments/predictors/dash.py`
+- Create: `charge_experiments/tests/test_charge_predictor_dash.py`
 
 **Interfaces:**
 - Consumes: `charge_experiments.data.MoleculeSet`,
@@ -2817,7 +2817,7 @@ canonical atom order.
 - [ ] **Step 1: Write the failing tests for the pure-logic layer**
 
 ```python
-# charges_experiments/tests/test_charge_predictor_dash.py
+# charge_experiments/tests/test_charge_predictor_dash.py
 """Pure-numpy/pandas tests for dash.py's tree-populate/predict-walk logic --
 a fake tree-like object stands in for a real DASHTree, so these need no
 rdkit and no DASH-tree clone."""
@@ -2911,7 +2911,7 @@ def test_predict_via_data_storage_walk_falls_back_to_global_mean_for_unmatched_a
 - [ ] **Step 2: Run to see it fail**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_predictor_dash.py -v
+uv run pytest charge_experiments/tests/test_charge_predictor_dash.py -v
 ```
 
 Expected: FAIL, `ModuleNotFoundError`.
@@ -2930,7 +2930,7 @@ and to this series' Mol-blob store (no atom-map-order/SMILES bookkeeping:
 order, so tree-matching iterates them directly).
 
 Two layers, deliberately split so the algorithm is testable without either
-optional dependency (see charges_experiments/tests/test_charge_predictor_dash.py
+optional dependency (see charge_experiments/tests/test_charge_predictor_dash.py
 for the pure-logic layer; the real-tree/real-rdkit layer is
 _optional-tested only, in test_charge_predictor_dash_optional.py):
 
@@ -2965,7 +2965,7 @@ NodePath = list[PathKey]
 # pins.toml's [dash_tree]: a plain git clone, cloned independently of
 # cosmo_experiments' own copy (see Task 9) -- see that pins.toml entry for
 # why (no shared harness code between series).
-_DASH_TREE_ROOT = REPO_ROOT / "charges_experiments" / "external" / "DASH-tree"
+_DASH_TREE_ROOT = REPO_ROOT / "charge_experiments" / "external" / "DASH-tree"
 if _DASH_TREE_ROOT.exists() and str(_DASH_TREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASH_TREE_ROOT))
 
@@ -3183,7 +3183,7 @@ register("dash", _build)
 - [ ] **Step 4: Run the pure-logic tests**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_predictor_dash.py -v
+uv run pytest charge_experiments/tests/test_charge_predictor_dash.py -v
 ```
 
 Expected: all PASS.
@@ -3191,7 +3191,7 @@ Expected: all PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/predictors/dash.py charges_experiments/tests/test_charge_predictor_dash.py
+git add charge_experiments/charge_experiments/predictors/dash.py charge_experiments/tests/test_charge_predictor_dash.py
 git commit -m "feat(charges): add DASHChargePredictor (scalar charge, pure-logic layer)
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -3203,7 +3203,7 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 11: DASH optional end-to-end test
 
 **Files:**
-- Create: `charges_experiments/tests/test_charge_predictor_dash_optional.py`
+- Create: `charge_experiments/tests/test_charge_predictor_dash_optional.py`
 
 **Interfaces:**
 - Consumes: `charge_experiments.predictors.dash.DASHChargePredictor`,
@@ -3212,9 +3212,9 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 - [ ] **Step 1: Write the optional test**
 
 ```python
-# charges_experiments/tests/test_charge_predictor_dash_optional.py
+# charge_experiments/tests/test_charge_predictor_dash_optional.py
 """End-to-end DASHChargePredictor test against the real pinned DASH-tree
-clone. Skipped if that clone (charges_experiments/external/DASH-tree,
+clone. Skipped if that clone (charge_experiments/external/DASH-tree,
 Task 9) is absent."""
 
 from __future__ import annotations
@@ -3227,7 +3227,7 @@ import pytest
 _DASH_TREE_ROOT = Path(__file__).resolve().parents[1] / "external" / "DASH-tree"
 
 pytestmark = pytest.mark.skipif(
-    not _DASH_TREE_ROOT.exists(), reason="charges_experiments/external/DASH-tree not cloned"
+    not _DASH_TREE_ROOT.exists(), reason="charge_experiments/external/DASH-tree not cloned"
 )
 
 
@@ -3250,7 +3250,7 @@ def test_dash_charge_predictor_fits_and_predicts_on_synthetic_molecules():
 - [ ] **Step 2: Run it**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_predictor_dash_optional.py -v
+uv run pytest charge_experiments/tests/test_charge_predictor_dash_optional.py -v
 ```
 
 Expected: PASS once Task 9's clone exists (SKIPPED otherwise, never a
@@ -3259,7 +3259,7 @@ failure).
 - [ ] **Step 3: Commit**
 
 ```bash
-git add charges_experiments/tests/test_charge_predictor_dash_optional.py
+git add charge_experiments/tests/test_charge_predictor_dash_optional.py
 git commit -m "test(charges): add DASHChargePredictor optional end-to-end test
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -3276,8 +3276,8 @@ Phase 2 is now complete: `predictor.name: dash` runs end-to-end through
 ### Task 12: `predictors/sieve_predictor.py`
 
 **Files:**
-- Create: `charges_experiments/charge_experiments/predictors/sieve_predictor.py`
-- Create: `charges_experiments/tests/test_charge_predictor_sieve.py`
+- Create: `charge_experiments/charge_experiments/predictors/sieve_predictor.py`
+- Create: `charge_experiments/tests/test_charge_predictor_sieve.py`
 
 **Interfaces:**
 - Consumes: `sieve.config.SieveConfig`, `sieve.io.rdkit_adapter.build_codes`,
@@ -3290,7 +3290,7 @@ Phase 2 is now complete: `predictor.name: dash` runs end-to-end through
 - [ ] **Step 1: Write the failing tests for the pure-logic layer**
 
 ```python
-# charges_experiments/tests/test_charge_predictor_sieve.py
+# charge_experiments/tests/test_charge_predictor_sieve.py
 """Fast-suite tests for sieve_predictor.py's config-building and
 batch-building helpers -- real rdkit, real sieve.fit/predict, but no store,
 no DASH-tree clone."""
@@ -3358,7 +3358,7 @@ def test_sieve_charge_predictor_fits_and_predicts_end_to_end():
 - [ ] **Step 2: Run to see it fail**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_predictor_sieve.py -v
+uv run pytest charge_experiments/tests/test_charge_predictor_sieve.py -v
 ```
 
 Expected: FAIL, `ModuleNotFoundError`.
@@ -3489,7 +3489,7 @@ register("sieve", _build)
 - [ ] **Step 4: Run the tests again**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_predictor_sieve.py -v
+uv run pytest charge_experiments/tests/test_charge_predictor_sieve.py -v
 ```
 
 Expected: all PASS.
@@ -3497,7 +3497,7 @@ Expected: all PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add charges_experiments/charge_experiments/predictors/sieve_predictor.py charges_experiments/tests/test_charge_predictor_sieve.py
+git add charge_experiments/charge_experiments/predictors/sieve_predictor.py charge_experiments/tests/test_charge_predictor_sieve.py
 git commit -m "feat(charges): add SievePredictor (y_from_atom_prop-based charge target)
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
@@ -3509,7 +3509,7 @@ Claude-Session: https://claude.ai/code/session_011QxBZCsbaugJns9fYNVTdu"
 ### Task 13: Sieve optional end-to-end test + full-suite verification
 
 **Files:**
-- Create: `charges_experiments/tests/test_charge_predictor_sieve_optional.py`
+- Create: `charge_experiments/tests/test_charge_predictor_sieve_optional.py`
 
 **Interfaces:**
 - Consumes: `charge_experiments.predictors.sieve_predictor.SievePredictor`,
@@ -3524,7 +3524,7 @@ on the real, prepared store instead (matching cosmo_experiments'
 real-store scale, not a missing dependency).
 
 ```python
-# charges_experiments/tests/test_charge_predictor_sieve_optional.py
+# charge_experiments/tests/test_charge_predictor_sieve_optional.py
 """End-to-end SievePredictor test through the real run() pipeline, gated on
 the real, already-split dash-molecules store (Task 6's prepare_store, run
 manually -- this test does not download/parse the 8.3GB SDF itself)."""
@@ -3561,33 +3561,33 @@ def test_sieve_charge_predictor_runs_end_to_end_via_run(tmp_path):
 - [ ] **Step 2: Run it**
 
 ```bash
-uv run pytest charges_experiments/tests/test_charge_predictor_sieve_optional.py -v
+uv run pytest charge_experiments/tests/test_charge_predictor_sieve_optional.py -v
 ```
 
 Expected: SKIPPED (the real store isn't prepared as part of this plan —
 `prepare_store` is a long-running, separate operational step) unless
 someone has already run `prepare-store` locally.
 
-- [ ] **Step 3: Run the entire charges_experiments fast suite one more time**
+- [ ] **Step 3: Run the entire charge_experiments fast suite one more time**
 
 ```bash
-uv run pytest charges_experiments/tests -v
+uv run pytest charge_experiments/tests -v
 uv run pytest tests/test_rdkit_adapter.py -v
-uv run ruff check charges_experiments/ src/sieve/io/rdkit_adapter.py
-uv run ty check charges_experiments/ 2>&1 | tail -50
+uv run ruff check charge_experiments/ src/sieve/io/rdkit_adapter.py
+uv run ty check charge_experiments/ 2>&1 | tail -50
 ```
 
 Expected: every non-`_optional`/skipped test PASSES; ruff clean; `ty`
 clean or only pre-existing/expected unresolved-import notes for
 `serenityff`/`pandas`/`pyarrow` (add a `[tool.ty.overrides]` entry mirroring
 `pyproject.toml`'s existing `allowed-unresolved-imports` list, scoped to
-`charges_experiments`, only if `ty` actually flags these — verify first
+`charge_experiments`, only if `ty` actually flags these — verify first
 rather than pre-emptively adding an override nothing needs).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add charges_experiments/tests/test_charge_predictor_sieve_optional.py
+git add charge_experiments/tests/test_charge_predictor_sieve_optional.py
 git commit -m "test(charges): add SievePredictor optional end-to-end test
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

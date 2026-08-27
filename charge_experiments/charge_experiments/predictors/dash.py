@@ -9,7 +9,7 @@ and to this series' Mol-blob store (no atom-map-order/SMILES bookkeeping:
 order, so tree-matching iterates them directly).
 
 Two layers, deliberately split so the algorithm is testable without either
-optional dependency (see charges_experiments/tests/test_charge_predictor_dash.py
+optional dependency (see charge_experiments/tests/test_charge_predictor_dash.py
 for the pure-logic layer; the real-tree/real-rdkit layer is
 _optional-tested only, in test_charge_predictor_dash_optional.py):
 
@@ -44,7 +44,7 @@ NodePath = list[PathKey]
 # pins.toml's [dash_tree]: a plain git clone, cloned independently of
 # cosmo_experiments' own copy (see Task 9) -- see that pins.toml entry for
 # why (no shared harness code between series).
-_DASH_TREE_ROOT = REPO_ROOT / "charges_experiments" / "external" / "DASH-tree"
+_DASH_TREE_ROOT = REPO_ROOT / "charge_experiments" / "external" / "DASH-tree"
 if _DASH_TREE_ROOT.exists() and str(_DASH_TREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASH_TREE_ROOT))
 

@@ -2,7 +2,7 @@
 # Mirrors cosmo_experiments/pins.toml's [dash_tree] entry -- both series use
 # the same rinikerlab/DASH-tree clone (its published topology, not its
 # training pipeline), but each series pins and clones it independently
-# (charges_experiments/external/, not shared with cosmo_experiments/external/)
+# (charge_experiments/external/, not shared with cosmo_experiments/external/)
 # to keep the two series' import/build graphs fully separate.
 
 [dash_tree]

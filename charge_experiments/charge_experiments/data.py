@@ -3,8 +3,8 @@
 ``MoleculeSet``, ``molecule_sum``, ``mol_to_blob``/``blob_to_mol`` are pure
 rdkit + numpy -- no pandas, no network -- so they are importable and
 testable without touching the real (8.3GB source / parsed parquet) store.
-See charges_experiments/tests/test_charge_data.py and the
-``synthetic_molecule_set`` fixture in charges_experiments/tests/helpers.py.
+See charge_experiments/tests/test_charge_data.py and the
+``synthetic_molecule_set`` fixture in charge_experiments/tests/helpers.py.
 
 Unlike cosmo_experiments' MoleculeSet, there is no SMILES field anywhere: a
 conformer's target (``MBIScharge``) rides directly on its own RDKit ``Mol``
@@ -22,8 +22,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_STORES_ROOT = REPO_ROOT / "charges_experiments" / "stores"
-DEFAULT_CACHE_DIR = REPO_ROOT / "charges_experiments" / "cache"
+DEFAULT_STORES_ROOT = REPO_ROOT / "charge_experiments" / "stores"
+DEFAULT_CACHE_DIR = REPO_ROOT / "charge_experiments" / "cache"
 
 # AtomProps carries MBIScharge (set via atom.SetDoubleProp); MolProps is
 # cheap to include too and covers any future mol-level property. Chiral

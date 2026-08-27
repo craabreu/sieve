@@ -16,7 +16,7 @@ def test_build_config_learns_codes_from_training_mols():
         _build_config,
     )
 
-    from charges_experiments.tests.helpers import synthetic_molecule_set
+    from charge_experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=6, seed=0)
     config = _build_config(
@@ -38,7 +38,7 @@ def test_batch_for_reads_mbis_charge_directly_off_the_mols():
         _build_config,
     )
 
-    from charges_experiments.tests.helpers import synthetic_molecule_set
+    from charge_experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=4, seed=1)
     config = _build_config(
@@ -53,7 +53,7 @@ def test_batch_for_reads_mbis_charge_directly_off_the_mols():
 def test_sieve_charge_predictor_fits_and_predicts_end_to_end():
     from charge_experiments.predictors.sieve_predictor import SievePredictor
 
-    from charges_experiments.tests.helpers import synthetic_molecule_set
+    from charge_experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=8, seed=2)
     rng = np.random.default_rng(0)

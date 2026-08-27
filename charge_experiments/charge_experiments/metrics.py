@@ -1,7 +1,7 @@
 """Shared metrics for the charges experiment harness.
 
 Pure numpy: no rdkit, no pandas, no mlflow -- unit-testable with hand
-computed numbers (see charges_experiments/tests/test_charge_metrics.py).
+computed numbers (see charge_experiments/tests/test_charge_metrics.py).
 
 Unlike cosmo_experiments' ``charge_metrics`` (MAE/RMSE/max_abs_residual, no
 R2 -- net *molecular* charge clusters near zero, destabilizing ss_tot), this
