@@ -53,8 +53,17 @@ An unmatched atom's ``atom_charge`` entry is ``float("nan")``, never a
 value we chose on DASH's behalf. ``metrics.regression_metrics`` is
 NaN-aware precisely so this predictor's own faithfulness doesn't silently
 poison a whole run's aggregate MAE/RMSE/R2 -- see that module's own
-docstring. ``match_stats`` (from ``_atom_paths``) still counts unmatched
-atoms/molecules -- bookkeeping about coverage, not a predicted value.
+docstring.
+
+``match_stats`` reports coverage at all three levels a NaN can originate
+from, not just the first: ``n_unmatched_atoms``/``n_unmatched_molecules``
+(from ``_atom_paths`` -- path-matching itself failed); ``n_walk_nan_atoms``
+(``raw_charge`` came back NaN -- a strict superset of the above, since it
+also covers a successfully matched path with no populated node anywhere
+along it); ``n_final_nan_atoms`` (``atom_charge`` after
+``std_weighted_normalize`` -- a further superset again, since one NaN
+``raw_charge`` in a conformer propagates to every atom in it). Each is
+bookkeeping about coverage, not a predicted value.
 
 **Applies DASH's own ``std_weighted`` charge-conservation renormalization**
 (the paper's eq 4) after the raw per-atom walk above -- the paper states
@@ -231,6 +240,31 @@ class DASHPretrainedChargePredictor:
         atom_charge = std_weighted_normalize(
             raw_charge, raw_std, test.net_charge, test.atom_mol_id, test.n_conformers
         )
+
+        # match_stats' own n_unmatched_atoms (above) only counts atoms
+        # whose path-matching itself failed -- a strict undercount of the
+        # real NaN rate: raw_charge is also NaN for a matched-but-nothing-
+        # populated path, and atom_charge is NaN for every atom in a
+        # conformer where even one other atom's raw_charge was NaN (see
+        # std_weighted_normalize's own docstring). Tracked here so
+        # match_stats -- the one place a run's manifest.json reports
+        # coverage -- reflects the true, final NaN rate, not just its
+        # path-matching-failure subset.
+        n_walk_nan_atoms = int(np.isnan(raw_charge).sum())
+        n_final_nan_atoms = int(np.isnan(atom_charge).sum())
+        self.match_stats["n_walk_nan_atoms"] = n_walk_nan_atoms
+        self.match_stats["n_final_nan_atoms"] = n_final_nan_atoms
+        if n_final_nan_atoms:
+            logger.warning(
+                "DASH (pretrained) predicted NaN for %d/%d atoms after "
+                "normalization (%d unmatched by path, %d unpopulated after "
+                "a successful match); these are reported as NaN, not "
+                "guessed at",
+                n_final_nan_atoms,
+                stats["n_atoms"],
+                stats["n_unmatched_atoms"],
+                n_walk_nan_atoms - stats["n_unmatched_atoms"],
+            )
         return Prediction(atom_charge=atom_charge)
 
 

@@ -70,13 +70,21 @@ def test_dash_pretrained_predictor_runs_without_crashing_and_reports_coverage():
     assert pred.atom_charge.shape == (mset.n_atoms,)
     assert predictor.match_stats["n_atoms"] == mset.n_atoms
     assert predictor.match_stats["n_conformers"] == mset.n_conformers
-    # match_stats["n_unmatched_atoms"] only counts atoms whose path-matching
-    # itself failed; an atom can also end up NaN with a successfully
-    # matched path if nothing along it has a populated "result" value in
-    # the real tree (the confirmed-sparse-coverage finding above) -- so the
-    # true NaN count is >=, not necessarily ==, match_stats' own count.
+
+    # match_stats now reports coverage at all three levels a NaN can
+    # originate from -- see the predictor module's own docstring. Each is
+    # a superset of the one before it: n_unmatched_atoms (path-matching
+    # itself failed) <= n_walk_nan_atoms (raw_charge came back NaN, also
+    # covers a matched-but-nothing-populated path) <= n_final_nan_atoms
+    # (atom_charge after std_weighted_normalize, also covers NaN
+    # propagating to every other atom in a conformer with one bad atom).
     n_nan = int(np.isnan(pred.atom_charge).sum())
-    assert n_nan >= predictor.match_stats["n_unmatched_atoms"]
+    assert predictor.match_stats["n_final_nan_atoms"] == n_nan
+    assert (
+        predictor.match_stats["n_unmatched_atoms"]
+        <= predictor.match_stats["n_walk_nan_atoms"]
+        <= predictor.match_stats["n_final_nan_atoms"]
+    )
     assert 0 <= n_nan <= mset.n_atoms
 
 
