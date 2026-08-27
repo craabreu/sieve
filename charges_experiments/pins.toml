@@ -1,0 +1,18 @@
+# Pinned external repos for the charges experiments (see predictors/dash.py).
+# Mirrors cosmo_experiments/pins.toml's [dash_tree] entry -- both series use
+# the same rinikerlab/DASH-tree clone (its published topology, not its
+# training pipeline), but each series pins and clones it independently
+# (charges_experiments/external/, not shared with cosmo_experiments/external/)
+# to keep the two series' import/build graphs fully separate.
+
+[dash_tree]
+url = "https://github.com/rinikerlab/DASH-tree.git"
+commit = "6cf1b2351c4674e602153dd493c06d9c020fc9ce"  # main, 2026-08-24
+license = "MIT"
+notes = """
+See cosmo_experiments/pins.toml's own [dash_tree] entry for the full story
+(preload=True gotcha, out-of-vocabulary atom failure mode, match_new_atom's
+O(n^2) neighbor-dict rebuild) -- identical here, since this series uses the
+same pinned commit's same match_new_atom/DASHTree machinery, just to
+predict a different (scalar, not profile) property.
+"""

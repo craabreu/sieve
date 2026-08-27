@@ -1,0 +1,9 @@
+run:
+  experiment: dash-charges
+  seed: 0
+data:
+  store: dash-molecules
+  split_column: split
+predictor:
+  name: dash
+  params: {}
