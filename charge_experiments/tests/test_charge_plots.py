@@ -40,9 +40,9 @@ def test_build_parity_panels_includes_atom_charge_and_conservation():
     np.testing.assert_array_equal(panels[0]["y_pred"], pred.atom_charge)
     assert panels[0]["metrics"] == {"mae": 0.0, "rmse": 0.0, "r2": 1.0}
     assert panels[1]["kind"] == "histogram"
-    # perfect predictions -- sum(Q_i) - Q_mol is exactly 0 for every conformer
+    # perfect predictions -- molecule charge residual is exactly 0 for every conformer
     np.testing.assert_allclose(panels[1]["values"], 0.0, atol=1e-12)
-    assert panels[1]["xlabel"] == "sum(Q_i) - Q_mol (e)"
+    assert panels[1]["xlabel"] == "molecule charge residual (e)"
     assert panels[1]["metrics"] == {"mae": 0.0, "rmse": 0.0, "r2": 1.0}
 
 
@@ -116,7 +116,7 @@ def test_parity_panel_renders_a_histogram_kind_panel(tmp_path):
         {
             "kind": "histogram",
             "values": rng.normal(scale=0.02, size=50),
-            "xlabel": "sum(Q_i) - Q_mol (e)",
+            "xlabel": "molecule charge residual (e)",
             "title": "molecule charge conservation",
             "metrics": {"mae": 0.02, "rmse": 0.03, "r2": 0.5},
         }
@@ -147,7 +147,7 @@ def test_parity_panel_renders_mixed_hexbin_and_histogram_panels(tmp_path):
         {
             "kind": "histogram",
             "values": rng.normal(scale=0.02, size=50),
-            "xlabel": "sum(Q_i) - Q_mol (e)",
+            "xlabel": "molecule charge residual (e)",
             "title": "molecule charge conservation",
             "metrics": {"mae": 0.02},
         },

@@ -73,11 +73,12 @@ def _histogram_subplot(
 ) -> None:
     """Draw one 1-D histogram onto ``ax`` -- the shared core of a
     ``"histogram"``-kind cell in ``parity_panel`` (e.g. molecule charge
-    conservation: the distribution of ``sum(Q_i) - Q_mol`` across
+    conservation: the distribution of molecule charge residual across
     conformers, rather than a true-vs-predicted parity scatter -- there is
     only one axis' worth of information in a residual)."""
     values = np.asarray(values).ravel()
-    ax.hist(values, bins=40, color="#d62728", alpha=0.8)
+    bins = 1 if np.max(np.abs(values)) < 1e-6 else 40
+    ax.hist(values, bins=bins, color="#d62728", alpha=0.8)
     ax.axvline(0, color="0.3", lw=1, ls="--")
     ax.set_xlabel(xlabel, fontsize=8)
     ax.set_ylabel("count", fontsize=8)
@@ -112,8 +113,8 @@ def parity_panel(
     cell (``kind="histogram"``) -- see ``runner._build_parity_panels``,
     which decides which panels a given run has data for (atom charge
     always, as a hexbin parity plot; molecule charge conservation when the
-    test split is non-empty, as a histogram of the per-conformer residual
-    ``sum(Q_i) - Q_mol``, not a parity scatter -- there's only one axis'
+    test split is non-empty, as a histogram of the per-conformer residual,
+    not a parity scatter -- there's only one axis'
     worth of information in a residual).
     """
     import matplotlib.pyplot as plt

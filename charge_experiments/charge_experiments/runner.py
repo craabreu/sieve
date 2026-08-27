@@ -200,7 +200,7 @@ def _build_parity_panels(
     (the primary prediction target, a hexbin parity plot -- ``test`` is
     assumed non-empty, ``_write_plots`` checks that before calling this);
     molecule charge conservation as a secondary diagnostic -- a 1-D
-    histogram of the per-conformer residual ``sum(Q_i) - Q_mol`` (predicted
+    histogram of the per-conformer residual (predicted
     atom charges summed, minus the conformer's own real ``net_charge``),
     not a parity scatter, since a residual is one number per conformer, not
     a true/predicted pair. The same residual ``metrics.
@@ -236,7 +236,7 @@ def _build_parity_panels(
             {
                 "kind": "histogram",
                 "values": residual,
-                "xlabel": "sum(Q_i) - Q_mol (e)",
+                "xlabel": "molecule charge residual (e)",
                 "title": "molecule charge conservation",
                 "metrics": {
                     k.removeprefix("charge_conservation/"): v
