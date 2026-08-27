@@ -107,9 +107,9 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import numpy as np
-from numpy.typing import NDArray
 
-from charge_experiments.data import MoleculeSet, molecule_sum
+from charge_experiments.data import MoleculeSet
+from charge_experiments.normalize import std_weighted_normalize
 from charge_experiments.predictors import register
 from charge_experiments.predictors.base import Prediction
 from charge_experiments.predictors.dash import (
@@ -119,40 +119,6 @@ from charge_experiments.predictors.dash import (
 )
 
 logger = logging.getLogger("charge_experiments")
-
-# get_molecules_partial_charges' own hardcoded default -- see module
-# docstring's note on why using it here is faithful, not invented.
-_DEFAULT_STD_VALUE = 0.1
-
-
-def std_weighted_normalize(
-    raw_charge: NDArray[np.floating],
-    raw_std: NDArray[np.floating],
-    net_charge: NDArray[np.floating],
-    mol_id: NDArray[np.int64],
-    n_conformers: int,
-) -> NDArray[np.float64]:
-    """DASH's own eq 4 (std-weighted normalization), pure numpy -- no tree,
-    no rdkit, so this is fast-suite tested independent of the real
-    DASH-tree clone (see module docstring for the sign-convention and
-    ``default_std_value`` notes this implements).
-
-    A non-positive (including NaN) entry in ``raw_std`` is floored to
-    ``get_molecules_partial_charges``'s own ``default_std_value`` (0.1) --
-    the authors' own published fallback for *that* quantity. A NaN entry
-    in ``raw_charge`` is not floored or substituted at all: it propagates
-    through ``molecule_sum`` into that whole conformer's residual, so
-    every atom in a conformer with even one unmatched raw charge ends up
-    NaN -- exactly ``get_molecules_partial_charges``'s own real behavior
-    for that case.
-    """
-    raw_charge = np.asarray(raw_charge, dtype=np.float64)
-    raw_std = np.asarray(raw_std, dtype=np.float64)
-    effective_std = np.where(raw_std > 0, raw_std, _DEFAULT_STD_VALUE)
-    tot_charge_tree = molecule_sum(raw_charge, mol_id, n_conformers)
-    tot_std_tree = molecule_sum(effective_std, mol_id, n_conformers)
-    residual = np.asarray(net_charge, dtype=np.float64) - tot_charge_tree
-    return raw_charge + (residual[mol_id] * effective_std / tot_std_tree[mol_id])
 
 
 class DASHPretrainedChargePredictor:
