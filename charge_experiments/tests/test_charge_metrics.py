@@ -41,6 +41,43 @@ def test_regression_metrics_empty_input_is_nan_not_a_crash():
     assert np.isnan(out["r2"])
 
 
+def test_regression_metrics_excludes_nan_pairs_and_reports_the_count():
+    """A predictor faithful to its own source's real missing-value behavior
+    (e.g. predictors/dash_pretrained.py, which returns NaN rather than
+    inventing a fallback for an atom it can't match) must not have that one
+    NaN poison the whole run's aggregate metrics."""
+    from charge_experiments.metrics import regression_metrics
+
+    y_true = np.array([0.0, 1.0, 2.0, 3.0])
+    y_pred = np.array([0.0, 1.0, np.nan, 3.0])
+
+    out = regression_metrics(y_true, y_pred)
+    assert out["mae"] == pytest.approx(0.0)
+    assert out["rmse"] == pytest.approx(0.0)
+    assert out["r2"] == pytest.approx(1.0)
+    assert out["n_nan"] == pytest.approx(1.0)
+
+
+def test_regression_metrics_all_nan_is_nan_not_a_crash():
+    from charge_experiments.metrics import regression_metrics
+
+    y_true = np.array([0.0, 1.0])
+    y_pred = np.array([np.nan, np.nan])
+
+    out = regression_metrics(y_true, y_pred)
+    assert np.isnan(out["mae"])
+    assert np.isnan(out["rmse"])
+    assert np.isnan(out["r2"])
+    assert out["n_nan"] == pytest.approx(2.0)
+
+
+def test_regression_metrics_no_nan_reports_zero():
+    from charge_experiments.metrics import regression_metrics
+
+    out = regression_metrics(np.array([0.0, 1.0]), np.array([0.0, 1.0]))
+    assert out["n_nan"] == pytest.approx(0.0)
+
+
 def test_charge_conservation_metrics_sums_atoms_per_conformer():
     from charge_experiments.metrics import charge_conservation_metrics
 

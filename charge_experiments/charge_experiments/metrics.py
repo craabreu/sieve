@@ -23,21 +23,38 @@ def regression_metrics(
 ) -> dict[str, float]:
     """MAE/RMSE/R2 flattened over all elements.
 
-    NaN for every key on empty input rather than a RuntimeWarning-turned-
-    error from averaging zero elements -- pyproject.toml promotes
-    RuntimeWarning to an error.
+    NaN-aware: a predictor faithful to its own source's real missing-value
+    behavior (e.g. a pretrained-tree baseline that returns NaN rather than
+    inventing a fallback value for an atom it can't match -- see
+    predictors/dash_pretrained.py) must not have one such atom silently
+    poison the whole run's aggregate metrics into NaN. Pairs where either
+    side is NaN are excluded from the mae/rmse/r2 computation; ``n_nan``
+    reports how many were excluded, so that exclusion is never silent
+    either. NaN for every key on empty (or all-NaN) input rather than a
+    RuntimeWarning-turned-error from averaging zero elements --
+    pyproject.toml promotes RuntimeWarning to an error.
     """
     y_true = np.asarray(y_true, dtype=np.float64).ravel()
     y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
-    if y_true.size == 0:
-        return {"mae": float("nan"), "rmse": float("nan"), "r2": float("nan")}
-    err = y_pred - y_true
+    finite = ~(np.isnan(y_true) | np.isnan(y_pred))
+    n_nan = float(finite.size - int(finite.sum()))
+    if not finite.any():
+        return {
+            "mae": float("nan"),
+            "rmse": float("nan"),
+            "r2": float("nan"),
+            "n_nan": n_nan,
+        }
+    y_true_f = y_true[finite]
+    y_pred_f = y_pred[finite]
+    err = y_pred_f - y_true_f
     ss_res = float(np.sum(err**2))
-    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+    ss_tot = float(np.sum((y_true_f - y_true_f.mean()) ** 2))
     return {
         "mae": float(np.mean(np.abs(err))),
         "rmse": float(np.sqrt(np.mean(err**2))),
         "r2": 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan"),
+        "n_nan": n_nan,
     }
 
 

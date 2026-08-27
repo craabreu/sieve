@@ -25,11 +25,14 @@ def register(name: str, builder: Callable[[Mapping[str, Any]], Predictor]) -> No
 def build(name: str, params: Mapping[str, Any]) -> Predictor:
     # One branch per optional-dependency predictor module, added as built:
     # predictors/dash.py -> "dash" (Task 10), predictors/sieve_predictor.py
-    # -> "sieve" (Task 12).
+    # -> "sieve" (Task 12), predictors/dash_pretrained.py -> "dash_pretrained"
+    # (zero-training DASH baseline, using the tree's own published stats).
     if name == "dash" and name not in REGISTRY:
         import charge_experiments.predictors.dash
     if name == "sieve" and name not in REGISTRY:
-        import charge_experiments.predictors.sieve_predictor  # noqa: F401
+        import charge_experiments.predictors.sieve_predictor
+    if name == "dash_pretrained" and name not in REGISTRY:
+        import charge_experiments.predictors.dash_pretrained  # noqa: F401
     if name not in REGISTRY:
         raise ValueError(f"unknown predictor {name!r}; known: {sorted(REGISTRY)}")
     return REGISTRY[name](params)

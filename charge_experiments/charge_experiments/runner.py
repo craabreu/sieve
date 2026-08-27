@@ -180,6 +180,19 @@ def _score_extra_split(
     return {f"{split}/{k}": v for k, v in score.items()}
 
 
+def _finite_pair(
+    y_true: NDArray[np.float64], y_pred: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Drop any (y_true, y_pred) pair where either side is NaN -- a
+    predictor faithful to its own source's real missing-value behavior
+    (e.g. predictors/dash_pretrained.py) can genuinely return NaN for an
+    atom it declines to guess at, and a hexbin plot's own ``.min()``/
+    ``.max()`` axis limits would otherwise go NaN from a single such
+    point."""
+    finite = ~(np.isnan(y_true) | np.isnan(y_pred))
+    return y_true[finite], y_pred[finite]
+
+
 def _build_parity_panels(
     test: MoleculeSet, pred: Prediction, run_metrics: dict[str, float]
 ) -> list[dict[str, Any]]:
@@ -191,33 +204,42 @@ def _build_parity_panels(
     ``metrics.charge_conservation_metrics`` already scores). Pure numpy --
     no matplotlib -- so this is testable independent of ``plots.py``
     actually rendering anything."""
-    panels: list[dict[str, Any]] = [
-        {
-            "y_true": test.atom_charge,
-            "y_pred": pred.atom_charge,
-            "quantity": "charge (e)",
-            "title": "atom charge",
-            "metrics": {
-                k: v for k, v in run_metrics.items() if k in ("mae", "rmse", "r2")
-            },
-        }
-    ]
+    panels: list[dict[str, Any]] = []
+
+    atom_true, atom_pred = _finite_pair(test.atom_charge, pred.atom_charge)
+    if atom_true.size:  # every atom NaN (e.g. a pretrained baseline that
+        # matched nothing in this split) -- an empty hexbin panel would
+        # crash on its own .min()/.max() axis limits, so skip it, not fake it
+        panels.append(
+            {
+                "y_true": atom_true,
+                "y_pred": atom_pred,
+                "quantity": "charge (e)",
+                "title": "atom charge",
+                "metrics": {
+                    k: v for k, v in run_metrics.items() if k in ("mae", "rmse", "r2")
+                },
+            }
+        )
+
     pred_net_charge = molecule_sum(
         pred.atom_charge, test.atom_mol_id, test.n_conformers
     )
-    panels.append(
-        {
-            "y_true": test.net_charge,
-            "y_pred": pred_net_charge,
-            "quantity": "net charge (e)",
-            "title": "molecule charge conservation",
-            "metrics": {
-                k.removeprefix("charge_conservation/"): v
-                for k, v in run_metrics.items()
-                if k.startswith("charge_conservation/")
-            },
-        }
-    )
+    net_true, net_pred = _finite_pair(test.net_charge, pred_net_charge)
+    if net_true.size:
+        panels.append(
+            {
+                "y_true": net_true,
+                "y_pred": net_pred,
+                "quantity": "net charge (e)",
+                "title": "molecule charge conservation",
+                "metrics": {
+                    k.removeprefix("charge_conservation/"): v
+                    for k, v in run_metrics.items()
+                    if k.startswith("charge_conservation/")
+                },
+            }
+        )
     return panels
 
 
