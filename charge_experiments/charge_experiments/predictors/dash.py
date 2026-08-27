@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -34,7 +34,15 @@ from numpy.typing import NDArray
 
 from charge_experiments.data import REPO_ROOT, MoleculeSet
 from charge_experiments.predictors import register
-from charge_experiments.predictors.base import Prediction
+from charge_experiments.predictors.base import Prediction, RawPrediction
+from charge_experiments.tree_artifact import (
+    LiteralTreeChargeProperties,
+    TreeNodeStats,
+    apply_node_stats,
+    compute_node_stats,
+    load_node_stats,
+    save_node_stats,
+)
 
 logger = logging.getLogger("charge_experiments")
 
@@ -49,57 +57,20 @@ if _DASH_TREE_ROOT.exists() and str(_DASH_TREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_DASH_TREE_ROOT))
 
 
-@dataclass(frozen=True)
-class LiteralTreeChargeProperties:
-    """What ``populate_tree_with_charge_property`` writes onto a
-    ``DASHTree``'s own ``data_storage``, and what
-    ``predict_via_data_storage_walk`` needs to read it back."""
-
-    charge_column: str
-    fallback_charge: float
-
-
 def populate_tree_with_charge_property(
     tree: Any, paths: list[NodePath], atom_charge: NDArray[np.floating]
 ) -> LiteralTreeChargeProperties:
     """Populate an already-loaded ``DASHTree``'s own storage with our own
-    per-node mean ``MBIScharge`` over every node on every atom's path. A
-    node with zero matching atoms gets no entry and stays ``NaN`` --
-    exactly DASH's own ``get_property_noNAN`` missing-value semantics."""
-    n = len(paths)
-    if len(atom_charge) != n:
-        raise ValueError("paths and atom_charge must have the same length")
-    atom_charge = np.asarray(atom_charge, dtype=np.float64)
-    charge_column = "dash_charge_mean"
-
-    charge_sum: dict[PathKey, float] = {}
-    count: dict[PathKey, int] = {}
-    for path, charge in zip(paths, atom_charge, strict=True):
-        for key in path:
-            charge_sum[key] = charge_sum.get(key, 0.0) + float(charge)
-            count[key] = count.get(key, 0) + 1
-
-    by_branch: dict[int, list[int]] = {}
-    for branch_idx, node_id in count:
-        by_branch.setdefault(branch_idx, []).append(node_id)
-
-    for branch_idx, node_ids in by_branch.items():
-        df = tree.data_storage[branch_idx]
-        n_rows = len(df)
-        node_ids_arr = np.array(node_ids, dtype=np.int64)
-        means = np.array(
-            [
-                charge_sum[(branch_idx, nid)] / count[(branch_idx, nid)]
-                for nid in node_ids
-            ]
-        )
-        values = np.full(n_rows, np.nan)
-        values[node_ids_arr] = means
-        df[charge_column] = values
-
-    return LiteralTreeChargeProperties(
-        charge_column=charge_column, fallback_charge=float(atom_charge.mean())
-    )
+    per-node mean/std ``MBIScharge`` over every node on every atom's path --
+    a thin wrapper over tree_artifact's own ``compute_node_stats``/
+    ``apply_node_stats``, kept for its existing callers/tests. Returns only
+    the mean props (the std props are also written onto
+    ``tree.data_storage``, just not returned here -- ``DASHChargePredictor.
+    fit()`` below calls ``compute_node_stats``/``apply_node_stats`` directly
+    instead, to keep both)."""
+    stats = compute_node_stats(paths, atom_charge)
+    mean_props, _std_props = apply_node_stats(tree, stats)
+    return mean_props
 
 
 def predict_via_data_storage_walk(
@@ -219,7 +190,9 @@ class DASHChargePredictor:
         self.preload = preload
         self.match_stats: dict[str, dict[str, int]] = {}
         self._tree: Any = None
-        self._props: LiteralTreeChargeProperties | None = None
+        self._stats: TreeNodeStats | None = None
+        self._mean_props: LiteralTreeChargeProperties | None = None
+        self._std_props: LiteralTreeChargeProperties | None = None
 
     def _load_tree(self) -> Any:
         if self._tree is None:
@@ -257,16 +230,35 @@ class DASHChargePredictor:
     ) -> None:
         del val, rng
         paths = self._paths_for(train, split="train")
-        self._props = populate_tree_with_charge_property(
-            self._tree, paths, train.atom_charge
-        )
+        self._stats = compute_node_stats(paths, train.atom_charge)
+        self._mean_props, self._std_props = apply_node_stats(self._tree, self._stats)
+
+    def predict_raw(self, test: MoleculeSet) -> RawPrediction:
+        if self._mean_props is None or self._std_props is None:
+            raise RuntimeError(
+                "fit (or load_tree_stats) must be called before predict_raw"
+            )
+        paths = self._paths_for(test, split="test")
+        atom_charge = predict_via_data_storage_walk(self._tree, paths, self._mean_props)
+        atom_std = predict_via_data_storage_walk(self._tree, paths, self._std_props)
+        return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:
-        if self._props is None:
-            raise RuntimeError("fit must be called before predict")
-        paths = self._paths_for(test, split="test")
-        atom_charge = predict_via_data_storage_walk(self._tree, paths, self._props)
-        return Prediction(atom_charge=atom_charge)
+        return Prediction(atom_charge=self.predict_raw(test).atom_charge)
+
+    def save_tree_stats(self, path: str | Path) -> None:
+        if self._stats is None:
+            raise RuntimeError("fit must be called before save_tree_stats")
+        save_node_stats(self._stats, path)
+
+    def load_tree_stats(self, path: str | Path) -> None:
+        """Loads the tree (fast -- reads the pinned clone's own data files,
+        no atom matching) and applies a previously-saved stats artifact,
+        skipping fit()'s own expensive match_new_atom walk over train
+        entirely."""
+        self._load_tree()
+        self._stats = load_node_stats(path)
+        self._mean_props, self._std_props = apply_node_stats(self._tree, self._stats)
 
 
 def _build(params: Mapping[str, Any]) -> DASHChargePredictor:
