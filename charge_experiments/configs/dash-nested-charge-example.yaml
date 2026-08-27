@@ -1,0 +1,14 @@
+run:
+  experiment: dash-charges-nested
+  seed: 0
+data:
+  store: dash-molecules
+  split_column: split
+predictor:
+  name: dash
+  params: {}
+tree_stats:
+  save_path: charge_experiments/artifacts/dash-tree-stats.npz
+children:
+  - std_weighted
+  - equal_weighted
