@@ -63,6 +63,40 @@ def _hexbin_subplot(
         )
 
 
+def _histogram_subplot(
+    ax: Axes,
+    values: np.ndarray,
+    metrics: dict[str, float],
+    *,
+    xlabel: str,
+    title: str,
+) -> None:
+    """Draw one 1-D histogram onto ``ax`` -- the shared core of a
+    ``"histogram"``-kind cell in ``parity_panel`` (e.g. molecule charge
+    conservation: the distribution of ``sum(Q_i) - Q_mol`` across
+    conformers, rather than a true-vs-predicted parity scatter -- there is
+    only one axis' worth of information in a residual)."""
+    values = np.asarray(values).ravel()
+    ax.hist(values, bins=40, color="#d62728", alpha=0.8)
+    ax.axvline(0, color="0.3", lw=1, ls="--")
+    ax.set_xlabel(xlabel, fontsize=8)
+    ax.set_ylabel("count", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.tick_params(labelsize=7)
+    lines = [f"{k}={v:.4g}" for k, v in metrics.items() if isinstance(v, float)]
+    if lines:
+        ax.text(
+            0.03,
+            0.97,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=6,
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "0.7"},
+        )
+
+
 def parity_panel(
     panels: list[dict[str, Any]],
     out_path: str | Path,
@@ -70,12 +104,17 @@ def parity_panel(
     suptitle: str,
     n_cols: int = 2,
 ) -> None:
-    """Save a grid of hexbin parity plots, one per entry in ``panels``.
+    """Save a grid of plots, one per entry in ``panels``.
 
-    Each entry is a dict with ``y_true``, ``y_pred``, ``quantity``,
-    ``title``, ``metrics`` -- see ``runner._build_parity_panels``, which
-    decides which panels a given run has data for (atom charge always;
-    molecule charge conservation when the test split is non-empty).
+    Each entry is a dict with ``metrics``, ``title``, plus either
+    ``y_true``/``y_pred``/``quantity`` for a hexbin parity cell (``kind``
+    omitted or ``"hexbin"``) or ``values``/``xlabel`` for a 1-D histogram
+    cell (``kind="histogram"``) -- see ``runner._build_parity_panels``,
+    which decides which panels a given run has data for (atom charge
+    always, as a hexbin parity plot; molecule charge conservation when the
+    test split is non-empty, as a histogram of the per-conformer residual
+    ``sum(Q_i) - Q_mol``, not a parity scatter -- there's only one axis'
+    worth of information in a residual).
     """
     import matplotlib.pyplot as plt
 
@@ -88,14 +127,23 @@ def parity_panel(
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.5 * n_cols, 4.5 * n_rows))
     axes_flat = np.atleast_1d(axes).ravel()
     for ax, panel in zip(axes_flat, panels, strict=False):
-        _hexbin_subplot(
-            ax,
-            panel["y_true"],
-            panel["y_pred"],
-            panel["metrics"],
-            quantity=panel["quantity"],
-            title=panel["title"],
-        )
+        if panel.get("kind", "hexbin") == "histogram":
+            _histogram_subplot(
+                ax,
+                panel["values"],
+                panel["metrics"],
+                xlabel=panel["xlabel"],
+                title=panel["title"],
+            )
+        else:
+            _hexbin_subplot(
+                ax,
+                panel["y_true"],
+                panel["y_pred"],
+                panel["metrics"],
+                quantity=panel["quantity"],
+                title=panel["title"],
+            )
     for ax in axes_flat[n:]:
         ax.axis("off")
     fig.suptitle(suptitle)

@@ -196,14 +196,18 @@ def _finite_pair(
 def _build_parity_panels(
     test: MoleculeSet, pred: Prediction, run_metrics: dict[str, float]
 ) -> list[dict[str, Any]]:
-    """Which hexbin parity panels a run's ``parity_panel.png`` gets: atom
-    charge always (the primary prediction target -- ``test`` is assumed
-    non-empty, ``_write_plots`` checks that before calling this); molecule
-    charge conservation as a secondary diagnostic (sum of a conformer's own
-    predicted atom charges vs. its real ``net_charge`` -- the same pairing
-    ``metrics.charge_conservation_metrics`` already scores). Pure numpy --
-    no matplotlib -- so this is testable independent of ``plots.py``
-    actually rendering anything."""
+    """Which panels a run's ``parity_panel.png`` gets: atom charge always
+    (the primary prediction target, a hexbin parity plot -- ``test`` is
+    assumed non-empty, ``_write_plots`` checks that before calling this);
+    molecule charge conservation as a secondary diagnostic -- a 1-D
+    histogram of the per-conformer residual ``sum(Q_i) - Q_mol`` (predicted
+    atom charges summed, minus the conformer's own real ``net_charge``),
+    not a parity scatter, since a residual is one number per conformer, not
+    a true/predicted pair. The same residual ``metrics.
+    charge_conservation_metrics`` already scores (its own ``err = y_pred -
+    y_true`` is this exact quantity). Pure numpy -- no matplotlib -- so
+    this is testable independent of ``plots.py`` actually rendering
+    anything."""
     panels: list[dict[str, Any]] = []
 
     atom_true, atom_pred = _finite_pair(test.atom_charge, pred.atom_charge)
@@ -225,13 +229,14 @@ def _build_parity_panels(
     pred_net_charge = molecule_sum(
         pred.atom_charge, test.atom_mol_id, test.n_conformers
     )
-    net_true, net_pred = _finite_pair(test.net_charge, pred_net_charge)
-    if net_true.size:
+    residual = pred_net_charge - test.net_charge
+    residual = residual[~np.isnan(residual)]
+    if residual.size:
         panels.append(
             {
-                "y_true": net_true,
-                "y_pred": net_pred,
-                "quantity": "net charge (e)",
+                "kind": "histogram",
+                "values": residual,
+                "xlabel": "sum(Q_i) - Q_mol (e)",
                 "title": "molecule charge conservation",
                 "metrics": {
                     k.removeprefix("charge_conservation/"): v
@@ -258,7 +263,7 @@ def _write_plots(
         plots.parity_panel(
             panels,
             run_dir / "plots" / "parity_panel.png",
-            suptitle=f"{cfg.predictor.name} ({cfg.data.split_column})",
+            suptitle=cfg.predictor.name,
         )
     except ImportError:
         logger.warning("matplotlib not installed; skipping plots for this run")
