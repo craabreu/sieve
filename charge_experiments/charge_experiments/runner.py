@@ -41,13 +41,14 @@ from charge_experiments.predictors.base import Prediction
 # mlflow's plain filesystem tracking backend ("file:...") is in maintenance
 # mode as of mlflow 3.x and refuses to open without an explicit env-var
 # opt-out -- sqlite is the backend mlflow itself points users toward.
-DEFAULT_TRACKING_URI = f"sqlite:///{REPO_ROOT / 'charge_experiments' / 'mlruns.db'}"
+_MLFLOW_RUNS_DB = REPO_ROOT / "charge_experiments" / "mlflow_runs.db"
+DEFAULT_TRACKING_URI = f"sqlite:///{_MLFLOW_RUNS_DB}"
 # A sqlite/db tracking backend's own default artifact root is "./mlruns"
 # relative to the CWD the process happens to run from -- not tied to the
 # tracking URI's own location at all, so it silently writes an unignored
 # ./mlruns/ wherever the CLI was invoked from unless every experiment is
 # created with an explicit artifact_location. See _ensure_experiment.
-DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "charge_experiments" / "mlartifacts"
+DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "charge_experiments" / "mlflow_artifacts"
 DEFAULT_RUNS_ROOT = REPO_ROOT / "charge_experiments" / "runs"
 
 logger = logging.getLogger("charge_experiments")
