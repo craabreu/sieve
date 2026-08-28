@@ -183,18 +183,18 @@ def execute_nested(
 
     # build()'s declared return type is the base Predictor protocol; this
     # function needs the wider surface (predict_raw, and conditionally
-    # save_tree_stats/load_tree_stats) that only some predictors implement
+    # save_model_state/load_model_state) that only some predictors implement
     # -- checked at runtime via hasattr, not statically, so Any here.
     predictor: Any = build(cfg.predictor.name, cfg.predictor.params)
 
     t0 = time.perf_counter()
     if cfg.tree_stats.load_path is not None:
-        if not hasattr(predictor, "load_tree_stats"):
+        if not hasattr(predictor, "load_model_state"):
             raise AttributeError(
-                f"predictor {cfg.predictor.name!r} has no load_tree_stats "
+                f"predictor {cfg.predictor.name!r} has no load_model_state "
                 "method; tree_stats.load_path is not usable with it"
             )
-        predictor.load_tree_stats(cfg.tree_stats.load_path)
+        predictor.load_model_state(cfg.tree_stats.load_path)
         tree_stats_source = "loaded"
     else:
         predictor.fit(splits["train"], splits["val"], rng=rng)
@@ -271,13 +271,13 @@ def execute_nested(
             git_info=git_info, extra_manifest=parent_extra_manifest,
         )
         # Automatic and unconditional whenever fit() actually ran: the
-        # saved stats live inside the run they came from, so the run
+        # saved state lives inside the run it came from, so the run
         # directory itself is the provenance record -- no separately
         # configurable path to silently collide across runs. Skipped for a
-        # predictor without save_tree_stats (e.g. dash_pretrained, whose
+        # predictor without save_model_state (e.g. dash_pretrained, whose
         # fit() is a no-op with nothing to save).
-        if tree_stats_source == "fit" and hasattr(predictor, "save_tree_stats"):
-            predictor.save_tree_stats(parent_result.run_dir / "tree_stats.npz")
+        if tree_stats_source == "fit" and hasattr(predictor, "save_model_state"):
+            predictor.save_model_state(parent_result.run_dir / "tree_stats.npz")
         if tracking_ok:
             _runner._log_mlflow_run(
                 _tags_for(

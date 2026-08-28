@@ -236,7 +236,7 @@ class DASHChargePredictor:
     def predict_raw(self, test: MoleculeSet) -> RawPrediction:
         if self._mean_props is None or self._std_props is None:
             raise RuntimeError(
-                "fit (or load_tree_stats) must be called before predict_raw"
+                "fit (or load_model_state) must be called before predict_raw"
             )
         paths = self._paths_for(test, split="test")
         atom_charge = predict_via_data_storage_walk(self._tree, paths, self._mean_props)
@@ -246,12 +246,15 @@ class DASHChargePredictor:
     def predict(self, test: MoleculeSet) -> Prediction:
         return Prediction(atom_charge=self.predict_raw(test).atom_charge)
 
-    def save_tree_stats(self, path: str | Path) -> None:
+    def save_model_state(self, path: str | Path) -> None:
+        """See ``NormalizableChargePredictor``'s own docstring
+        (predictors/base.py) for why this method name is predictor-agnostic
+        rather than ``save_tree_stats``."""
         if self._stats is None:
-            raise RuntimeError("fit must be called before save_tree_stats")
+            raise RuntimeError("fit must be called before save_model_state")
         save_node_stats(self._stats, path)
 
-    def load_tree_stats(self, path: str | Path) -> None:
+    def load_model_state(self, path: str | Path) -> None:
         """Loads the tree (fast -- reads the pinned clone's own data files,
         no atom matching) and applies a previously-saved stats artifact,
         skipping fit()'s own expensive match_new_atom walk over train

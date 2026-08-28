@@ -53,7 +53,7 @@ def test_dash_charge_predictor_predict_equals_predict_raw_atom_charge():
     assert raw.atom_std.shape == raw.atom_charge.shape
 
 
-def test_dash_charge_predictor_save_and_load_tree_stats_round_trips(tmp_path):
+def test_dash_charge_predictor_save_and_load_model_state_round_trips(tmp_path):
     """A predictor that loads a saved artifact (no fit() call at all)
     predicts identically to a freshly-fit one on the same train data."""
     from charge_experiments.predictors.dash import DASHChargePredictor
@@ -69,17 +69,17 @@ def test_dash_charge_predictor_save_and_load_tree_stats_round_trips(tmp_path):
     fitted_pred = fitted.predict(test)
 
     stats_path = tmp_path / "dash-tree-stats.npz"
-    fitted.save_tree_stats(stats_path)
+    fitted.save_model_state(stats_path)
 
     loaded = DASHChargePredictor()
-    loaded.load_tree_stats(stats_path)
+    loaded.load_model_state(stats_path)
     loaded_pred = loaded.predict(test)
 
     np.testing.assert_array_equal(loaded_pred.atom_charge, fitted_pred.atom_charge)
 
 
-def test_dash_charge_predictor_load_tree_stats_does_not_call_fit(tmp_path, monkeypatch):
-    """Proves load_tree_stats never touches match_new_atom for train atoms
+def test_dash_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch):
+    """Proves load_model_state never touches match_new_atom for train atoms
     -- the whole point of persisting stats."""
     from charge_experiments.predictors.dash import DASHChargePredictor
 
@@ -92,7 +92,7 @@ def test_dash_charge_predictor_load_tree_stats_does_not_call_fit(tmp_path, monke
     fitted = DASHChargePredictor()
     fitted.fit(train, train, rng=rng)
     stats_path = tmp_path / "dash-tree-stats.npz"
-    fitted.save_tree_stats(stats_path)
+    fitted.save_model_state(stats_path)
 
     loaded = DASHChargePredictor()
 
@@ -100,6 +100,6 @@ def test_dash_charge_predictor_load_tree_stats_does_not_call_fit(tmp_path, monke
         raise AssertionError("fit()/_atom_paths must not be called")
 
     monkeypatch.setattr(loaded, "fit", _boom)
-    loaded.load_tree_stats(stats_path)  # must not raise
+    loaded.load_model_state(stats_path)  # must not raise
     pred = loaded.predict(test)
     assert pred.atom_charge.shape == (test.n_atoms,)

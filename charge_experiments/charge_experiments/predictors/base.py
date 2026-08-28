@@ -51,8 +51,19 @@ class RawPrediction:
 @runtime_checkable
 class NormalizableChargePredictor(Predictor, Protocol):
     """A ``Predictor`` that can also return its raw, unnormalized walk
-    output separately -- ``predictors/dash.py``'s ``DASHChargePredictor`` and
-    ``predictors/dash_pretrained.py``'s ``DASHPretrainedChargePredictor``
-    both implement this; ``nested_runner.py`` requires it."""
+    output separately -- ``predictors/dash.py``'s ``DASHChargePredictor``,
+    ``predictors/dash_pretrained.py``'s ``DASHPretrainedChargePredictor``,
+    and ``predictors/sieve_predictor.py``'s ``SievePredictor`` all implement
+    this; ``nested_runner.py`` requires it.
+
+    A predictor whose ``fit()`` is expensive to redo may additionally
+    implement ``save_model_state(path)``/``load_model_state(path)`` -- not
+    part of this Protocol (their argument/return shape has no reason to be
+    uniform: ``DASHChargePredictor``'s is a small per-node stats table,
+    ``SievePredictor``'s is its own ``sieve.SieveModel.save``/``.load``).
+    ``nested_runner.execute_nested`` checks for them via ``hasattr``, not an
+    ``isinstance`` check, and treats their absence (e.g.
+    ``DASHPretrainedChargePredictor``, whose ``fit()`` is already a genuine
+    no-op) as "nothing to persist," not an error."""
 
     def predict_raw(self, test: MoleculeSet) -> RawPrediction: ...

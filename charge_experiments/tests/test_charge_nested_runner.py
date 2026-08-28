@@ -48,11 +48,11 @@ class _FakeNormalizablePredictor:
             atom_charge=np.full(n, self._value), atom_std=np.full(n, 0.1)
         )
 
-    def save_tree_stats(self, path) -> None:
+    def save_model_state(self, path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(json.dumps({"value": self._value}))
 
-    def load_tree_stats(self, path) -> None:
+    def load_model_state(self, path) -> None:
         self._value = json.loads(Path(path).read_text())["value"]
 
 
