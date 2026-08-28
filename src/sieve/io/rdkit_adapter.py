@@ -34,12 +34,23 @@ def build_codes(mols, attributes):
     return codes, edge_codes
 
 
-def from_rdkit(mols, y=None, *, config: SieveConfig, node_order=None) -> NodeBatch:
+def from_rdkit(
+    mols,
+    y=None,
+    *,
+    config: SieveConfig,
+    node_order=None,
+    y_from_atom_prop: str | None = None,
+) -> NodeBatch:
+    if y is not None and y_from_atom_prop is not None:
+        raise ValueError("pass either y or y_from_atom_prop, not both")
+
     flat = [a for g in config.attribute_levels for a in g]
     n = sum(m.GetNumAtoms() for m in mols)
     node_attrs = np.zeros((n, len(flat)), np.int64)
     elements = np.zeros(n, np.int64)
     graph_id = np.zeros(n, np.int64)
+    y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
     src, dst, attr = [], [], []
     off = 0
     for gi, mol in enumerate(mols):
@@ -59,6 +70,8 @@ def from_rdkit(mols, y=None, *, config: SieveConfig, node_order=None) -> NodeBat
                 node_attrs[g, j] = table.get(_ATTRS[name](a), unknown)
             elements[g] = a.GetAtomicNum()
             graph_id[g] = gi
+            if y_out is not None:
+                y_out[g, 0] = a.GetDoubleProp(y_from_atom_prop)
         for b in mol.GetBonds():
             u = off + int(inv[b.GetBeginAtomIdx()])
             v = off + int(inv[b.GetEndAtomIdx()])
@@ -73,7 +86,7 @@ def from_rdkit(mols, y=None, *, config: SieveConfig, node_order=None) -> NodeBat
         edge_dst=np.array(dst, np.int64),
         edge_attr=np.array(attr, np.int64),
         graph_id=graph_id,
-        y=y,
+        y=y if y is not None else y_out,
         elements=elements,
     )
 

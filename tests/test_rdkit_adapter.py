@@ -97,3 +97,50 @@ def test_alignment_guard_catches_a_shuffled_target_array():
 def _same_partition(a, b):
     pairs = {(int(x), int(y)) for x, y in zip(a, b, strict=True)}
     return len(pairs) == len(set(a.tolist())) == len(set(b.tolist()))
+
+
+def test_y_from_atom_prop_reads_scalar_per_atom():
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    mols = []
+    for smi, charges in [("CO", [-0.2, 0.2]), ("CCO", [-0.1, 0.05, 0.05])]:
+        mol = Chem.MolFromSmiles(smi)
+        for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
+            atom.SetDoubleProp("q", charge)
+        mols.append(mol)
+
+    cfg = cfg_for(["CO", "CCO"])
+    b = from_rdkit(mols, config=cfg, y_from_atom_prop="q")
+
+    assert b.y is not None
+    assert b.y.shape == (5, 1)
+    expected = [-0.2, 0.2, -0.1, 0.05, 0.05]
+    assert b.y[:, 0].tolist() == pytest.approx(expected)
+
+
+def test_y_from_atom_prop_respects_node_order():
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    mol = Chem.MolFromSmiles("CO")
+    charges = [-0.2, 0.2]
+    for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
+        atom.SetDoubleProp("q", charge)
+
+    cfg = cfg_for(["CO"])
+    reversed_order = [np.array([1, 0])]
+    b = from_rdkit([mol], config=cfg, node_order=reversed_order, y_from_atom_prop="q")
+
+    assert b.y is not None
+    assert b.y[:, 0].tolist() == pytest.approx([0.2, -0.2])
+
+
+def test_y_and_y_from_atom_prop_are_mutually_exclusive():
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    mol = Chem.MolFromSmiles("CO")
+    for atom in mol.GetAtoms():
+        atom.SetDoubleProp("q", 0.0)
+    cfg = cfg_for(["CO"])
+
+    with pytest.raises(ValueError, match="y_from_atom_prop"):
+        from_rdkit([mol], y=np.zeros((2, 1)), config=cfg, y_from_atom_prop="q")

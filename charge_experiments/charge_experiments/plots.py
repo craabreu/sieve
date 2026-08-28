@@ -1,0 +1,153 @@
+"""Diagnostic plots for a charges-series run.
+
+Ported from cosmo_experiments/sieve_experiments/plots.py's own
+``parity_panel``/``_hexbin_subplot`` -- the hexbin-parity-grid core is
+fully domain-agnostic (a list of ``{y_true, y_pred, quantity, title,
+metrics}`` dicts), so it's reused here near-verbatim. cosmo's
+``profile_panel``/``_display_smiles`` are deliberately not ported: this
+series has no profile concept (a scalar target, not a 51-bin curve) and
+no SMILES anywhere (see data.py's own module docstring).
+
+matplotlib is imported lazily inside ``parity_panel``: a fast, CI-safe
+test never needs it, and a run without it in its environment still gets
+metrics.json/manifest.json/predictions.npz -- runner.py catches
+ImportError around this call and logs a skip instead of failing the run.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+
+
+def _hexbin_subplot(
+    ax: Axes,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    metrics: dict[str, float],
+    *,
+    quantity: str,
+    title: str,
+) -> None:
+    """Draw one hexbin parity plot onto ``ax`` -- the shared core of every
+    cell in ``parity_panel``."""
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred).ravel()
+    lo = min(y_true.min(), y_pred.min())
+    hi = max(y_true.max(), y_pred.max())
+
+    hb = ax.hexbin(y_true, y_pred, gridsize=40, bins="log", mincnt=1, cmap="YlOrRd")
+    ax.plot([lo, hi], [lo, hi], color="0.3", lw=1, ls="--")
+    ax.figure.colorbar(hb, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_xlabel(f"true {quantity}", fontsize=8)
+    ax.set_ylabel(f"predicted {quantity}", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.set_aspect("equal", adjustable="box")
+    ax.tick_params(labelsize=7)
+    lines = [f"{k}={v:.4g}" for k, v in metrics.items() if isinstance(v, float)]
+    if lines:
+        ax.text(
+            0.03,
+            0.97,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=6,
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "0.7"},
+        )
+
+
+def _histogram_subplot(
+    ax: Axes,
+    values: np.ndarray,
+    metrics: dict[str, float],
+    *,
+    xlabel: str,
+    title: str,
+) -> None:
+    """Draw one 1-D histogram onto ``ax`` -- the shared core of a
+    ``"histogram"``-kind cell in ``parity_panel`` (e.g. molecule charge
+    conservation: the distribution of molecule charge residual across
+    conformers, rather than a true-vs-predicted parity scatter -- there is
+    only one axis' worth of information in a residual)."""
+    values = np.asarray(values).ravel()
+    bins = 1 if np.max(np.abs(values)) < 1e-6 else 40
+    ax.hist(values, bins=bins, color="#d62728", alpha=0.8)
+    ax.axvline(0, color="0.3", lw=1, ls="--")
+    ax.set_xlabel(xlabel, fontsize=8)
+    ax.set_ylabel("count", fontsize=8)
+    ax.set_title(title, fontsize=9)
+    ax.tick_params(labelsize=7)
+    lines = [f"{k}={v:.4g}" for k, v in metrics.items() if isinstance(v, float)]
+    if lines:
+        ax.text(
+            0.03,
+            0.97,
+            "\n".join(lines),
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=6,
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "0.7"},
+        )
+
+
+def parity_panel(
+    panels: list[dict[str, Any]],
+    out_path: str | Path,
+    *,
+    suptitle: str,
+    n_cols: int = 2,
+) -> None:
+    """Save a grid of plots, one per entry in ``panels``.
+
+    Each entry is a dict with ``metrics``, ``title``, plus either
+    ``y_true``/``y_pred``/``quantity`` for a hexbin parity cell (``kind``
+    omitted or ``"hexbin"``) or ``values``/``xlabel`` for a 1-D histogram
+    cell (``kind="histogram"``) -- see ``runner._build_parity_panels``,
+    which decides which panels a given run has data for (atom charge
+    always, as a hexbin parity plot; molecule charge conservation when the
+    test split is non-empty, as a histogram of the per-conformer residual,
+    not a parity scatter -- there's only one axis'
+    worth of information in a residual).
+    """
+    import matplotlib.pyplot as plt
+
+    n = len(panels)
+    if n == 0:
+        return
+    n_cols = min(n_cols, n)
+    n_rows = -(-n // n_cols)  # ceil division, no math.ceil import for one use
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.5 * n_cols, 4.5 * n_rows))
+    axes_flat = np.atleast_1d(axes).ravel()
+    for ax, panel in zip(axes_flat, panels, strict=False):
+        if panel.get("kind", "hexbin") == "histogram":
+            _histogram_subplot(
+                ax,
+                panel["values"],
+                panel["metrics"],
+                xlabel=panel["xlabel"],
+                title=panel["title"],
+            )
+        else:
+            _hexbin_subplot(
+                ax,
+                panel["y_true"],
+                panel["y_pred"],
+                panel["metrics"],
+                quantity=panel["quantity"],
+                title=panel["title"],
+            )
+    for ax in axes_flat[n:]:
+        ax.axis("off")
+    fig.suptitle(suptitle)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)

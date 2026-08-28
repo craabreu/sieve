@@ -1,0 +1,137 @@
+"""Fast-suite tests for sieve_predictor.py's config-building and
+batch-building helpers -- real rdkit, real sieve.fit/predict, but no store,
+no DASH-tree clone."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+pytest.importorskip("rdkit")
+
+
+def test_build_config_learns_codes_from_training_mols():
+    from charge_experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+    )
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    config = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    assert config.target_dim == 1
+    assert "element" in config.attribute_codes
+
+
+def test_batch_for_reads_mbis_charge_directly_off_the_mols():
+    from charge_experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _batch_for,
+        _build_config,
+    )
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=4, seed=1)
+    config = _build_config(
+        mset.mols, attributes=DEFAULT_ATTRIBUTES, target_dim=1,
+        max_wl_depth=3, minimum_support=1, shrinkage_strength=None,
+    )
+    batch = _batch_for(mset.mols, config, with_target=True)
+    assert batch.n_nodes == mset.n_atoms
+    np.testing.assert_allclose(batch.y[:, 0], mset.atom_charge)
+
+
+def test_sieve_charge_predictor_fits_and_predicts_end_to_end():
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=8, seed=2)
+    rng = np.random.default_rng(0)
+    predictor = SievePredictor(max_wl_depth=2, minimum_support=1)
+    predictor.fit(mset, mset, rng=rng)
+    pred = predictor.predict(mset)
+
+    assert pred.atom_charge.shape == (mset.n_atoms,)
+    assert np.all(np.isfinite(pred.atom_charge))
+
+
+def test_sieve_charge_predictor_predict_equals_predict_raw_atom_charge():
+    """predict() must stay behavior-identical: exactly
+    predict_raw(...).atom_charge, since sieve.predict is itself just
+    sieve.predict_detailed(...).value."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=8, seed=2)
+    rng = np.random.default_rng(0)
+    predictor = SievePredictor(max_wl_depth=2, minimum_support=1)
+    predictor.fit(mset, mset, rng=rng)
+
+    raw = predictor.predict_raw(mset)
+    pred = predictor.predict(mset)
+
+    np.testing.assert_array_equal(pred.atom_charge, raw.atom_charge)
+    assert raw.atom_std.shape == raw.atom_charge.shape
+
+
+def test_sieve_charge_predictor_save_and_load_model_state_round_trips(tmp_path):
+    """A predictor that loads a saved model (no fit() call at all) predicts
+    identically to a freshly-fit one on the same train data."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=8, seed=2)
+    test = synthetic_molecule_set(n_mol=4, seed=3)
+    rng = np.random.default_rng(0)
+
+    fitted = SievePredictor(max_wl_depth=2, minimum_support=1)
+    fitted.fit(train, train, rng=rng)
+    fitted_pred = fitted.predict(test)
+
+    model_path = tmp_path / "sieve-model.npz"
+    fitted.save_model_state(model_path)
+
+    loaded = SievePredictor(max_wl_depth=2, minimum_support=1)
+    loaded.load_model_state(model_path)
+    loaded_pred = loaded.predict(test)
+
+    np.testing.assert_array_equal(loaded_pred.atom_charge, fitted_pred.atom_charge)
+
+
+def test_sieve_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch):
+    """Proves load_model_state never calls sieve.fit() -- the whole point
+    of persisting the model."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=8, seed=2)
+    test = synthetic_molecule_set(n_mol=4, seed=3)
+    rng = np.random.default_rng(0)
+
+    fitted = SievePredictor(max_wl_depth=2, minimum_support=1)
+    fitted.fit(train, train, rng=rng)
+    model_path = tmp_path / "sieve-model.npz"
+    fitted.save_model_state(model_path)
+
+    loaded = SievePredictor(max_wl_depth=2, minimum_support=1)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("fit() must not be called")
+
+    monkeypatch.setattr(loaded, "fit", _boom)
+    loaded.load_model_state(model_path)  # must not raise
+    pred = loaded.predict(test)
+    assert pred.atom_charge.shape == (test.n_atoms,)

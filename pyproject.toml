@@ -7,33 +7,116 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 [project.optional-dependencies]
 chem = ["rdkit>=2023.3"]
 sklearn = ["scikit-learn>=1.3"]
-dev = ["pytest>=7.4", "ruff>=0.16", "ty==0.0.72", "scikit-learn>=1.3"]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.16",
+    "ty==0.0.72",
+    "scikit-learn>=1.3",
+    # Lightweight (no torch chain) and needed to even load a charge_experiments
+    # config, so it lives in dev, not in the heavier `charges` extra below --
+    # CI syncs [dev,chem] and must be able to run the fast experiment tests
+    # (config/metrics/data/smoke) without that heavier extra.
+    "pyyaml>=6",
+]
+# The charge_experiments series' own runtime deps, kept out of `dev`/`chem`
+# so a plain `pip install sieve` stays light. tables/tqdm/pillow are runtime
+# deps of the pinned rinikerlab/DASH-tree clone
+# (charge_experiments/predictors/dash.py), added to sys.path rather than
+# pip-installed -- see charge_experiments/pins.toml. matplotlib backs
+# plots.py's parity_panel, imported lazily there so its absence only skips
+# plotting, never fails a run.
+charges = [
+    "rdkit>=2023.3",
+    "pandas>=2",
+    "pyarrow>=14",
+    "mlflow>=2.14",
+    "matplotlib>=3.8",
+    "tables>=3.9",
+    "tqdm>=4.65",
+    "pillow>=10",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "charge_experiments"]
+
+[tool.uv.workspace]
+# The pinned rinikerlab/DASH-tree checkout lives under
+# charge_experiments/external/ (git-ignored) and ships its own
+# pyproject.toml. Without this exclusion uv silently treats it as an
+# implicit workspace member and tries to build/install "serenityff" into
+# this project's venv and lockfile -- it's an inert clone used via
+# sys.path (predictors/dash.py), not a dependency of `sieve`.
+exclude = ["charge_experiments/external/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# charge_experiments/tests holds every charges-series test, kept contained
+# under charge_experiments/ per the harness's own design.
+testpaths = ["tests", "charge_experiments/tests"]
 filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "charge_experiments/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
 ignore = ["E402"]
 
+[tool.ruff.lint.per-file-ignores]
+# Vendored verbatim from cosmolayer/chalcedon (see NOTICE in that
+# directory) -- kept byte-for-byte except one import path, including
+# upstream's own line lengths.
+"charge_experiments/charge_experiments/_chalcedon/**" = ["E501"]
+
 [tool.ty.analysis]
-allowed-unresolved-imports = ["cosmolayer", "cosmolayer.**"]
+# CI's lint job installs [dev,chem] only, not the heavier `charges` extra
+# (mlflow, pandas, pyarrow), so ty cannot resolve these imports there.
+# pyyaml lives in `dev` (see pyproject above) and so is not listed here --
+# ty can and should resolve it.
+allowed-unresolved-imports = [
+    "cosmolayer",
+    "cosmolayer.**",
+    "mlflow",
+    "mlflow.**",
+    "pandas",
+    "pandas.**",
+    "pyarrow",
+    "pyarrow.**",
+    "matplotlib",
+    "matplotlib.**",
+    # rinikerlab/DASH-tree, sys.path-shimmed from
+    # charge_experiments/external/DASH-tree rather than pip-installed --
+    # see charge_experiments/predictors/dash.py.
+    "serenityff",
+    "serenityff.**",
+]
 
 [[tool.ty.overrides]]
 include = ["src/sieve/model.py"]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
+
+[[tool.ty.overrides]]
+# rdkit-stubs gaps, both confirmed working at runtime (not real bugs):
+# - Chem.Mol(bytes) (data.py's mol_to_blob round trip) -- the stub's
+#   Mol.__init__ overloads only declare pklString: str, not bytes, even
+#   though passing the bytes ToBinary() produces is correct, documented
+#   rdkit usage.
+# - AllChem.GetMorganFingerprintAsBitVect (prepare_store.py's clustering
+#   fingerprint step) -- a real, long-standing AllChem function the stubs
+#   simply omit.
+include = [
+    "charge_experiments/charge_experiments/data.py",
+    "charge_experiments/charge_experiments/prepare_store.py",
+]
+
+[tool.ty.overrides.rules]
+no-matching-overload = "ignore"
+unresolved-attribute = "ignore"
+

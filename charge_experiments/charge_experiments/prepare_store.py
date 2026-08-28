@@ -1,0 +1,416 @@
+"""Download DASH's published training SDF, parse it (streaming, never
+loading the whole 8.3GB file into memory), and cluster+split it.
+
+Mirrors cosmo_experiments/sieve_experiments/prepare_store.py's own
+download-verify-idempotent shape and its download/split separation
+(``download_chaos_store``/``split_chaos_store``/``prepare_store`` there ->
+``download_dash_sdf``/``parse_dash_molecules``/``assign_splits``/
+``prepare_store`` here), adapted for a plain (non-zip) file download and a
+streaming SDF parse instead of a cosmolayer SegmentStore load.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+DOWNLOAD_URL = (
+    "https://www.research-collection.ethz.ch/server/api/core/bitstreams/"
+    "4e827dd2-65a0-4305-9118-480ef5fce0b5/content"
+)
+EXPECTED_BYTES = 8_278_301_584
+EXPECTED_MD5 = "305f521c6b422546bdf09c1e87eb922d"
+SDF_FILENAME = "dashMoleculesSDF_v2.sdf"
+# The ETH Research Collection server 403s a request carrying urllib's default
+# User-Agent (python-urllib/x.y) -- matches the UA the original
+# download_dash_molecules.sh bash script already had to set for the same
+# reason (see that script's own comment: the plain bitstream-content URL
+# still needs a browser-shaped UA even though it isn't the HTML app-shell
+# page that 500s under wget).
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+
+CHUNK_SIZE = 1 << 20  # 1 MiB
+PARQUET_BATCH_SIZE = 50_000  # rows buffered before each parquet write
+
+logger = logging.getLogger("charge_experiments")
+
+
+def download_dash_sdf(dest_dir: Path, *, url: str = DOWNLOAD_URL) -> Path:
+    """Stream ``url`` to ``dest_dir / SDF_FILENAME``, verifying size and md5
+    against the published values. Idempotent: does nothing but log if a
+    correctly-sized file is already present (a full md5 pass over 8.3GB on
+    every call would be needlessly slow; size is a fast first check, and a
+    truncated/corrupted re-download is caught by md5 the next time this
+    function actually re-downloads)."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out_path = dest_dir / SDF_FILENAME
+
+    if out_path.exists() and out_path.stat().st_size == EXPECTED_BYTES:
+        logger.info(
+            "%s already present with the expected size; skipping download", out_path
+        )
+        return out_path
+
+    md5 = hashlib.md5()
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(request) as response, out_path.open("wb") as f:
+        while chunk := response.read(CHUNK_SIZE):
+            f.write(chunk)
+            md5.update(chunk)
+
+    actual_bytes = out_path.stat().st_size
+    if actual_bytes != EXPECTED_BYTES:
+        raise ValueError(
+            f"downloaded {out_path.name}: {actual_bytes} bytes, expected "
+            f"{EXPECTED_BYTES}; download incomplete or corrupted"
+        )
+    actual_md5 = md5.hexdigest()
+    if actual_md5 != EXPECTED_MD5:
+        out_path.unlink()
+        raise ValueError(
+            f"downloaded {out_path.name} md5 {actual_md5} != expected "
+            f"{EXPECTED_MD5}; download corrupted"
+        )
+    logger.info("downloaded %s (md5 %s)", out_path, actual_md5)
+    return out_path
+
+
+def _assign_stereo_if_needed(mol: Any) -> None:
+    """If ``mol`` has an unassigned stereocenter (not already fully
+    specified by the molblock's own parity bits), perceive stereo from its
+    own 3D coordinates. Mutates ``mol`` in place, matching
+    ``Chem.AssignStereochemistry``'s own convention."""
+    from rdkit import Chem
+
+    centers = Chem.FindMolChiralCenters(
+        mol, includeUnassigned=True, useLegacyImplementation=False
+    )
+    if any(tag == "?" for _, tag in centers):
+        Chem.AssignStereochemistryFrom3D(mol)
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
+
+def _parse_one_record(
+    mol: Any, *, dash_conf_counters: dict[str, int]
+) -> dict[str, Any] | None:
+    """Extract one row's worth of data from an already-parsed rdkit ``Mol``
+    (one ``ForwardSDMolSupplier`` record). Returns ``None`` (and logs a
+    warning) for a record missing an identity (see below) or ``MBIScharge``,
+    or whose atom count disagrees with its ``MBIScharge`` count, rather than
+    raising -- a handful of malformed records should not abort an
+    hours-long parse of an 8.3GB file.
+
+    The real SDF turns out to hold two distinct record schemas, confirmed
+    against the DASH paper's own stated dataset composition (arXiv:2305.15981):
+    the training set was assembled from four sources -- QMugs, a prior
+    paper's training set, lead-like ChEMBL v30 molecules, and organic
+    liquids -- and only the ChEMBL-sourced third of records carry a
+    ``CHEMBL_ID``/``CONF_ID`` pair. The other three sources' records instead
+    carry a ``DASH_IDX`` property (e.g. ``"Rest_2"``) which plays the exact
+    same per-molecule grouping role ``CHEMBL_ID`` does -- confirmed
+    empirically: ~3 rows share each ``DASH_IDX`` value, the same "a few
+    conformers per molecule" pattern ``CHEMBL_ID`` rows show. Those records
+    have no ``CONF_ID`` at all, so one is synthesized here
+    (``dash_conf_counters``, keyed by ``DASH_IDX``, hands out sequential
+    ``"conf_N"`` labels per group in file order) -- ``conf_id`` is purely
+    informational downstream (no predictor/metric reads it back), so a
+    synthesized label is exactly as good as a real one for that purpose.
+    A row's ``chembl_id``/``dash_id`` columns are populated from whichever
+    scheme its own record used; the other is left ``None`` -- see
+    ``assign_splits`` for how the two are reconciled into one clustering key.
+    """
+    from charge_experiments.data import mol_to_blob
+
+    if mol is None:
+        return None
+    if not mol.HasProp("MBIScharge"):
+        logger.warning("record missing MBIScharge property; skipping")
+        return None
+
+    has_chembl_id = mol.HasProp("CHEMBL_ID")
+    if has_chembl_id:
+        if not mol.HasProp("CONF_ID"):
+            logger.warning(
+                "record has CHEMBL_ID (%s) but missing CONF_ID; skipping",
+                mol.GetProp("CHEMBL_ID"),
+            )
+            return None
+        chembl_id: str | None = mol.GetProp("CHEMBL_ID")
+        conf_id = mol.GetProp("CONF_ID")
+        dash_id: str | None = None
+        identity = chembl_id
+    elif mol.HasProp("DASH_IDX"):
+        chembl_id = None
+        dash_id = mol.GetProp("DASH_IDX")
+        count = dash_conf_counters.get(dash_id, 0)
+        conf_id = f"conf_{count}"
+        dash_conf_counters[dash_id] = count + 1
+        identity = dash_id
+    else:
+        logger.warning("record has neither CHEMBL_ID nor DASH_IDX; skipping")
+        return None
+
+    try:
+        charges = [float(x) for x in mol.GetProp("MBIScharge").split("|")]
+    except ValueError:
+        logger.warning(
+            "MBIScharge could not be parsed as floats; skipping (id=%s)", identity
+        )
+        return None
+    if len(charges) != mol.GetNumAtoms():
+        logger.warning(
+            "MBIScharge has %d values but molecule has %d atoms; skipping (id=%s)",
+            len(charges),
+            mol.GetNumAtoms(),
+            identity,
+        )
+        return None
+
+    for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
+        atom.SetDoubleProp("MBIScharge", charge)
+
+    _assign_stereo_if_needed(mol)
+
+    from rdkit import Chem
+
+    net_charge = float(Chem.GetFormalCharge(mol))
+
+    # ForwardSDMolSupplier auto-attaches every ">  <TAG>" block in the
+    # record as a mol-level property -- not just the three read above, but
+    # every GFN2:*/DFT:* quantum-chemistry field too (energies, dipoles,
+    # bond orders, Mulliken/Loewdin charges, ...). mol_to_blob's
+    # PropertyPickleOptions.MolProps would otherwise serialize all of them
+    # into the stored blob, unused, bloating every row several-fold beyond
+    # what this series actually needs (chembl_id/conf_id/net_charge already
+    # live in their own parquet columns; nothing reads them back off the
+    # Mol). Clear every mol-level property before serializing -- atom-level
+    # MBIScharge (set just above) is unaffected, it lives on the Atom
+    # objects, not the Mol's own property dict.
+    for name in list(mol.GetPropNames()):
+        mol.ClearProp(name)
+
+    return {
+        "chembl_id": chembl_id,
+        "conf_id": conf_id,
+        "dash_id": dash_id,
+        "mol": mol_to_blob(mol),
+        "net_charge": net_charge,
+    }
+
+
+def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
+    """Stream-parse ``sdf_path`` (never loading it whole into memory) into
+    ``out_path``, a parquet file with columns ``chembl_id, conf_id, dash_id,
+    mol, net_charge`` (no ``split`` column yet -- see ``assign_splits``).
+    Exactly one of ``chembl_id``/``dash_id`` is set per row (see
+    ``_parse_one_record``'s docstring for why the SDF has two record
+    schemas). Written in batches via a ``pyarrow.parquet.ParquetWriter`` so
+    peak memory is bounded by ``PARQUET_BATCH_SIZE`` rows, not the whole
+    (multi-million-row) dataset -- ``dash_conf_counters`` is the one piece of
+    state carried across the whole streaming pass, and it's small (one int
+    per unique ``DASH_IDX``, not per row)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from rdkit import Chem
+
+    schema = pa.schema(
+        [
+            ("chembl_id", pa.string()),
+            ("conf_id", pa.string()),
+            ("dash_id", pa.string()),
+            ("mol", pa.binary()),
+            ("net_charge", pa.float64()),
+        ]
+    )
+
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+
+    writer: pq.ParquetWriter | None = None
+    batch: list[dict[str, Any]] = []
+    n_written = 0
+    n_skipped = 0
+    dash_conf_counters: dict[str, int] = {}
+    try:
+        with open(sdf_path, "rb") as f:
+            supplier = Chem.ForwardSDMolSupplier(f, sanitize=True, removeHs=False)
+            for mol in supplier:
+                row = _parse_one_record(mol, dash_conf_counters=dash_conf_counters)
+                if row is None:
+                    n_skipped += 1
+                    continue
+                batch.append(row)
+                if len(batch) >= PARQUET_BATCH_SIZE:
+                    table = pa.Table.from_pylist(batch, schema=schema)
+                    if writer is None:
+                        writer = pq.ParquetWriter(tmp_path, schema)
+                    writer.write_table(table)
+                    n_written += len(batch)
+                    batch = []
+            if batch:
+                table = pa.Table.from_pylist(batch, schema=schema)
+                if writer is None:
+                    writer = pq.ParquetWriter(tmp_path, schema)
+                writer.write_table(table)
+                n_written += len(batch)
+    finally:
+        if writer is not None:
+            writer.close()
+
+    # Only promote the temp file to out_path once the writer has closed
+    # successfully -- an interrupted/failed parse (crash, OOM, a raised
+    # exception) leaves nothing at out_path, so prepare_store's own
+    # idempotency check never mistakes a truncated file for a finished one.
+    if writer is not None:
+        tmp_path.replace(out_path)
+
+    logger.info(
+        "parsed %d records (%d skipped) from %s", n_written, n_skipped, sdf_path
+    )
+
+
+def _achiral_fingerprints(mols: list[Any], *, radius: int = 2, n_bits: int = 2048):
+    """Dense achiral Morgan fingerprint matrix, one row per mol -- the input
+    shape ``_chalcedon.butina_cluster`` expects."""
+    from rdkit import DataStructs
+    from rdkit.Chem import AllChem
+
+    out = np.zeros((len(mols), n_bits), dtype=np.uint8)
+    for i, mol in enumerate(mols):
+        fp = AllChem.GetMorganFingerprintAsBitVect(
+            mol, radius, nBits=n_bits, useChirality=False
+        )
+        DataStructs.ConvertToNumpyArray(fp, out[i])
+    return out
+
+
+def assign_splits(
+    store_dir: Path, *, train: float = 0.8, val: float = 0.1, test: float = 0.1
+) -> str:
+    """Compute (or refresh) the ``split`` column on ``store_dir /
+    'molecules.parquet'`` and overwrite it in place; return the summary
+    text. Clustering fingerprints come from each unique molecule's
+    first-seen conformer only (any one conformer's connectivity suffices --
+    clustering is graph-level, computed achiral so different stereoisomers
+    of the same 2D graph land in the same cluster). Splits are then assigned
+    per-cluster via the vendored ``greedy_cluster_split`` and joined back
+    onto every row by molecule identity, so a molecule's conformers/
+    stereoisomers never span two splits.
+
+    A row's identity is ``chembl_id`` when set, else ``dash_id`` (exactly
+    one is set per row -- see ``_parse_one_record``'s docstring for why the
+    store has two identity schemes). That coalesced key (``mol_key`` below)
+    is what clustering, splitting, and this function's own uniqueness/
+    grouping all operate on -- ``chembl_id``/``dash_id`` themselves stay in
+    the output purely as provenance, never read back for grouping elsewhere.
+
+    Loads the entire parsed store into memory at once (via
+    ``pd.read_parquet``) rather than streaming, since by this point it is
+    the much-smaller already-parsed parquet, not the raw 8.3GB SDF that
+    ``parse_dash_molecules`` streams. The fraction targets are
+    cluster/mol_key-level, so the resulting row-level ``split_summary.txt``
+    fractions may diverge somewhat from the requested train/val/test
+    fractions if conformer counts per molecule vary."""
+    if abs(train + val + test - 1) >= 1e-6:
+        raise ValueError("the fractions must sum to 1")
+    import pandas as pd
+
+    from charge_experiments._chalcedon.butina_cluster import butina_cluster
+    from charge_experiments._chalcedon.greedy_cluster_split import (
+        greedy_cluster_split,
+    )
+    from charge_experiments.data import blob_to_mol
+
+    molecules_path = store_dir / "molecules.parquet"
+    df = pd.read_parquet(molecules_path)
+    mol_key = df["chembl_id"].fillna(df["dash_id"])
+
+    first_seen_mask = ~mol_key.duplicated(keep="first")
+    unique_keys = mol_key[first_seen_mask].to_numpy()
+    first_mols = [blob_to_mol(b) for b in df.loc[first_seen_mask, "mol"]]
+    fingerprints = _achiral_fingerprints(first_mols)
+
+    cluster_ids = butina_cluster(fingerprints, cutoff=0.65)
+    split_by_index = greedy_cluster_split(
+        cluster_ids, fractions={"train": train, "val": val, "test": test}
+    )
+    key_to_split: dict[str, str] = {}
+    for split_name, indices in split_by_index.items():
+        for i in indices:
+            key_to_split[unique_keys[i]] = split_name
+
+    df["split"] = mol_key.map(key_to_split)
+
+    unmapped = df[df["split"].isna()]
+    if not unmapped.empty:
+        n_rows = len(unmapped)
+        n_ids = mol_key[df["split"].isna()].nunique()
+        raise ValueError(
+            f"{n_rows} row(s) ({n_ids} molecule(s)) were not assigned a "
+            "split by clustering"
+        )
+
+    summary = (
+        df.groupby("split")
+        .agg(n_conformers=("mol", "size"))
+        .reindex(["train", "val", "test"])
+    )
+    summary["n_molecules"] = mol_key.groupby(df["split"]).nunique().reindex(
+        ["train", "val", "test"]
+    )
+    summary["fraction"] = summary["n_conformers"] / len(df)
+    summary_text = summary.to_string()
+
+    tmp_path = molecules_path.with_suffix(molecules_path.suffix + ".tmp")
+    df.to_parquet(tmp_path)
+    tmp_path.replace(molecules_path)
+    return summary_text
+
+
+def prepare_store(
+    store_name: str,
+    *,
+    stores_root: Path,
+    train: float = 0.8,
+    val: float = 0.1,
+    test: float = 0.1,
+    sdf_path: Path | None = None,
+) -> None:
+    """Ensure ``store_name`` is downloaded, parsed, and has a ``split``
+    column. Idempotent at each stage, mirroring
+    cosmo_experiments/sieve_experiments/prepare_store.py's own
+    ``prepare_store``. If ``sdf_path`` is given, it is used directly for
+    parsing instead of downloading a fresh copy via ``download_dash_sdf``
+    (a ``ValueError`` is raised if it does not exist)."""
+    store_dir = stores_root / store_name
+    store_dir.mkdir(parents=True, exist_ok=True)
+
+    if sdf_path is not None:
+        if not sdf_path.exists():
+            raise ValueError(f"sdf_path {sdf_path} does not exist")
+    else:
+        sdf_path = download_dash_sdf(store_dir)
+
+    molecules_path = store_dir / "molecules.parquet"
+    if not molecules_path.exists():
+        parse_dash_molecules(sdf_path, molecules_path)
+    else:
+        logger.info("%s already parsed; skipping", molecules_path)
+
+    import pyarrow.parquet as pq
+
+    already_split = "split" in pq.ParquetFile(molecules_path).schema.names
+    if already_split:
+        logger.info("%s already has a split column; nothing to do", molecules_path)
+        return
+
+    summary_text = assign_splits(store_dir, train=train, val=val, test=test)
+    (store_dir / "split_summary.txt").write_text(summary_text + "\n")
+    logger.info("wrote split for %s:\n%s", store_name, summary_text)
