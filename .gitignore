@@ -24,6 +24,7 @@ charge_experiments/cache/
 charge_experiments/results/
 charge_experiments/stores/
 charge_experiments/external/
+charge_experiments/artifacts/
 
 # cosmo_experiments/ isn't part of this branch (it lives on experiments/
 # dash-charges) -- ignored here so a shared checkout's leftover copy never

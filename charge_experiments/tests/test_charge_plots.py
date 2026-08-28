@@ -16,7 +16,7 @@ def _panel_titles(panels):
     return [p["title"] for p in panels]
 
 
-def test_build_parity_panels_includes_atom_charge_and_conservation():
+def test_build_parity_panels_includes_atom_charge():
     from charge_experiments.predictors.base import Prediction
     from charge_experiments.runner import _build_parity_panels
 
@@ -35,15 +35,27 @@ def test_build_parity_panels_includes_atom_charge_and_conservation():
 
     panels = _build_parity_panels(ms, pred, run_metrics)
 
-    assert _panel_titles(panels) == ["atom charge", "molecule charge conservation"]
     np.testing.assert_array_equal(panels[0]["y_true"], ms.atom_charge)
     np.testing.assert_array_equal(panels[0]["y_pred"], pred.atom_charge)
     assert panels[0]["metrics"] == {"mae": 0.0, "rmse": 0.0, "r2": 1.0}
-    assert panels[1]["kind"] == "histogram"
-    # perfect predictions -- molecule charge residual is exactly 0 for every conformer
-    np.testing.assert_allclose(panels[1]["values"], 0.0, atol=1e-12)
-    assert panels[1]["xlabel"] == "molecule charge residual (e)"
-    assert panels[1]["metrics"] == {"mae": 0.0, "rmse": 0.0, "r2": 1.0}
+
+
+def test_build_parity_panels_omits_conservation_panel_when_exactly_conserved():
+    """A histogram of residuals that are all ~0 (a predictor whose own
+    normalization already conserves charge exactly) carries no information
+    -- it's a single spike, not a diagnostic -- so it's skipped entirely,
+    not plotted degenerate."""
+    from charge_experiments.predictors.base import Prediction
+    from charge_experiments.runner import _build_parity_panels
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    ms = synthetic_molecule_set(n_mol=6, seed=0)
+    pred = Prediction(atom_charge=ms.atom_charge)  # perfect predictions
+
+    panels = _build_parity_panels(ms, pred, {})
+
+    assert _panel_titles(panels) == ["atom charge"]
 
 
 def test_build_parity_panels_conservation_panel_is_the_residual_histogram():
@@ -73,7 +85,9 @@ def test_build_parity_panels_conservation_panel_drops_nan_residuals():
     from charge_experiments.tests.helpers import synthetic_molecule_set
 
     ms = synthetic_molecule_set(n_mol=3, seed=0)
-    atom_charge_pred = ms.atom_charge.copy()
+    rng = np.random.default_rng(4)
+    noise = rng.normal(scale=0.05, size=ms.atom_charge.shape)
+    atom_charge_pred = ms.atom_charge + noise  # real residual spread, not exact
     atom_charge_pred[0] = np.nan  # poisons the whole first conformer's sum
     pred = Prediction(atom_charge=atom_charge_pred)
 

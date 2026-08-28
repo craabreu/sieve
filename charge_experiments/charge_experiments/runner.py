@@ -231,7 +231,13 @@ def _build_parity_panels(
     )
     residual = pred_net_charge - test.net_charge
     residual = residual[~np.isnan(residual)]
-    if residual.size:
+    # A predictor whose own normalization already conserves charge exactly
+    # (e.g. std_weighted/equal_weighted -- residuals at float round-off,
+    # ~1e-16) has nothing worth plotting here: a histogram of that is a
+    # single spike carrying no information, not a diagnostic. Same
+    # threshold plots._histogram_subplot's own degenerate-bin-count guard
+    # uses, kept in sync deliberately.
+    if residual.size and np.max(np.abs(residual)) >= 1e-6:
         panels.append(
             {
                 "kind": "histogram",
