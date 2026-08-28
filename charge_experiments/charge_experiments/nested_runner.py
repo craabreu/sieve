@@ -242,7 +242,7 @@ def execute_nested(
 
             mlflow = _mlflow
             mlflow.set_tracking_uri(tracking)
-            mlflow.set_experiment(cfg.run.experiment)
+            _runner._ensure_experiment(cfg.run.experiment)
         except ImportError:
             logger.warning("mlflow not installed; skipping tracking for this run")
             tracking_ok = False

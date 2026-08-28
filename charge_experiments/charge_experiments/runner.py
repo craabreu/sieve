@@ -38,7 +38,16 @@ from charge_experiments.data import REPO_ROOT, MoleculeSet, molecule_sum
 from charge_experiments.predictors import build
 from charge_experiments.predictors.base import Prediction
 
-DEFAULT_TRACKING_URI = f"file:{REPO_ROOT / 'charge_experiments' / 'mlruns'}"
+# mlflow's plain filesystem tracking backend ("file:...") is in maintenance
+# mode as of mlflow 3.x and refuses to open without an explicit env-var
+# opt-out -- sqlite is the backend mlflow itself points users toward.
+DEFAULT_TRACKING_URI = f"sqlite:///{REPO_ROOT / 'charge_experiments' / 'mlruns.db'}"
+# A sqlite/db tracking backend's own default artifact root is "./mlruns"
+# relative to the CWD the process happens to run from -- not tied to the
+# tracking URI's own location at all, so it silently writes an unignored
+# ./mlruns/ wherever the CLI was invoked from unless every experiment is
+# created with an explicit artifact_location. See _ensure_experiment.
+DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "charge_experiments" / "mlartifacts"
 DEFAULT_RUNS_ROOT = REPO_ROOT / "charge_experiments" / "runs"
 
 logger = logging.getLogger("charge_experiments")
@@ -362,6 +371,24 @@ def _execute_inner(
     return RunResult(run_dir=run_dir, metrics=run_metrics, manifest=manifest)
 
 
+def _ensure_experiment(
+    experiment_name: str, *, artifact_root: Path = DEFAULT_ARTIFACT_ROOT
+) -> None:
+    """``mlflow.set_experiment`` alone auto-creates a missing experiment
+    with whatever artifact root the backend defaults to -- for the sqlite
+    backend, that's an unignored ``./mlruns/`` relative to the process's
+    CWD, not anything tied to ``DEFAULT_TRACKING_URI``. Create the
+    experiment explicitly first, with an artifact location under this
+    series' own tree, so ``set_experiment`` only ever has to look it up."""
+    import mlflow
+
+    if mlflow.get_experiment_by_name(experiment_name) is None:
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        artifact_location = (artifact_root / experiment_name).as_uri()
+        mlflow.create_experiment(experiment_name, artifact_location=artifact_location)
+    mlflow.set_experiment(experiment_name)
+
+
 def _log_mlflow_run(
     tags: dict[str, str],
     params: dict[str, str],
@@ -395,7 +422,7 @@ def _log_mlflow(
         return
 
     mlflow.set_tracking_uri(tracking)
-    mlflow.set_experiment(cfg.run.experiment)
+    _ensure_experiment(cfg.run.experiment)
     tags = {
         "predictor": cfg.predictor.name,
         "split_column": cfg.data.split_column,

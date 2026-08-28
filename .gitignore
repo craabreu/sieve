@@ -19,7 +19,9 @@ uv.lock
 # un-ignore a file that sits inside an ignored directory, so only the leaf
 # dirs below are listed, not charge_experiments/ itself.
 charge_experiments/runs/
-charge_experiments/mlruns/
+charge_experiments/mlruns.db
+charge_experiments/mlruns.db-*
+charge_experiments/mlartifacts/
 charge_experiments/cache/
 charge_experiments/results/
 charge_experiments/stores/
