@@ -374,6 +374,134 @@ def assign_splits(
     return summary_text
 
 
+def subsample_store(
+    source_store: str,
+    dest_store: str,
+    *,
+    stores_root: Path,
+    n_molecules: int = 50_000,
+    conformers_per_molecule: int = 1,
+    seed: int = 0,
+) -> str:
+    """Build a smaller, independent store by subsampling molecules from an
+    already-split ``source_store``, reproducing that source's own real
+    train/val/test fractions (measured directly from it -- never assumed to
+    be 80/10/10) -- the scientifically-sound alternative to ``--limit``'s
+    literal row-prefix slice (``runner.load_molecule_set``), which is
+    neither a random sample nor split-proportional (see the harness's own
+    docs on why: a small ``--limit`` window can badly over/under-represent
+    a split, even leave one empty, since it just takes however many of the
+    original SDF's own first-N rows happen to carry that label).
+
+    Operates purely on ``source_store``'s own parquet columns (``chembl_id``/
+    ``dash_id``/``split``) -- never deserializes a single ``Mol`` blob, so
+    this stays fast even against the full, 1M+-row store.
+
+    ``n_molecules`` is a *target* total across all three splits, distributed
+    to each split proportionally to that split's own real share of the
+    source store's molecule count (rounded, then clamped to however many
+    molecules that split actually has -- clamping is logged, not an error,
+    since a small source store can't always supply the requested count).
+
+    ``conformers_per_molecule`` is a *cap*, not a floor: a molecule with
+    fewer conformers than requested contributes all of its own (no
+    padding/repeats); one with more has exactly that many sampled uniformly
+    at random, without replacement -- so a molecule's conformers never span
+    two splits (inherited directly from the source's own per-molecule
+    split assignment) and a selected molecule is never over-represented
+    beyond what was asked for.
+
+    Both molecule selection and conformer selection use
+    ``np.random.default_rng(seed)``, so the same ``seed`` reproduces the
+    same subsample. Writes ``dest_store/molecules.parquet`` (with the same
+    schema, ``split`` column included) and a ``split_summary.txt`` -- the
+    subsample's own *actually achieved* counts/fractions, for transparency
+    against the requested target. Returns that summary text.
+    """
+    if n_molecules < 1:
+        raise ValueError("n_molecules must be >= 1")
+    if conformers_per_molecule < 1:
+        raise ValueError("conformers_per_molecule must be >= 1")
+
+    import pandas as pd
+
+    source_path = stores_root / source_store / "molecules.parquet"
+    df = pd.read_parquet(source_path)
+    if "split" not in df.columns:
+        raise ValueError(
+            f"{source_path} has no split column; run prepare_store on "
+            f"{source_store!r} first"
+        )
+
+    mol_key = df["chembl_id"].fillna(df["dash_id"])
+    split_col = df["split"].to_numpy()
+    # One groupby pass gives every molecule's own row positions (not row
+    # labels -- .indices, unlike .groups, is positional, which is exactly
+    # what .iloc needs below) -- O(n_rows), not O(n_molecules * n_rows).
+    positions_by_key = df.groupby(mol_key).indices
+
+    keys_by_split: dict[str, list[str]] = {}
+    for key, positions in positions_by_key.items():
+        keys_by_split.setdefault(split_col[positions[0]], []).append(str(key))
+    total_molecules = len(positions_by_key)
+
+    rng = np.random.default_rng(seed)
+    selected_positions: list[np.ndarray] = []
+    for split_name in ("train", "val", "test"):
+        keys = keys_by_split.get(split_name, [])
+        if not keys:
+            continue
+        target = round(n_molecules * len(keys) / total_molecules)
+        n_pick = min(target, len(keys))
+        if n_pick < target:
+            logger.warning(
+                "%s split of %r only has %d molecule(s), fewer than the "
+                "%d requested; using all of them",
+                split_name, source_store, len(keys), target,
+            )
+        picked = rng.choice(len(keys), size=n_pick, replace=False)
+        for i in picked:
+            positions = positions_by_key[keys[i]]
+            if len(positions) > conformers_per_molecule:
+                positions = rng.choice(
+                    positions, size=conformers_per_molecule, replace=False
+                )
+            selected_positions.append(positions)
+
+    all_positions = (
+        np.sort(np.concatenate(selected_positions))
+        if selected_positions
+        else np.array([], dtype=np.int64)
+    )
+    out_df = df.iloc[all_positions].reset_index(drop=True)
+
+    dest_dir = stores_root / dest_store
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / "molecules.parquet"
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+    out_df.to_parquet(tmp_path)
+    tmp_path.replace(dest_path)
+
+    out_mol_key = out_df["chembl_id"].fillna(out_df["dash_id"])
+    summary = (
+        out_df.groupby("split")
+        .agg(n_conformers=("mol", "size"))
+        .reindex(["train", "val", "test"])
+    )
+    summary["n_molecules"] = out_mol_key.groupby(out_df["split"]).nunique().reindex(
+        ["train", "val", "test"]
+    )
+    summary["fraction"] = summary["n_conformers"] / len(out_df)
+    summary_text = summary.to_string()
+    (dest_dir / "split_summary.txt").write_text(summary_text + "\n")
+
+    logger.info(
+        "subsampled %r -> %r: %d molecule(s), %d conformer(s)\n%s",
+        source_store, dest_store, out_mol_key.nunique(), len(out_df), summary_text,
+    )
+    return summary_text
+
+
 def prepare_store(
     store_name: str,
     *,

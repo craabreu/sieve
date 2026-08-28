@@ -43,3 +43,35 @@ def test_build_parser_run_nested_defaults():
     assert args.limit is None
     assert args.allow_dirty is False
     assert args.no_tracking is False
+
+
+def test_build_parser_subsample_store_defaults():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["subsample-store", "my-small-store"])
+    assert args.dest == "my-small-store"
+    assert args.source == "dash-molecules"
+    assert args.n_molecules == 50_000
+    assert args.conformers_per_molecule == 1
+    assert args.seed == 0
+
+
+def test_build_parser_subsample_store_accepts_all_flags():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "subsample-store", "my-small-store",
+            "--source", "some-other-store",
+            "--n-molecules", "1000",
+            "--conformers-per-molecule", "3",
+            "--seed", "42",
+        ]
+    )
+    assert args.dest == "my-small-store"
+    assert args.source == "some-other-store"
+    assert args.n_molecules == 1000
+    assert args.conformers_per_molecule == 3
+    assert args.seed == 42

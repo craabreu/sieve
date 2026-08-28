@@ -262,3 +262,183 @@ def test_assign_splits_never_splits_a_chembl_id_across_splits(tmp_path):
     assert "split" in df.columns
     per_id = df.groupby("chembl_id")["split"].nunique()
     assert (per_id == 1).all()
+
+
+def _synthetic_split_store(
+    tmp_path, *, n_train=30, n_val=10, n_test=10, conformers_per_mol=2
+):
+    """An already-split store built directly (no SDF parsing needed --
+    subsample_store never deserializes a Mol blob, so a placeholder b""
+    stands in for one)."""
+    import pandas as pd
+
+    rows = []
+    counts = {"train": n_train, "val": n_val, "test": n_test}
+    for split_name, n_mol in counts.items():
+        for m in range(n_mol):
+            chembl_id = f"{split_name.upper()}{m}"
+            for c in range(conformers_per_mol):
+                rows.append(
+                    {
+                        "chembl_id": chembl_id,
+                        "conf_id": f"conf_{c:02d}",
+                        "dash_id": None,
+                        "mol": b"",
+                        "net_charge": 0.0,
+                        "split": split_name,
+                    }
+                )
+    df = pd.DataFrame(rows)
+    store_dir = tmp_path / "source-store"
+    store_dir.mkdir()
+    df.to_parquet(store_dir / "molecules.parquet")
+    return store_dir.name
+
+
+def test_subsample_store_preserves_source_split_fractions_approximately(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    counts = out.groupby("split")["chembl_id"].nunique()
+    # 60/20/20 of the source -> round(20*0.6)=12, round(20*0.2)=4, round(20*0.2)=4
+    assert counts["train"] == 12
+    assert counts["val"] == 4
+    assert counts["test"] == 4
+
+
+def test_subsample_store_caps_conformers_per_molecule(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(
+        tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=5
+    )
+
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=15, conformers_per_molecule=2, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    per_mol = out.groupby("chembl_id").size()
+    assert (per_mol == 2).all()
+
+
+def test_subsample_store_never_pads_a_molecule_with_fewer_conformers(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    # Every molecule has exactly 1 conformer -- conformers_per_molecule=3
+    # must not fabricate extras.
+    _synthetic_split_store(
+        tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=1
+    )
+
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=15, conformers_per_molecule=3, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    per_mol = out.groupby("chembl_id").size()
+    assert (per_mol == 1).all()
+
+
+def test_subsample_store_is_reproducible_with_the_same_seed(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    subsample_store(
+        "source-store", "dest-a", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=7,
+    )
+    subsample_store(
+        "source-store", "dest-b", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=7,
+    )
+
+    import pandas as pd
+
+    a = pd.read_parquet(tmp_path / "dest-a" / "molecules.parquet")
+    b = pd.read_parquet(tmp_path / "dest-b" / "molecules.parquet")
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_subsample_store_clamps_when_source_split_is_too_small(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=2, n_test=10)
+
+    # 20-molecule target would ask round(20*2/42)~1 of val -- fine either
+    # way, so make the request absurdly large to force real clamping.
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=1000, conformers_per_molecule=1, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    counts = out.groupby("split")["chembl_id"].nunique()
+    assert counts["train"] == 30
+    assert counts["val"] == 2
+    assert counts["test"] == 10
+
+
+def test_subsample_store_raises_without_a_split_column(tmp_path):
+    import pandas as pd
+    import pytest
+    from charge_experiments.prepare_store import subsample_store
+
+    store_dir = tmp_path / "unsplit-store"
+    store_dir.mkdir()
+    pd.DataFrame(
+        {"chembl_id": ["A"], "conf_id": ["conf_00"], "dash_id": [None],
+         "mol": [b""], "net_charge": [0.0]}
+    ).to_parquet(store_dir / "molecules.parquet")
+
+    with pytest.raises(ValueError, match="split column"):
+        subsample_store(
+            "unsplit-store", "dest-store", stores_root=tmp_path, n_molecules=10
+        )
+
+
+def test_subsample_store_writes_a_summary_file(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    summary_text = subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=0,
+    )
+
+    summary_path = tmp_path / "dest-store" / "split_summary.txt"
+    assert summary_path.exists()
+    assert summary_path.read_text().strip() == summary_text.strip()
+    assert "train" in summary_text
+    assert "n_molecules" in summary_text
+
+
+def test_subsample_store_defaults_match_the_cli(tmp_path):
+    """The function's own defaults are what the plan calls for: 50k
+    molecules, 1 conformer/molecule, source fractions preserved."""
+    import inspect
+
+    from charge_experiments.prepare_store import subsample_store
+
+    sig = inspect.signature(subsample_store)
+    assert sig.parameters["n_molecules"].default == 50_000
+    assert sig.parameters["conformers_per_molecule"].default == 1
