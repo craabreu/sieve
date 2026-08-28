@@ -100,6 +100,14 @@ def _cmd_subsample_store(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_to_united_atom(args: argparse.Namespace) -> int:
+    from charge_experiments.prepare_store import to_united_atom_store
+
+    to_united_atom_store(args.source, args.dest, stores_root=DEFAULT_STORES_ROOT)
+    print(f"wrote {args.dest!r} (united-atom version of {args.source!r})")
+    return 0
+
+
 def _cmd_summarize(args: argparse.Namespace) -> int:
     del args
     runs_root = DEFAULT_RUNS_ROOT
@@ -220,6 +228,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed", type=int, default=0, help="random seed for reproducible sampling"
     )
     p_subsample.set_defaults(func=_cmd_subsample_store)
+
+    p_ua = sub.add_parser(
+        "to-united-atom",
+        help="build a united-atom (hydrogens removed, folded into their "
+        "heavy-atom neighbor's charge) version of an already-prepared store",
+    )
+    p_ua.add_argument("dest", help="name of the new, united-atom store")
+    p_ua.add_argument(
+        "--source", default="dash-molecules",
+        help="name of the already-prepared source store (default: dash-molecules)",
+    )
+    p_ua.set_defaults(func=_cmd_to_united_atom)
 
     p_summary = sub.add_parser(
         "summarize", help="collect runs/**/metrics.json into a CSV"

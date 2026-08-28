@@ -502,6 +502,145 @@ def subsample_store(
     return summary_text
 
 
+def _to_united_atom(mol: Any) -> tuple[Any, int, int]:
+    """Remove ``mol``'s own hydrogens via ``Chem.RemoveHs`` (rdkit's own
+    default judgment of which H's are safe to strip -- see module docstring
+    for what "safe" means: not stereo-defining, no isotope/query, not
+    bridging, ...), adding each actually-removed H's own ``MBIScharge`` onto
+    the single heavy atom it was bonded to. An H rdkit declines to remove is
+    left in place, its own charge untouched -- never forced out. Total
+    charge is conserved exactly: every removed H's charge lands on exactly
+    one heavy atom, never dropped.
+
+    Uses a scratch atom-map-number tag (cleared again before returning) to
+    recover, for every atom surviving ``RemoveHs``, which original atom
+    index it was -- the only way to tell which specific H's were removed
+    vs. kept, since ``RemoveHs`` doesn't report that directly. Returns
+    ``(ua_mol, n_removed, n_kept)``.
+    """
+    from rdkit import Chem
+
+    work = Chem.Mol(mol)
+    for atom in work.GetAtoms():
+        atom.SetAtomMapNum(atom.GetIdx() + 1)  # 0 means "unset" in rdkit
+
+    h_charge: dict[int, float] = {}
+    h_heavy_neighbor: dict[int, int] = {}
+    for atom in work.GetAtoms():
+        if atom.GetAtomicNum() == 1:
+            idx = atom.GetIdx()
+            h_charge[idx] = atom.GetDoubleProp("MBIScharge")
+            neighbors = atom.GetNeighbors()
+            if len(neighbors) == 1:
+                h_heavy_neighbor[idx] = neighbors[0].GetIdx()
+
+    ua_mol = Chem.RemoveHs(work)
+
+    surviving_orig_by_new_idx = {
+        atom.GetIdx(): atom.GetAtomMapNum() - 1 for atom in ua_mol.GetAtoms()
+    }
+    surviving_orig = set(surviving_orig_by_new_idx.values())
+
+    bonus: dict[int, float] = {}
+    n_removed = 0
+    n_kept = 0
+    for h_idx, charge in h_charge.items():
+        if h_idx in surviving_orig:
+            n_kept += 1
+            continue
+        heavy_idx = h_heavy_neighbor.get(h_idx)
+        if heavy_idx is None:
+            # No single heavy neighbor (a bridging or isolated H) -- rdkit
+            # does not remove these by default, so this branch should be
+            # unreachable, but treat it as "kept" defensively rather than
+            # silently drop a charge with nowhere documented to go.
+            n_kept += 1
+            continue
+        bonus[heavy_idx] = bonus.get(heavy_idx, 0.0) + charge
+        n_removed += 1
+
+    for atom in ua_mol.GetAtoms():
+        atom.SetAtomMapNum(0)
+        add = bonus.get(surviving_orig_by_new_idx[atom.GetIdx()])
+        if add:
+            atom.SetDoubleProp("MBIScharge", atom.GetDoubleProp("MBIScharge") + add)
+
+    return ua_mol, n_removed, n_kept
+
+
+def to_united_atom_store(
+    source_store: str, dest_store: str, *, stores_root: Path
+) -> None:
+    """Build a united-atom (heavy-atom-only, where rdkit allows it) version
+    of an already-prepared ``source_store``: every conformer's ``Mol`` goes
+    through ``_to_united_atom`` (see its own docstring for the redistribution
+    rule and rdkit's "refuses to remove" cases). ``chembl_id``/``conf_id``/
+    ``dash_id``/``net_charge``/``split`` are copied through unchanged --
+    this is a different chemical representation of the exact same
+    conformers, not a re-split or re-sample, so a molecule's split
+    assignment is untouched. ``net_charge`` (a molblock-level ``M CHG`` sum,
+    not an atom-level quantity) needs no adjustment either.
+
+    Streams the source parquet in ``PARQUET_BATCH_SIZE``-row batches (read
+    and write both), so peak memory stays bounded regardless of the source
+    store's own size -- the full store's ~1M rows never load into memory at
+    once.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from charge_experiments.data import blob_to_mol, mol_to_blob
+
+    source_path = stores_root / source_store / "molecules.parquet"
+    source_file = pq.ParquetFile(source_path)
+    schema = source_file.schema_arrow
+
+    dest_dir = stores_root / dest_store
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / "molecules.parquet"
+    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
+
+    n_conformers = 0
+    n_h_removed = 0
+    n_h_kept = 0
+    writer: pq.ParquetWriter | None = None
+    try:
+        for record_batch in source_file.iter_batches(batch_size=PARQUET_BATCH_SIZE):
+            out_rows = []
+            for row in record_batch.to_pylist():
+                mol = blob_to_mol(row["mol"])
+                ua_mol, removed, kept = _to_united_atom(mol)
+                n_h_removed += removed
+                n_h_kept += kept
+                row = dict(row)
+                row["mol"] = mol_to_blob(ua_mol)
+                out_rows.append(row)
+            table = pa.Table.from_pylist(out_rows, schema=schema)
+            if writer is None:
+                writer = pq.ParquetWriter(tmp_path, schema)
+            writer.write_table(table)
+            n_conformers += len(out_rows)
+    finally:
+        if writer is not None:
+            writer.close()
+
+    if writer is not None:
+        tmp_path.replace(dest_path)
+
+    source_summary = stores_root / source_store / "split_summary.txt"
+    if source_summary.exists():
+        (dest_dir / "split_summary.txt").write_text(
+            f"(same molecules/splits as {source_store!r})\n\n"
+            + source_summary.read_text()
+        )
+
+    logger.info(
+        "united-atom store %r -> %r: %d conformer(s), %d H removed, "
+        "%d H kept (rdkit declined)",
+        source_store, dest_store, n_conformers, n_h_removed, n_h_kept,
+    )
+
+
 def prepare_store(
     store_name: str,
     *,

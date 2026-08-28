@@ -75,3 +75,23 @@ def test_build_parser_subsample_store_accepts_all_flags():
     assert args.n_molecules == 1000
     assert args.conformers_per_molecule == 3
     assert args.seed == 42
+
+
+def test_build_parser_to_united_atom_defaults():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["to-united-atom", "my-ua-store"])
+    assert args.dest == "my-ua-store"
+    assert args.source == "dash-molecules"
+
+
+def test_build_parser_to_united_atom_accepts_source_flag():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["to-united-atom", "my-ua-store", "--source", "some-other-store"]
+    )
+    assert args.dest == "my-ua-store"
+    assert args.source == "some-other-store"

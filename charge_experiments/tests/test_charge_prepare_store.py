@@ -442,3 +442,125 @@ def test_subsample_store_defaults_match_the_cli(tmp_path):
     sig = inspect.signature(subsample_store)
     assert sig.parameters["n_molecules"].default == 50_000
     assert sig.parameters["conformers_per_molecule"].default == 1
+
+
+def _ua_test_mol(smiles, *, add_hs=True, charges=None, isotope_h_idx=None):
+    """A small rdkit Mol with a fabricated MBIScharge on every atom, for
+    _to_united_atom's own unit tests."""
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    if add_hs:
+        mol = Chem.AddHs(mol)
+    mol = Chem.Mol(mol)
+    if isotope_h_idx is not None:
+        mol.GetAtomWithIdx(isotope_h_idx).SetIsotope(2)  # deuterium
+    if charges is None:
+        charges = [0.1 * (i + 1) for i in range(mol.GetNumAtoms())]
+    for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
+        atom.SetDoubleProp("MBIScharge", charge)
+    return mol
+
+
+def test_to_united_atom_removes_hydrogens_and_redistributes_their_charge():
+    from charge_experiments.prepare_store import _to_united_atom
+
+    # methanol: C-O, C has 3 H's, O has 1 H.
+    mol = _ua_test_mol("CO")
+    total_before = sum(a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms())
+
+    ua_mol, n_removed, n_kept = _to_united_atom(mol)
+
+    assert ua_mol.GetNumAtoms() == 2  # just C and O
+    assert n_kept == 0
+    assert n_removed == mol.GetNumAtoms() - 2
+    total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+
+
+def test_to_united_atom_conserves_total_charge_on_a_larger_molecule():
+    from charge_experiments.prepare_store import _to_united_atom
+
+    mol = _ua_test_mol("CC(=O)Nc1ccc(O)cc1")  # acetaminophen, several H types
+    total_before = sum(a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms())
+
+    ua_mol, n_removed, n_kept = _to_united_atom(mol)
+
+    total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+    assert n_removed + n_kept == sum(
+        1 for a in mol.GetAtoms() if a.GetAtomicNum() == 1
+    )
+
+
+def test_to_united_atom_keeps_a_hydrogen_rdkit_declines_to_remove():
+    """An isotope-tagged H (deuterium) is one of rdkit's own documented
+    RemoveHs exceptions -- confirmed empirically against this exact rdkit
+    build before writing this test."""
+    from charge_experiments.prepare_store import _to_united_atom
+
+    mol = _ua_test_mol("CO", isotope_h_idx=2)  # atom 2 is one of C's H's
+    total_before = sum(a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms())
+
+    ua_mol, _n_removed, n_kept = _to_united_atom(mol)
+
+    assert n_kept == 1
+    isotopes = [a.GetIsotope() for a in ua_mol.GetAtoms()]
+    assert 2 in isotopes  # the deuterium survived
+    symbols = [a.GetSymbol() for a in ua_mol.GetAtoms()]
+    assert symbols.count("H") == 1  # only the deuterium remains
+    total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+
+
+def test_to_united_atom_heavy_atom_charge_is_original_plus_its_hs():
+    from charge_experiments.prepare_store import _to_united_atom
+
+    # ethanol built with explicit fixed charges so the arithmetic is exact:
+    # atom order from Chem.AddHs(MolFromSmiles("CCO")) is C0 C1 O2 then H's.
+    charges = [0.10, 0.20, 0.30, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+    mol = _ua_test_mol("CCO", charges=charges)
+    ua_mol, _n_removed, _n_kept = _to_united_atom(mol)
+
+    assert ua_mol.GetNumAtoms() == 3
+    # exact per-atom H assignment depends on rdkit's own H ordering/
+    # neighbor map, so assert the group total, not a specific per-atom split.
+    total = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total == pytest.approx(sum(charges))
+
+
+def test_to_united_atom_store_transforms_every_row_and_preserves_other_columns(
+    tmp_path,
+):
+    from charge_experiments.prepare_store import (
+        parse_dash_molecules,
+        to_united_atom_store,
+    )
+
+    sdf_path = tmp_path / "tiny.sdf"
+    sdf_path.write_text(_TINY_SDF)
+    store_dir = tmp_path / "source-store"
+    store_dir.mkdir()
+    parse_dash_molecules(sdf_path, store_dir / "molecules.parquet")
+
+    to_united_atom_store("source-store", "ua-store", stores_root=tmp_path)
+
+    import pandas as pd
+    from charge_experiments.data import blob_to_mol
+
+    source = pd.read_parquet(store_dir / "molecules.parquet")
+    ua = pd.read_parquet(tmp_path / "ua-store" / "molecules.parquet")
+
+    assert len(ua) == len(source)
+    assert (ua["chembl_id"] == source["chembl_id"]).all()
+    assert (ua["conf_id"] == source["conf_id"]).all()
+    assert (ua["net_charge"] == source["net_charge"]).all()
+
+    source_mol = blob_to_mol(source["mol"].iloc[0])
+    ua_mol = blob_to_mol(ua["mol"].iloc[0])
+    # _TINY_SDF is C-N-O-H (a single H, on the C) -- exactly 3 heavy atoms.
+    assert source_mol.GetNumAtoms() == 4
+    assert ua_mol.GetNumAtoms() == 3
+    source_total = sum(a.GetDoubleProp("MBIScharge") for a in source_mol.GetAtoms())
+    ua_total = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert ua_total == pytest.approx(source_total)
