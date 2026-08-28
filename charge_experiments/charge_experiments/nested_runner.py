@@ -199,13 +199,6 @@ def execute_nested(
     else:
         predictor.fit(splits["train"], splits["val"], rng=rng)
         tree_stats_source = "fit"
-        if cfg.tree_stats.save_path is not None:
-            if not hasattr(predictor, "save_tree_stats"):
-                raise AttributeError(
-                    f"predictor {cfg.predictor.name!r} has no save_tree_stats "
-                    "method; tree_stats.save_path is not usable with it"
-                )
-            predictor.save_tree_stats(cfg.tree_stats.save_path)
     fit_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -277,6 +270,14 @@ def execute_nested(
             run_metrics=parent_metrics, runs_root=runs_root, started=started,
             git_info=git_info, extra_manifest=parent_extra_manifest,
         )
+        # Automatic and unconditional whenever fit() actually ran: the
+        # saved stats live inside the run they came from, so the run
+        # directory itself is the provenance record -- no separately
+        # configurable path to silently collide across runs. Skipped for a
+        # predictor without save_tree_stats (e.g. dash_pretrained, whose
+        # fit() is a no-op with nothing to save).
+        if tree_stats_source == "fit" and hasattr(predictor, "save_tree_stats"):
+            predictor.save_tree_stats(parent_result.run_dir / "tree_stats.npz")
         if tracking_ok:
             _runner._log_mlflow_run(
                 _tags_for(

@@ -7,8 +7,6 @@ data:
 predictor:
   name: dash
   params: {}
-tree_stats:
-  save_path: charge_experiments/artifacts/dash-tree-stats.npz
 children:
   - std_weighted
   - equal_weighted

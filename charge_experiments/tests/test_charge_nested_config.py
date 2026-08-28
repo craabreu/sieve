@@ -15,7 +15,7 @@ def _base_raw():
         "run": {"experiment": "charge-nested-smoke", "seed": 0},
         "data": {"store": "dash-molecules", "split_column": "split"},
         "predictor": {"name": "dash", "params": {}},
-        "tree_stats": {"save_path": "artifacts/stats.npz"},
+        "tree_stats": {"load_path": "runs/some-experiment/some-run/tree_stats.npz"},
         "children": ["std_weighted", "equal_weighted"],
     }
 
@@ -28,8 +28,7 @@ def test_load_nested_config_round_trips(tmp_path):
 
     assert cfg.run.experiment == "charge-nested-smoke"
     assert cfg.predictor.name == "dash"
-    assert cfg.tree_stats.save_path == "artifacts/stats.npz"
-    assert cfg.tree_stats.load_path is None
+    assert cfg.tree_stats.load_path == "runs/some-experiment/some-run/tree_stats.npz"
     assert cfg.children == ("std_weighted", "equal_weighted")
 
 
@@ -65,7 +64,6 @@ def test_load_nested_config_allows_a_predictor_with_no_tree_stats(tmp_path):
 
     cfg = load_nested_config(path)
     assert cfg.predictor.name == "dash_pretrained"
-    assert cfg.tree_stats.save_path is None
     assert cfg.tree_stats.load_path is None
 
 

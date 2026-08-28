@@ -59,7 +59,7 @@ class _FakeNormalizablePredictor:
 register("fake_normalizable", lambda params: _FakeNormalizablePredictor())
 
 
-def _nested_cfg(tmp_path, *, load_path=None, save_path=None):
+def _nested_cfg(tmp_path, *, load_path=None):
     from charge_experiments.config import DataCfg, PredictorCfg, RunCfg
     from charge_experiments.nested_config import NestedExperimentCfg, TreeStatsCfg
 
@@ -67,7 +67,7 @@ def _nested_cfg(tmp_path, *, load_path=None, save_path=None):
         run=RunCfg(experiment="charge-nested-smoke", seed=0),
         data=DataCfg(store="synthetic", split_column="split"),
         predictor=PredictorCfg(name="fake_normalizable", params={}),
-        tree_stats=TreeStatsCfg(save_path=save_path, load_path=load_path),
+        tree_stats=TreeStatsCfg(load_path=load_path),
         children=("std_weighted", "equal_weighted"),
     )
 
@@ -128,17 +128,34 @@ def test_execute_nested_children_reuse_the_same_raw_predictions(tmp_path, monkey
     assert captured[0].predict_raw_calls <= 3
 
 
+def test_execute_nested_auto_saves_tree_stats_inside_the_parent_run_dir(tmp_path):
+    """No configurable save path: a fit()-based parent run always writes
+    its own tree_stats.npz alongside its own metrics.json/manifest.json --
+    the run directory itself is the provenance record."""
+    from charge_experiments.nested_runner import execute_nested
+
+    mset = synthetic_molecule_set(n_mol=12, seed=0)
+    masks = _synthetic_masks(12, seed=1)
+    cfg = _nested_cfg(tmp_path)
+
+    result = execute_nested(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    assert (result.parent.run_dir / "tree_stats.npz").exists()
+
+
 def test_execute_nested_load_tree_stats_skips_fit(tmp_path, monkeypatch):
     from charge_experiments.nested_runner import execute_nested
 
     mset = synthetic_molecule_set(n_mol=12, seed=0)
     masks = _synthetic_masks(12, seed=1)
 
-    stats_path = tmp_path / "stats.json"
-    save_cfg = _nested_cfg(tmp_path, save_path=str(stats_path))
-    execute_nested(
-        save_cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    fit_cfg = _nested_cfg(tmp_path)
+    fit_result = execute_nested(
+        fit_cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )
+    stats_path = fit_result.parent.run_dir / "tree_stats.npz"
     assert stats_path.exists()
 
     load_cfg = _nested_cfg(tmp_path, load_path=str(stats_path))
@@ -160,6 +177,8 @@ def test_execute_nested_load_tree_stats_skips_fit(tmp_path, monkeypatch):
     assert captured[0].fit_calls == 0
     manifest = json.loads((result.parent.run_dir / "manifest.json").read_text())
     assert manifest["tree_stats_source"] == "loaded"
+    # a loaded-from run never re-saves its own tree_stats.npz
+    assert not (result.parent.run_dir / "tree_stats.npz").exists()
 
 
 def test_execute_nested_rejects_a_dirty_tree_by_default(tmp_path, monkeypatch):

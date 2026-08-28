@@ -6,6 +6,17 @@ already-computed raw predictions. See docs/superpowers/specs/
 ``tree_stats`` doesn't hardcode which predictor names support it -- that's a
 duck-typed runtime concern for nested_runner.execute_nested (checked via
 hasattr), not a parse-time one here.
+
+There is deliberately no ``save_path`` here: a saved-stats file's own
+identity should never be disconnected from the run that produced it (a
+static, config-chosen path invites two runs silently clobbering the same
+file with no record of what happened). Saving is automatic and unconditional
+whenever a fit()-based parent run completes -- see nested_runner.py's own
+``execute_nested``, which writes it to ``<run_dir>/tree_stats.npz``,
+alongside that run's own ``metrics.json``/``manifest.json``. ``load_path``
+is the only knob here: point it at any earlier run's own ``tree_stats.npz``
+to skip ``fit()`` and reuse that run's stats -- the run directory itself
+*is* the provenance record.
 """
 
 from __future__ import annotations
@@ -27,12 +38,11 @@ from charge_experiments.config import (
 from charge_experiments.normalize import NORMALIZERS
 
 _TOP_KEYS = {"run", "data", "predictor", "tree_stats", "children"}
-_TREE_STATS_KEYS = {"save_path", "load_path"}
+_TREE_STATS_KEYS = {"load_path"}
 
 
 @dataclass(frozen=True)
 class TreeStatsCfg:
-    save_path: str | None = None
     load_path: str | None = None
 
 
@@ -77,10 +87,7 @@ def _build(raw: Mapping[str, Any]) -> NestedExperimentCfg:
     tree_stats_raw = raw.get("tree_stats")
     if tree_stats_raw is not None:
         _check_keys(tree_stats_raw, _TREE_STATS_KEYS, "tree_stats")
-        tree_stats = TreeStatsCfg(
-            save_path=tree_stats_raw.get("save_path"),
-            load_path=tree_stats_raw.get("load_path"),
-        )
+        tree_stats = TreeStatsCfg(load_path=tree_stats_raw.get("load_path"))
     else:
         tree_stats = TreeStatsCfg()
 
