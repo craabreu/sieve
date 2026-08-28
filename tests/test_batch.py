@@ -22,25 +22,41 @@ def ring(n):
     }
 
 
-def best_of(fn, repeats=5):
-    """The minimum CPU time of `fn()` over several repeats.
+def best_of_paired(fn_a, fn_b, *, repeats=8):
+    """The minimum CPU time of `fn_a()` and `fn_b()` each, over several
+    repeats, interleaved (a, b, a, b, ...) rather than run as two separate
+    back-to-back blocks.
 
     `perf_counter` measures wall-clock time, so it also counts every
     millisecond the process spends *descheduled* while a noisy neighbor on a
-    shared CI runner gets the CPU instead -- and that hiccup lands on
-    whichever of the two timings happens to be running at that instant,
-    which is exactly the coin flip that made this test flaky even after
-    taking the minimum over 5 repeats. `process_time` counts only CPU time
-    actually spent executing this process, so a scheduling gap costs it
-    nothing. The minimum-over-repeats is kept as a second line of defense
-    against unrelated per-call noise (cache effects, allocator work).
+    shared CI runner gets the CPU instead. `process_time` counts only CPU
+    time actually spent executing this process, so a scheduling gap costs it
+    nothing -- but CPU time alone does not rule out running slower *while
+    scheduled* under memory-bandwidth/frequency contention from a
+    co-located tenant on shared CI hardware, which is a real risk whenever
+    the two things being compared have different sensitivity to that (see
+    `test_slicing_does_not_revalidate_edges`, the remaining user of this
+    helper -- `test_validation_does_not_build_a_python_set` moved off
+    timing entirely, to `tracemalloc` peak-memory tracking, once exactly
+    this failure mode hit it twice in real CI). Interleaving the two
+    functions' own timing loops at least correlates a short-lived
+    contention episode across both measurements instead of letting it land
+    unevenly on whichever one happened to be running during the dip -- run
+    back-to-back as two separate blocks, the same episode can skew only one
+    side and shift the ratio. The minimum-over-repeats is kept as a second
+    line of defense against unrelated per-call noise (cache effects,
+    allocator work).
     """
-    best = float("inf")
+    best_a = best_b = float("inf")
     for _ in range(repeats):
         t0 = time.process_time()
-        fn()
-        best = min(best, time.process_time() - t0)
-    return best
+        fn_a()
+        best_a = min(best_a, time.process_time() - t0)
+
+        t0 = time.process_time()
+        fn_b()
+        best_b = min(best_b, time.process_time() - t0)
+    return best_a, best_b
 
 
 def python_set_check(src, dst):
@@ -145,15 +161,48 @@ def test_trusted_constructor_rejects_unknown_fields():
 
 def test_validation_does_not_build_a_python_set():
     """The both-direction check used to cost more than an entire fit: it built
-    a Python set of every edge tuple. It must be vectorized, so constructing a
-    batch has to come in well under the cost of that set."""
-    kw = ring(150_000)
-    reference = best_of(lambda: python_set_check(kw["edge_src"], kw["edge_dst"]))
-    construction = best_of(lambda: NodeBatch(**kw))
+    a Python set of every edge tuple. It must be vectorized -- i.e. it must
+    not materialize O(edges) Python-level objects (a set of int tuples) the
+    way the reference implementation below does.
 
-    assert construction < 0.5 * reference, (
-        f"construction ({construction * 1000:.1f} ms) should be far under the "
-        f"Python-set reference ({reference * 1000:.1f} ms)"
+    That is a structural property of the algorithm, not a question of how
+    fast today's hardware happens to run it, so it's tested directly via
+    ``tracemalloc``'s peak-memory tracking rather than via wall/CPU time.
+    An earlier version of this test compared elapsed time against the same
+    reference and needed two rounds of fixes (wall-clock -> CPU time, then
+    interleaved measurements with a loosened threshold) because CPU time
+    only rules out being *descheduled*, not running slower *while
+    scheduled* under memory-bandwidth/frequency contention from a
+    co-located tenant on shared CI hardware -- and the two workloads here
+    (vectorized numpy vs. a Python set of boxed int tuples) plausibly have
+    different sensitivity to that, so the timing ratio itself could shift
+    under contention, not just get noisier around a fixed mean (two real CI
+    failures measured 0.58 and 0.66 against a quiet-machine baseline of
+    ~0.35-0.37). Peak allocated memory has no such dependency: it counts
+    what got allocated, not how long the CPU took to do it, so it can't
+    flake this way at all -- confirmed empirically (~9.6 MB vectorized vs.
+    ~44 MB for the reference on a 150k-node ring, a ratio of ~0.22).
+    """
+    import tracemalloc
+
+    kw = ring(150_000)
+    NodeBatch(**kw)  # warm up allocator pools before either measurement
+    python_set_check(kw["edge_src"], kw["edge_dst"])
+
+    tracemalloc.start()
+    NodeBatch(**kw)
+    _, peak_construction = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    tracemalloc.start()
+    python_set_check(kw["edge_src"], kw["edge_dst"])
+    _, peak_reference = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert peak_construction < 0.5 * peak_reference, (
+        f"construction ({peak_construction / 1e6:.2f} MB peak) should use "
+        f"far less memory than the Python-set reference "
+        f"({peak_reference / 1e6:.2f} MB peak)"
     )
 
 
@@ -164,8 +213,10 @@ def test_slicing_does_not_revalidate_edges():
     batch = NodeBatch(**ring(150_000))
     mask = batch.graph_id == 0  # keep everything, so the edge work is maximal
 
-    full = best_of(lambda: NodeBatch(**ring(150_000)))
-    sliced = best_of(lambda: batch[mask])
+    full, sliced = best_of_paired(
+        lambda: NodeBatch(**ring(150_000)),
+        lambda: batch[mask],
+    )
 
     assert sliced < 0.5 * full, (
         f"slicing ({sliced * 1000:.1f} ms) still pays the construction-time "
