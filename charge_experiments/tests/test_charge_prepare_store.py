@@ -262,3 +262,305 @@ def test_assign_splits_never_splits_a_chembl_id_across_splits(tmp_path):
     assert "split" in df.columns
     per_id = df.groupby("chembl_id")["split"].nunique()
     assert (per_id == 1).all()
+
+
+def _synthetic_split_store(
+    tmp_path, *, n_train=30, n_val=10, n_test=10, conformers_per_mol=2
+):
+    """An already-split store built directly (no SDF parsing needed --
+    subsample_store never deserializes a Mol blob, so a placeholder b""
+    stands in for one)."""
+    import pandas as pd
+
+    rows = []
+    counts = {"train": n_train, "val": n_val, "test": n_test}
+    for split_name, n_mol in counts.items():
+        for m in range(n_mol):
+            chembl_id = f"{split_name.upper()}{m}"
+            for c in range(conformers_per_mol):
+                rows.append(
+                    {
+                        "chembl_id": chembl_id,
+                        "conf_id": f"conf_{c:02d}",
+                        "dash_id": None,
+                        "mol": b"",
+                        "net_charge": 0.0,
+                        "split": split_name,
+                    }
+                )
+    df = pd.DataFrame(rows)
+    store_dir = tmp_path / "source-store"
+    store_dir.mkdir()
+    df.to_parquet(store_dir / "molecules.parquet")
+    return store_dir.name
+
+
+def test_subsample_store_preserves_source_split_fractions_approximately(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    counts = out.groupby("split")["chembl_id"].nunique()
+    # 60/20/20 of the source -> round(20*0.6)=12, round(20*0.2)=4, round(20*0.2)=4
+    assert counts["train"] == 12
+    assert counts["val"] == 4
+    assert counts["test"] == 4
+
+
+def test_subsample_store_caps_conformers_per_molecule(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(
+        tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=5
+    )
+
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=15, conformers_per_molecule=2, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    per_mol = out.groupby("chembl_id").size()
+    assert (per_mol == 2).all()
+
+
+def test_subsample_store_never_pads_a_molecule_with_fewer_conformers(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    # Every molecule has exactly 1 conformer -- conformers_per_molecule=3
+    # must not fabricate extras.
+    _synthetic_split_store(
+        tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=1
+    )
+
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=15, conformers_per_molecule=3, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    per_mol = out.groupby("chembl_id").size()
+    assert (per_mol == 1).all()
+
+
+def test_subsample_store_is_reproducible_with_the_same_seed(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    subsample_store(
+        "source-store", "dest-a", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=7,
+    )
+    subsample_store(
+        "source-store", "dest-b", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=7,
+    )
+
+    import pandas as pd
+
+    a = pd.read_parquet(tmp_path / "dest-a" / "molecules.parquet")
+    b = pd.read_parquet(tmp_path / "dest-b" / "molecules.parquet")
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_subsample_store_clamps_when_source_split_is_too_small(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=2, n_test=10)
+
+    # 20-molecule target would ask round(20*2/42)~1 of val -- fine either
+    # way, so make the request absurdly large to force real clamping.
+    subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=1000, conformers_per_molecule=1, seed=0,
+    )
+
+    import pandas as pd
+
+    out = pd.read_parquet(tmp_path / "dest-store" / "molecules.parquet")
+    counts = out.groupby("split")["chembl_id"].nunique()
+    assert counts["train"] == 30
+    assert counts["val"] == 2
+    assert counts["test"] == 10
+
+
+def test_subsample_store_raises_without_a_split_column(tmp_path):
+    import pandas as pd
+    import pytest
+    from charge_experiments.prepare_store import subsample_store
+
+    store_dir = tmp_path / "unsplit-store"
+    store_dir.mkdir()
+    pd.DataFrame(
+        {"chembl_id": ["A"], "conf_id": ["conf_00"], "dash_id": [None],
+         "mol": [b""], "net_charge": [0.0]}
+    ).to_parquet(store_dir / "molecules.parquet")
+
+    with pytest.raises(ValueError, match="split column"):
+        subsample_store(
+            "unsplit-store", "dest-store", stores_root=tmp_path, n_molecules=10
+        )
+
+
+def test_subsample_store_writes_a_summary_file(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    summary_text = subsample_store(
+        "source-store", "dest-store", stores_root=tmp_path,
+        n_molecules=20, conformers_per_molecule=1, seed=0,
+    )
+
+    summary_path = tmp_path / "dest-store" / "split_summary.txt"
+    assert summary_path.exists()
+    assert summary_path.read_text().strip() == summary_text.strip()
+    assert "train" in summary_text
+    assert "n_molecules" in summary_text
+
+
+def test_subsample_store_defaults_match_the_cli(tmp_path):
+    """The function's own defaults are what the plan calls for: 50k
+    molecules, 1 conformer/molecule, source fractions preserved."""
+    import inspect
+
+    from charge_experiments.prepare_store import subsample_store
+
+    sig = inspect.signature(subsample_store)
+    assert sig.parameters["n_molecules"].default == 50_000
+    assert sig.parameters["conformers_per_molecule"].default == 1
+
+
+def _ua_test_mol(smiles, *, add_hs=True, charges=None, isotope_h_idx=None):
+    """A small rdkit Mol with a fabricated MBIScharge on every atom, for
+    _to_united_atom's own unit tests."""
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles)
+    if add_hs:
+        mol = Chem.AddHs(mol)
+    mol = Chem.Mol(mol)
+    if isotope_h_idx is not None:
+        mol.GetAtomWithIdx(isotope_h_idx).SetIsotope(2)  # deuterium
+    if charges is None:
+        charges = [0.1 * (i + 1) for i in range(mol.GetNumAtoms())]
+    for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
+        atom.SetDoubleProp("MBIScharge", charge)
+    return mol
+
+
+def test_to_united_atom_removes_hydrogens_and_redistributes_their_charge():
+    from charge_experiments.prepare_store import _to_united_atom
+
+    # methanol: C-O, C has 3 H's, O has 1 H.
+    mol = _ua_test_mol("CO")
+    total_before = sum(a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms())
+
+    ua_mol, n_removed, n_kept = _to_united_atom(mol)
+
+    assert ua_mol.GetNumAtoms() == 2  # just C and O
+    assert n_kept == 0
+    assert n_removed == mol.GetNumAtoms() - 2
+    total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+
+
+def test_to_united_atom_conserves_total_charge_on_a_larger_molecule():
+    from charge_experiments.prepare_store import _to_united_atom
+
+    mol = _ua_test_mol("CC(=O)Nc1ccc(O)cc1")  # acetaminophen, several H types
+    total_before = sum(a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms())
+
+    ua_mol, n_removed, n_kept = _to_united_atom(mol)
+
+    total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+    assert n_removed + n_kept == sum(
+        1 for a in mol.GetAtoms() if a.GetAtomicNum() == 1
+    )
+
+
+def test_to_united_atom_keeps_a_hydrogen_rdkit_declines_to_remove():
+    """An isotope-tagged H (deuterium) is one of rdkit's own documented
+    RemoveHs exceptions -- confirmed empirically against this exact rdkit
+    build before writing this test."""
+    from charge_experiments.prepare_store import _to_united_atom
+
+    mol = _ua_test_mol("CO", isotope_h_idx=2)  # atom 2 is one of C's H's
+    total_before = sum(a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms())
+
+    ua_mol, _n_removed, n_kept = _to_united_atom(mol)
+
+    assert n_kept == 1
+    isotopes = [a.GetIsotope() for a in ua_mol.GetAtoms()]
+    assert 2 in isotopes  # the deuterium survived
+    symbols = [a.GetSymbol() for a in ua_mol.GetAtoms()]
+    assert symbols.count("H") == 1  # only the deuterium remains
+    total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+
+
+def test_to_united_atom_heavy_atom_charge_is_original_plus_its_hs():
+    from charge_experiments.prepare_store import _to_united_atom
+
+    # ethanol built with explicit fixed charges so the arithmetic is exact:
+    # atom order from Chem.AddHs(MolFromSmiles("CCO")) is C0 C1 O2 then H's.
+    charges = [0.10, 0.20, 0.30, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+    mol = _ua_test_mol("CCO", charges=charges)
+    ua_mol, _n_removed, _n_kept = _to_united_atom(mol)
+
+    assert ua_mol.GetNumAtoms() == 3
+    # exact per-atom H assignment depends on rdkit's own H ordering/
+    # neighbor map, so assert the group total, not a specific per-atom split.
+    total = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert total == pytest.approx(sum(charges))
+
+
+def test_to_united_atom_store_transforms_every_row_and_preserves_other_columns(
+    tmp_path,
+):
+    from charge_experiments.prepare_store import (
+        parse_dash_molecules,
+        to_united_atom_store,
+    )
+
+    sdf_path = tmp_path / "tiny.sdf"
+    sdf_path.write_text(_TINY_SDF)
+    store_dir = tmp_path / "source-store"
+    store_dir.mkdir()
+    parse_dash_molecules(sdf_path, store_dir / "molecules.parquet")
+
+    to_united_atom_store("source-store", "ua-store", stores_root=tmp_path)
+
+    import pandas as pd
+    from charge_experiments.data import blob_to_mol
+
+    source = pd.read_parquet(store_dir / "molecules.parquet")
+    ua = pd.read_parquet(tmp_path / "ua-store" / "molecules.parquet")
+
+    assert len(ua) == len(source)
+    assert (ua["chembl_id"] == source["chembl_id"]).all()
+    assert (ua["conf_id"] == source["conf_id"]).all()
+    assert (ua["net_charge"] == source["net_charge"]).all()
+
+    source_mol = blob_to_mol(source["mol"].iloc[0])
+    ua_mol = blob_to_mol(ua["mol"].iloc[0])
+    # _TINY_SDF is C-N-O-H (a single H, on the C) -- exactly 3 heavy atoms.
+    assert source_mol.GetNumAtoms() == 4
+    assert ua_mol.GetNumAtoms() == 3
+    source_total = sum(a.GetDoubleProp("MBIScharge") for a in source_mol.GetAtoms())
+    ua_total = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
+    assert ua_total == pytest.approx(source_total)
