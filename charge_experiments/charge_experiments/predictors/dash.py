@@ -241,6 +241,29 @@ class DASHChargePredictor:
         paths = self._paths_for(test, split="test")
         atom_charge = predict_via_data_storage_walk(self._tree, paths, self._mean_props)
         atom_std = predict_via_data_storage_walk(self._tree, paths, self._std_props)
+
+        # match_stats' own n_unmatched_atoms (set in _paths_for) only counts
+        # atoms whose path-matching itself failed -- a strict undercount of
+        # the real NaN rate now that there is no invented fallback: an
+        # atom's own path can match successfully yet still return NaN if
+        # nothing along that hierarchy was ever populated (the exact case
+        # DASH's own get_property_noNAN returns NaN for). Tracked here so
+        # match_stats -- the one place a run's manifest.json reports
+        # coverage -- reflects the true final NaN rate, mirroring
+        # predictors/dash_pretrained.py's own convention.
+        n_final_nan_atoms = int(np.isnan(atom_charge).sum())
+        stats = self.match_stats["test"]
+        stats["n_final_nan_atoms"] = n_final_nan_atoms
+        if n_final_nan_atoms:
+            logger.warning(
+                "DASH predicted NaN for %d/%d atoms (%d unmatched by path, "
+                "%d matched but with nothing populated along the "
+                "hierarchy); these are reported as NaN, not guessed at",
+                n_final_nan_atoms,
+                stats["n_atoms"],
+                stats["n_unmatched_atoms"],
+                n_final_nan_atoms - stats["n_unmatched_atoms"],
+            )
         return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:

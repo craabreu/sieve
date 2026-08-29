@@ -48,18 +48,6 @@ def test_compute_node_stats_std_zero_for_singleton_node():
     np.testing.assert_allclose(stats.std, [0.0])
 
 
-def test_compute_node_stats_fallback_matches_global_mean_and_std():
-    from charge_experiments.tree_artifact import compute_node_stats
-
-    paths = [[(0, 1)], [(0, 2)], [(1, 1)]]
-    atom_charge = np.array([0.1, 0.5, -0.3])
-
-    stats = compute_node_stats(paths, atom_charge)
-
-    assert stats.fallback_mean == pytest.approx(atom_charge.mean())
-    assert stats.fallback_std == pytest.approx(atom_charge.std())
-
-
 def test_compute_node_stats_aggregates_a_node_visited_via_multiple_paths():
     """A node reached along more than one atom's path pools all of them,
     same as populate_tree_with_charge_property's own prior behavior."""
@@ -89,8 +77,10 @@ def test_apply_node_stats_writes_mean_and_std_columns():
     assert df.loc[1, mean_props.charge_column] == pytest.approx(0.3)
     assert pd.isna(df.loc[0, mean_props.charge_column])
     assert df.loc[1, std_props.charge_column] == pytest.approx(0.1)
-    assert mean_props.fallback_charge == pytest.approx(0.3)
-    assert std_props.fallback_charge == pytest.approx(np.std([0.2, 0.4]))
+    # No invented global-mean/std fallback -- DASH's own get_property_noNAN
+    # returns NaN, not a mean, when a hierarchy is entirely unpopulated.
+    assert np.isnan(mean_props.fallback_charge)
+    assert np.isnan(std_props.fallback_charge)
 
 
 def test_save_and_load_node_stats_round_trips(tmp_path):
@@ -113,8 +103,6 @@ def test_save_and_load_node_stats_round_trips(tmp_path):
     np.testing.assert_allclose(loaded.mean, stats.mean)
     np.testing.assert_allclose(loaded.std, stats.std)
     np.testing.assert_array_equal(loaded.count, stats.count)
-    assert loaded.fallback_mean == pytest.approx(stats.fallback_mean)
-    assert loaded.fallback_std == pytest.approx(stats.fallback_std)
 
 
 def test_apply_node_stats_from_loaded_stats_matches_direct_apply(tmp_path):
@@ -141,4 +129,8 @@ def test_apply_node_stats_from_loaded_stats_matches_direct_apply(tmp_path):
     pd.testing.assert_frame_equal(
         tree_direct.data_storage[0], tree_loaded.data_storage[0]
     )
-    assert direct_mean_props == loaded_mean_props
+    assert direct_mean_props.charge_column == loaded_mean_props.charge_column
+    # fallback_charge is NaN on both sides -- nan != nan, so compare via
+    # isnan rather than dataclass equality.
+    assert np.isnan(direct_mean_props.fallback_charge)
+    assert np.isnan(loaded_mean_props.fallback_charge)
