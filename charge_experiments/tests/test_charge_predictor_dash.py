@@ -39,7 +39,9 @@ def test_populate_tree_with_charge_property_writes_node_means():
     assert df.loc[1, props.charge_column] == pytest.approx(0.3)
     assert pd.isna(df.loc[0, props.charge_column])
     assert pd.isna(df.loc[2, props.charge_column])
-    assert props.fallback_charge == pytest.approx(0.3)
+    # No invented global-mean fallback -- DASH's own get_property_noNAN
+    # returns NaN, not a mean, when a hierarchy is entirely unpopulated.
+    assert np.isnan(props.fallback_charge)
 
 
 def test_predict_via_data_storage_walk_prefers_deepest_populated_node():
@@ -79,7 +81,11 @@ def test_predict_via_data_storage_walk_backs_off_to_shallower_node():
     assert predicted[0] == pytest.approx(0.7)
 
 
-def test_predict_via_data_storage_walk_falls_back_to_global_mean_for_unmatched_atom():
+def test_predict_via_data_storage_walk_is_nan_for_unmatched_atom():
+    """No invented fallback: an atom whose own path-matching failed
+    entirely (an empty path) gets NaN, not a substituted global mean --
+    matching DASH's own get_property_noNAN, which returns NaN (not a
+    mean of anything) when a hierarchy is unpopulated."""
     from charge_experiments.predictors.dash import (
         populate_tree_with_charge_property,
         predict_via_data_storage_walk,
@@ -91,4 +97,4 @@ def test_predict_via_data_storage_walk_falls_back_to_global_mean_for_unmatched_a
     props = populate_tree_with_charge_property(tree, train_paths, atom_charge)
 
     predicted = predict_via_data_storage_walk(tree, [[]], props)
-    assert predicted[0] == pytest.approx(0.4)  # global mean, atom has empty path
+    assert np.isnan(predicted[0])

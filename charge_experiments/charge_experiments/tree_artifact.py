@@ -34,19 +34,23 @@ class LiteralTreeChargeProperties:
 @dataclass(frozen=True)
 class TreeNodeStats:
     """One row per populated ``(branch_idx, node_id)``: ``mean``/``std``/
-    ``count`` of the train atoms matched there, plus the two global
-    fallbacks (mean/std over every train atom, regardless of node) a
-    predictor uses when an atom's own path is entirely unpopulated. Parallel
-    numpy arrays, not a dict -- this whole object is what gets saved to /
-    loaded from disk."""
+    ``count`` of the train atoms matched there. Parallel numpy arrays, not a
+    dict -- this whole object is what gets saved to / loaded from disk.
+
+    Deliberately no global-mean/std fallback here: DASH's own
+    ``get_property_noNAN`` returns ``np.nan`` (not a global mean) when a
+    matched atom's whole hierarchy is unpopulated -- see
+    ``apply_node_stats``'s own ``fallback_charge=float("nan")``. An earlier
+    version of this predictor substituted the train split's own global mean
+    for that case; that was never DASH's own behavior, just something
+    invented here, and has been removed to match ``predictors/
+    dash_pretrained.py``'s own "no invented fallback" principle."""
 
     branch_idx: NDArray[np.int64]
     node_id: NDArray[np.int64]
     mean: NDArray[np.float64]
     std: NDArray[np.float64]
     count: NDArray[np.int64]
-    fallback_mean: float
-    fallback_std: float
 
 
 def compute_node_stats(
@@ -87,8 +91,6 @@ def compute_node_stats(
         mean=mean_arr,
         std=std_arr,
         count=count_arr,
-        fallback_mean=float(atom_charge.mean()),
-        fallback_std=float(atom_charge.std()),
     )
 
 
@@ -102,8 +104,6 @@ def save_node_stats(stats: TreeNodeStats, path: str | Path) -> None:
         mean=stats.mean,
         std=stats.std,
         count=stats.count,
-        fallback_mean=np.float64(stats.fallback_mean),
-        fallback_std=np.float64(stats.fallback_std),
     )
 
 
@@ -118,8 +118,6 @@ def load_node_stats(path: str | Path) -> TreeNodeStats:
             mean=data["mean"],
             std=data["std"],
             count=data["count"],
-            fallback_mean=float(data["fallback_mean"]),
-            fallback_std=float(data["fallback_std"]),
         )
 
 
@@ -152,9 +150,9 @@ def apply_node_stats(
 
     return (
         LiteralTreeChargeProperties(
-            charge_column=mean_column, fallback_charge=stats.fallback_mean
+            charge_column=mean_column, fallback_charge=float("nan")
         ),
         LiteralTreeChargeProperties(
-            charge_column=std_column, fallback_charge=stats.fallback_std
+            charge_column=std_column, fallback_charge=float("nan")
         ),
     )
