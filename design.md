@@ -410,6 +410,54 @@ shrunk value in the model. There is no incremental patch. Materialize it after f
 This is also precisely why §5 works: sufficient statistics form a monoid under merging, and shrunk
 means do not.
 
+### 4.3 Variance shrinkage
+
+A class variance estimated from a handful of members is barely better than no estimate at all: at
+$N=2$ the sample variance has roughly 100% relative error, and at $N=1$ it does not exist (§4.1
+returns NaN there, deliberately, so a stored zero cannot be mistaken for observed homogeneity).
+Anything that *consumes* the variance — §6.4 — therefore needs a variance that degrades gracefully
+rather than falling off a cliff.
+
+Shrink it up the same ancestor chain §4.2 uses for means, weighting by degrees of freedom:
+
+$$
+\tilde\sigma^2_{k,c}
+=\frac{N_{k,c}\,\mathrm{msd}_{k,c}+\alpha^{v}_k\,\tilde\sigma^2_{k-1,p(c)}}
+      {(N_{k,c}-1)+\alpha^{v}_k},
+\qquad
+\tilde\sigma^2_{0,c}
+=\frac{N_{0,c}\,\mathrm{msd}_{0,c}+\alpha^{v}_0\,\sigma^2_{\text{global}}}
+      {(N_{0,c}-1)+\alpha^{v}_0}
+$$
+
+Note $N\,\mathrm{msd}=(N-1)s^2=\sum(y-\bar y)^2$ identically, so the numerator is an ordinary pooled
+sum of squares — this is variance pooling, not a new construction. Using the stored $\mathrm{msd}$
+(population variance, exactly $0$ at $N=1$) rather than the Bessel-corrected $s^2$ (NaN at $N=1$) is
+what makes the recursion **total**: at $N=1$ it collapses to exactly $\tilde\sigma^2_{k-1,p(c)}$,
+with no special case and no arbitrary floor constant. The denominator stays positive because
+$N_{k,c}\ge 1$ always — a class is only minted for a row actually observed, and merging sums counts
+of classes that each already had at least one member.
+
+Like §4.2 this is derived on demand, never stored, and for the same reason: it depends on its full
+ancestor chain.
+
+**Predictive variance.** What §6.4 actually needs is not the class's spread but the uncertainty
+about a *new* atom drawn from that class, which stacks two sources — the class's genuine
+heterogeneity, and how poorly the class mean itself is pinned down by $N$ observations:
+
+$$
+\sigma^2_{\text{pred},k,c}=\tilde\sigma^2_{k,c}\left(1+\frac{1}{N_{k,c}}\right)
+$$
+
+This is the standard prediction-interval variance. Low-support classes flex more, which is the
+intended behavior. At $N=1$ it evaluates to $2\,\tilde\sigma^2_{k-1,p(c)}$ — twice the parent's
+shrunk variance — as a continuous limit of one formula rather than a bolted-on rule.
+
+**A stated approximation.** With $\sigma^2$ itself estimated, the exact predictive distribution is
+Student-$t$, not Gaussian. Its log-density is not quadratic, which would destroy the closed form in
+§6.4 and turn a one-line solve into an iteratively reweighted one. The Gaussian with inflated
+variance is taken deliberately, not by oversight.
+
 ---
 
 ## 5. Immutable models with a merge monoid
@@ -616,6 +664,67 @@ to 24.0% at level 3 and 42.7% at level 5. On held-out atoms, $n_{\min}=1$ matche
 with median support **6**, while $n_{\min}=5$ matches at mean level 2.48 with median support **28** —
 half a level shallower for four-and-a-half times the support. That is the trade $n_{\min}$ controls,
 and it is why the default should not be 1.
+
+### 6.4 Constrained prediction
+
+Sieve predicts each node independently, so nothing makes a group of nodes respect a property of the
+group. Partial charges are the motivating case: a conformer's atomic charges must sum to its formal
+charge, and per-atom prediction has no mechanism to enforce that. The same shape covers any linear
+functional of the per-node values — dipole components and higher multipoles are all $\sum_i c_i x_i$
+for a suitable coefficient vector.
+
+**The estimator.** Take each node's prediction as $x_i\sim\mathcal N(\mu_i,\sigma^2_{\text{pred},i})$
+with $\mu_i,\sigma^2_{\text{pred},i}$ from §4.2/§4.3, and maximize the joint likelihood subject to one
+scalar linear constraint per group. With a Lagrange multiplier this is a quadratic program with a
+closed-form solution:
+
+$$
+x_i=\mu_i+\lambda\,c_i\,\sigma^2_{\text{pred},i},
+\qquad
+\lambda=\frac{X-\sum_j c_j\mu_j}{\sum_j c_j^2\,\sigma^2_{\text{pred},j}}
+$$
+
+The correction is distributed **proportional to variance** — each node absorbs residual in proportion
+to how uncertain we are about it. For $c_i=1$ this reduces to
+$x_i=\mu_i+\text{residual}\cdot\sigma^2_i/\sum_j\sigma^2_j$.
+
+**This is charge equilibration with Sieve-derived parameters.** Expanding the objective,
+$\sum(x_i-\mu_i)^2/2\sigma^2_i=\sum[\tfrac12(1/\sigma^2_i)x_i^2-(\mu_i/\sigma^2_i)x_i]+\text{const}$,
+and setting it against the EEM/QEq energy
+$E=\sum[\tfrac12\eta_iq_i^2+\chi_iq_i]+\sum_{i<j}J_{ij}q_iq_j$ gives an exact correspondence:
+
+| EEM quantity | Sieve quantity |
+|---|---|
+| hardness $\eta_i$ | $1/\sigma^2_{\text{pred},i}$ |
+| electronegativity $\chi_i$ | $-\mu_i/\sigma^2_{\text{pred},i}$ |
+| equalized chemical potential | the multiplier $\lambda$ |
+| coupling $J_{ij}$ | **absent — set to zero** |
+
+The stationarity condition $(x_i-\mu_i)/\sigma^2_i=\lambda$ rearranges to $\eta_ix_i+\chi_i=\lambda$,
+which is precisely the statement that every atom's chemical potential is equal. So $\lambda$ *is* the
+equalized electronegativity, not an analogy to it. Reading hardness as inverse variance is the
+substantive content: a well-determined node resists change, an uncertain one absorbs it.
+
+Naming the correspondence also names the approximation. This is **uncoupled** charge equilibration:
+$J_{ij}=0$ asserts node independence, which is false — bonded atoms' charges are strongly
+anti-correlated. So this is the exact MLE of an idealized model, and a principled *heuristic* for the
+real one. Two consequences worth stating in advance. It should beat spreading the residual equally
+(that scheme is $\eta_i$ constant — every node equally soft). And it should fail where $J$ carries
+the physics, on strongly polarized bonds. Neither claim is established here; §13 item 10 records the
+comparison that would settle it.
+
+**Degenerate cases fall out of the formula rather than needing machinery.** A node with
+$\sigma^2_{\text{pred},i}=0$ gets $x_i=\mu_i+\lambda\cdot 0=\mu_i$ — pinned at its mean, correctly,
+since zero variance is a delta-function likelihood. No partitioning into fixed and free nodes is
+required. The one real guard is $\sum_jc_j^2\sigma^2_{\text{pred},j}=0$ with a nonzero residual: the
+constraint is then genuinely infeasible — the group is being asked to change a sum that cannot move —
+and it must be reported, not silently absorbed by returning $\mu$. §4.3's shrinkage makes this
+vanishingly rare in practice, since $\tilde\sigma^2$ is zero only if the entire ancestor chain up to
+$\sigma^2_{\text{global}}$ is.
+
+**Scope.** One scalar constraint per group, applied independently per target dimension. Multiple
+simultaneous constraints per group would still be closed-form but replace the scalar division with a
+per-group $K\times K$ solve; nothing needs that yet.
 
 ---
 
@@ -1121,6 +1230,49 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    lifecycle entirely to the caller. Measured: a persistent worker pool pays off and a per-call pool
    does not, so an API that quietly creates one pool per `fit()` call would be actively harmful — if
    this is ever exposed, the pool's lifetime needs to be a caller-visible decision, not an implicit one.
+10. **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
+    post-normalization MAE against equal-weighted spreading and DASH's own std-weighted eq 4. Note
+    the three differ in exponent, not in kind: the correction is spread $\propto\sigma^0$,
+    $\sigma^1$, $\sigma^2$ respectively, and only $\sigma^2$ has a derivation behind it. Variance
+    weighting is also the most aggressive of the three, concentrating the residual hardest on
+    high-variance nodes — which, after §4.3's $(1+1/N)$ inflation, are disproportionately the
+    low-support nodes whose predictions are already least reliable. That could amplify error rather
+    than reduce it; being the MLE of an idealized model does not settle it. `charge_experiments`'
+    `NORMALIZERS` registry and nested-run machinery already apply several schemes to one set of raw
+    predictions, so this is a three-way comparison on identical inputs, not three separate runs.
+11. **How $\alpha$ (§4.2) and $\alpha^v$ (§4.3) should be set.** Both admit systematic treatment, by
+    different routes, and both are inference-time parameters — so a whole sweep costs one fit.
+    - $\alpha$ has a closed form. Sieve's weight $N/(N+\alpha)$ *is* the normal–normal hierarchical
+      posterior mean, so matching term for term gives $\alpha=\sigma^2/\tau^2$ — within-class over
+      between-class variance. Both are estimable from a fitted model ($\sigma^2$ the pooled
+      $\mathrm{msd}$ at that level, $\tau^2$ the spread of child means about their parent, debiased
+      as $\hat\tau^2=\max(0,\ \mathrm{Var}(\bar y_c)-\mathbb E[\sigma^2/N_c])$; clamping at zero is
+      meaningful, and says shrink fully). This comes out **per level**, which §4.2's $\alpha_k$
+      notation already allows and a single scalar does not.
+    - $\alpha^v$ needs a different criterion, since MAE barely sees it — it reaches predictions only
+      through §6.4. But §4.3 makes a falsifiable distributional claim, so test that directly:
+      standardized held-out residuals $z=(y-\mu)/\sigma_{\text{pred}}$ should be standard normal.
+      Tune for $\mathrm{Var}(z)=1$, or maximize held-out Gaussian log-likelihood. This validates the
+      variance model rather than merely selecting a constant, and needs no constraint step at all.
+    - They are separable, so this is sequential rather than a 2-D search: fix $\alpha$ on raw
+      prediction error, then $\alpha^v$ by calibration, then optionally refine jointly on
+      post-constraint MAE.
+    - **Tune on a held-out split, not `predict_loo`.** §10.3's correction removes a node's own
+      contribution at the *matched* level, but the parent estimate it blends against comes from the
+      shrunk-mean pass over the whole model, which still contains that node. The residual leakage
+      through the ancestor chain is small but biased in exactly the direction that matters here — it
+      flatters parent estimates, and so inflates the apparent optimal $\alpha$.
+12. **Whether to restore the coupling $J_{ij}$ dropped in §6.4.** The honest gap in that section is
+    one named term, not a vague correlation worry, and the literature fixes its shape: a screened
+    Coulomb kernel in $r_{ij}$. The general form is standard constrained GLS,
+    $x=\mu+\Sigma c(c^\top\Sigma c)^{-1}(X-c^\top\mu)$, which §6.4 is the diagonal-$\Sigma$ case of;
+    a non-diagonal $\Sigma$ costs an $n\times n$ solve per group instead of an $O(n)$ formula — cheap
+    at 20–50 atoms, not free across a million conformers. Two distinct versions, and they differ in
+    how much they demand of Sieve. A **fixed, physics-supplied** $J$ from conformer geometry (already
+    in the store) needs nothing new from Sieve at all. A **learned** $J$ would need node-pair
+    covariance keyed on class pairs and their geometric relationship, which Sieve structurally does
+    not have — its classes are per-node, and nothing relates two of them. Note this is *not* item 7:
+    that concerns covariance across target dimensions within one class, a different object entirely.
 
 ---
 
