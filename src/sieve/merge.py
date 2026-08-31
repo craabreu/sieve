@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from sieve.config import SieveConfig, check_mergeable
+from sieve.config import LEVEL_WL, LEVEL_WL_PAIR, SieveConfig, check_mergeable
 from sieve.dedupe import _row_keys, dense_rows
 from sieve.level import FrozenLevel
 
@@ -18,7 +18,11 @@ _OOV_NEIGHBOR = -2  # distinct from both a real code (>=0) and the pad sentinel 
 
 
 def _translate(
-    sig: np.ndarray, remap_prev: np.ndarray | None, n_edge_types: int, is_wl: bool
+    sig: np.ndarray,
+    remap_prev: np.ndarray | None,
+    n_edge_types: int,
+    kind: str,
+    remap_neighbor: np.ndarray | None = None,
 ) -> np.ndarray:
     """Rewrite B's signature rows in the merged id space.
 
@@ -33,12 +37,19 @@ def _translate(
     whenever ``bond == n_edge_types - 1``, so an OOV neighbor reached by the
     top bond code was indistinguishable from a node with one fewer neighbor
     -- a false match at exactly the classes it should confidently miss.
+
+    ``kind`` selects how columns beyond 0 are interpreted (design.md 3.6):
+    ``LEVEL_WL``'s columns are a sorted (neighbor label, bond) multiset,
+    needing the divmod/resort below; ``LEVEL_WL_PAIR``'s single extra column
+    is a bare coarse-chain class id, remapped via ``remap_neighbor`` directly
+    -- no bond encoding and no padding, so no pad-sentinel collision to guard
+    against the way ``_OOV_NEIGHBOR`` does for ``LEVEL_WL``.
     """
     if remap_prev is None:  # level 0: attribute codes are already global
         return sig
     out = sig.copy()
     out[:, 0] = remap_prev[sig[:, 0]]
-    if is_wl and sig.shape[1] > 1:
+    if kind == LEVEL_WL and sig.shape[1] > 1:
         pad = sig[:, 1:]
         filled = pad >= 0
         lab, bond = np.divmod(np.where(filled, pad, 0), n_edge_types)
@@ -49,6 +60,9 @@ def _translate(
         # Remapping changes the sort order, so the multiset must be
         # re-canonicalized or equal multisets stop comparing equal.
         out[:, 1:] = np.sort(out[:, 1:], axis=1)
+    elif kind == LEVEL_WL_PAIR:
+        assert remap_neighbor is not None  # required by callers for this kind
+        out[:, 1] = remap_neighbor[sig[:, 1]]
     return out
 
 
@@ -139,12 +153,14 @@ def merge_level(
     b: FrozenLevel,
     remap_prev: np.ndarray | None,
     n_edge_types: int,
-    is_wl: bool,
+    kind: str,
+    remap_neighbor: np.ndarray | None = None,
 ) -> tuple[FrozenLevel, np.ndarray]:
     """Merge one level. A's ids are preserved; only B's are remapped.
 
     Pinning A means A's ``parent`` array needs no translation at all -- only
-    B's, carried forward across levels by ``remap_prev``.
+    B's, carried forward across levels by ``remap_prev`` (and, for a
+    ``LEVEL_WL_PAIR`` level, ``remap_neighbor`` -- design.md 3.6).
 
     A's rows are matched against B's by *lookup*, not by re-deduplicating the
     concatenation: ``dense_rows`` numbers by row key, in no order a caller can
@@ -155,14 +171,20 @@ def merge_level(
     """
     d = a.mean.shape[1] if a.n_classes else b.mean.shape[1]
     width = max(a.signatures.shape[1], b.signatures.shape[1], 1)
+    # Only a genuine sorted-multiset LEVEL_WL row needs the left-pad/resort
+    # _widen and _lookup_rows apply for mismatched widths; LEVEL_WL_PAIR rows
+    # are always exactly 2 columns wide, so this never engages for them.
+    padded = kind == LEVEL_WL
 
-    a_sig = _widen(a.signatures, width, is_wl)
+    a_sig = _widen(a.signatures, width, padded)
     b_sig = _widen(
-        _translate(b.signatures, remap_prev, n_edge_types, is_wl), width, is_wl
+        _translate(b.signatures, remap_prev, n_edge_types, kind, remap_neighbor),
+        width,
+        padded,
     )
     m = a.n_classes
 
-    found = _lookup_rows(b_sig, a_sig, is_wl)  # -1 where B's row is new to A
+    found = _lookup_rows(b_sig, a_sig, padded)  # -1 where B's row is new to A
     new_mask = found < 0
     if np.any(new_mask):
         new_local, new_uniq = dense_rows(b_sig[new_mask])
@@ -220,14 +242,27 @@ def merge_models(a, b):
 
     check_mergeable(a.config, b.config)
     cfg: SieveConfig = a.config
-    n_attr_levels = len(cfg.attribute_levels)
+    kinds = cfg.level_kinds
+    parents = cfg.level_parents
+    neighbor_src = cfg.neighbor_source
 
-    levels, remap = [], None
+    levels: list[FrozenLevel] = []
+    remaps: list[np.ndarray] = []
     for k in range(cfg.n_levels):
+        p = parents[k]
+        remap_prev = None if p < 0 else remaps[p]
+        ns = neighbor_src[k]
+        remap_neighbor = None if ns is None else remaps[ns]
         lvl, remap = merge_level(
-            a.levels[k], b.levels[k], remap, cfg.n_edge_types, is_wl=k >= n_attr_levels
+            a.levels[k],
+            b.levels[k],
+            remap_prev,
+            cfg.n_edge_types,
+            kinds[k],
+            remap_neighbor,
         )
         levels.append(lvl)
+        remaps.append(remap)
 
     nA, nB = float(a.global_count), float(b.global_count)
     n = nA + nB

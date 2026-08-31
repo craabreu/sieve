@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from sieve.batch import NodeBatch
-from sieve.config import SieveConfig
+from sieve.config import LEVEL_WL, SieveConfig
 from sieve.dedupe import dense_rows
 
 
@@ -35,6 +35,13 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
 
     One array operation per level over the whole block-diagonal corpus -- there
     is no per-molecule or per-atom loop anywhere in this function.
+
+    When ``config.neighbor_depth`` is set, this also builds the coarse
+    neighbor chain (design.md 3.6). Every level's shape and dependency on
+    earlier levels comes from ``config.level_kinds``/``level_parents``/
+    ``neighbor_source``, so this function does not special-case coarsening
+    itself -- the loop below is generic either way, and reduces to today's
+    single WL chain exactly when ``neighbor_depth`` is ``None``.
     """
     n = batch.n_nodes
     levels: list[LevelLabels] = []
@@ -71,11 +78,15 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
         )
         levels.append(LevelLabels(labels, uniq, parent))
 
-    # --- WL rounds (design.md 7.2) ---------------------------------------
+    # --- WL rounds (design.md 7.2), plus the coarse neighbor chain when
+    # configured (design.md 3.6) -------------------------------------------
     csr = batch.csr()
     n_edge_types = config.n_edge_types
-    if config.max_wl_depth and csr.attr.size:
-        # `pair = prev[dst] * n_edge_types + attr` assumes 0 <= attr <
+    kinds = config.level_kinds[len(levels) :]
+    parents = config.level_parents[len(levels) :]
+    neighbor_src = config.neighbor_source[len(levels) :]
+    if kinds and csr.attr.size:
+        # `pair = base[dst] * n_edge_types + attr` assumes 0 <= attr <
         # n_edge_types. A code outside that range collides with a *different*
         # (label, bond) pair instead of raising, silently conflating two
         # distinct classes.
@@ -85,17 +96,26 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                 f"edge_attr contains code {int(csr.attr[bad][0])}, outside "
                 f"[0, {n_edge_types}) implied by config.edge_codes"
             )
-    for _ in range(config.max_wl_depth):
-        prev = levels[-1].labels
-        # Encode (neighbor label, bond) as one integer so a row of neighbors
-        # is a plain integer vector.
-        pair = prev[csr.dst] * n_edge_types + csr.attr
-        pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
-        pad[csr.src, csr.slot] = pair
-        # Sorting canonicalizes the multiset; -1 pads sort first, and because a
-        # node's pad count is fixed, degree stays encoded.
-        pad.sort(axis=1)
-        sig = np.concatenate([prev[:, None], pad], axis=1)
+
+    for offset, kind in enumerate(kinds):
+        base = levels[parents[offset]].labels
+        if kind == LEVEL_WL:
+            # Encode (neighbor label, bond) as one integer so a row of
+            # neighbors is a plain integer vector.
+            pair = base[csr.dst] * n_edge_types + csr.attr
+            pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
+            pad[csr.src, csr.slot] = pair
+            # Sorting canonicalizes the multiset; -1 pads sort first, and
+            # because a node's pad count is fixed, degree stays encoded.
+            pad.sort(axis=1)
+            sig = np.concatenate([base[:, None], pad], axis=1)
+        else:  # LEVEL_WL_PAIR: the coarse chain's own class at this round is
+            # already aggregated over its neighbors, so no separate multiset
+            # is needed here -- just the pair (self, coarse neighbor state).
+            ns = neighbor_src[offset]
+            assert ns is not None  # config guarantees this for LEVEL_WL_PAIR
+            neighbor = levels[ns].labels
+            sig = np.concatenate([base[:, None], neighbor[:, None]], axis=1)
         labels, uniq = dense_rows(sig)
         levels.append(LevelLabels(labels, uniq, uniq[:, 0].astype(np.int32)))
 
