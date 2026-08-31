@@ -258,10 +258,7 @@ def test_chirality_attribute_uses_rigorous_cip_not_legacy_sanitization_default()
     b = from_rdkit([mol], config=cfg)
     chirality_col = list(cfg.attribute_levels[0]).index("chirality")
     code_to_value = {v: k for k, v in cfg.attribute_codes["chirality"].items()}
-    got = {
-        idx: code_to_value[b.node_attrs[idx, chirality_col]]
-        for idx in rigorous
-    }
+    got = {idx: code_to_value[b.node_attrs[idx, chirality_col]] for idx in rigorous}
     assert got == rigorous
 
 
