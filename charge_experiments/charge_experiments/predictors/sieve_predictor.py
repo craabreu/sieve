@@ -53,23 +53,38 @@ def _build_config(
     train_mols: list[Any],
     *,
     attributes: tuple[str, ...],
+    attribute_levels: tuple[tuple[str, ...], ...] | None = None,
+    neighbor_depth: int | None = None,
     target_dim: int,
     max_wl_depth: int,
     minimum_support: int,
     shrinkage_strength: float | None,
 ) -> Any:
     """Learn ``attribute_codes``/``edge_codes`` from the training corpus and
-    freeze them into a ``SieveConfig``."""
+    freeze them into a ``SieveConfig``.
+
+    ``attribute_levels`` defaults to ``None``, meaning "one level, every
+    attribute in ``attributes``" -- this series' original, still-default
+    shape. Passing an explicit grouping is what makes ``neighbor_depth``
+    (sieve's coarse-neighbor-attribute mechanism, design.md 3.6) usable at
+    all here: a single level admits no valid coarsening depth. ``attributes``
+    itself is only read as a fallback in that case; a caller supplying
+    ``attribute_levels`` need not keep the two in sync -- the flat name list
+    ``build_codes`` needs is derived from ``attribute_levels`` directly.
+    """
     from sieve.config import SieveConfig
     from sieve.io.rdkit_adapter import build_codes
 
-    codes, edge_codes = build_codes(train_mols, attributes)
+    levels = attribute_levels if attribute_levels is not None else (attributes,)
+    flat = [name for group in levels for name in group]
+    codes, edge_codes = build_codes(train_mols, flat)
     return SieveConfig(
         target_dim=target_dim,
-        attribute_levels=(attributes,),
+        attribute_levels=levels,
         attribute_codes=codes,
         edge_codes=edge_codes,
         max_wl_depth=max_wl_depth,
+        neighbor_depth=neighbor_depth,
         minimum_support=minimum_support,
         shrinkage_strength=shrinkage_strength,
     )
@@ -87,9 +102,15 @@ def _batch_for(mols: list[Any], config: Any, *, with_target: bool) -> Any:
 
 
 class SievePredictor:
-    """A basic Sieve charge baseline: one attribute level, a handful of
-    Weisfeiler-Lehman refinement rounds, no shrinkage -- the first,
-    deliberately unengineered Sieve baseline for this series."""
+    """A basic Sieve charge baseline: one attribute level by default, a
+    handful of Weisfeiler-Lehman refinement rounds, no shrinkage -- the
+    first, deliberately unengineered Sieve baseline for this series.
+
+    ``attribute_levels``/``neighbor_depth`` are opt-in (both default to the
+    single-level, no-coarsening shape above) -- passing a graded
+    ``attribute_levels`` is what makes ``neighbor_depth`` usable at all
+    (design.md 3.6): a single level admits no valid coarsening depth.
+    """
 
     name: ClassVar[str] = "sieve"
 
@@ -97,11 +118,17 @@ class SievePredictor:
         self,
         *,
         attributes: tuple[str, ...] = DEFAULT_ATTRIBUTES,
+        attribute_levels: tuple[tuple[str, ...], ...] | None = None,
+        neighbor_depth: int | None = None,
         max_wl_depth: int = 3,
         minimum_support: int = 1,
         shrinkage_strength: float | None = None,
     ) -> None:
         self.attributes = tuple(attributes)
+        self.attribute_levels = (
+            None if attribute_levels is None else tuple(attribute_levels)
+        )
+        self.neighbor_depth = neighbor_depth
         self.max_wl_depth = max_wl_depth
         self.minimum_support = minimum_support
         self.shrinkage_strength = shrinkage_strength
@@ -115,8 +142,13 @@ class SievePredictor:
         import sieve
 
         self._config = _build_config(
-            train.mols, attributes=self.attributes, target_dim=1,
-            max_wl_depth=self.max_wl_depth, minimum_support=self.minimum_support,
+            train.mols,
+            attributes=self.attributes,
+            attribute_levels=self.attribute_levels,
+            neighbor_depth=self.neighbor_depth,
+            target_dim=1,
+            max_wl_depth=self.max_wl_depth,
+            minimum_support=self.minimum_support,
             shrinkage_strength=self.shrinkage_strength,
         )
         batch = _batch_for(train.mols, self._config, with_target=True)

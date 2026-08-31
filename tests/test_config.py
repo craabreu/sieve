@@ -55,9 +55,28 @@ def test_n_levels_counts_attribute_levels_plus_wl_depths():
     assert cfg.n_levels == 5
 
 
-def test_neighbor_schema_is_not_implemented():
-    with pytest.raises(NotImplementedError):
-        base(neighbor_schema=("element",))
+def test_neighbor_depth_rejects_out_of_range_values():
+    cfg = base(attribute_levels=(("element",), ("aromatic",)))
+    with pytest.raises(ValueError, match="neighbor_depth"):
+        replace(cfg, neighbor_depth=0)
+    with pytest.raises(ValueError, match="neighbor_depth"):
+        replace(cfg, neighbor_depth=3)  # only 2 attribute levels declared
+
+
+def test_neighbor_depth_equal_to_attribute_count_normalizes_to_none():
+    """ "No coarsening" has exactly one spelling, so a config that spells it
+    as neighbor_depth == len(attribute_levels) hashes identically to one
+    that leaves neighbor_depth unset."""
+    cfg = base(attribute_levels=(("element",), ("aromatic",)))
+    explicit = replace(cfg, neighbor_depth=2)
+    assert explicit.neighbor_depth is None
+    assert explicit.schema_version == cfg.schema_version
+
+
+def test_schema_version_distinguishes_neighbor_depth():
+    cfg = base(attribute_levels=(("element",), ("aromatic",)))
+    coarsened = replace(cfg, neighbor_depth=1)
+    assert coarsened.schema_version != cfg.schema_version
 
 
 def test_empty_attribute_group_is_rejected():

@@ -50,6 +50,104 @@ def test_batch_for_reads_mbis_charge_directly_off_the_mols():
     np.testing.assert_allclose(batch.y[:, 0], mset.atom_charge)
 
 
+def test_build_config_defaults_to_a_single_attribute_level():
+    """Unchanged default shape: attribute_levels not passed at all still
+    produces the original one-level config, so neighbor_depth stays
+    unusable unless a caller opts into a graded attribute_levels."""
+    from charge_experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+    )
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    config = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    assert config.attribute_levels == (DEFAULT_ATTRIBUTES,)
+    assert config.neighbor_depth is None
+
+
+def test_build_config_accepts_graded_attribute_levels_and_neighbor_depth():
+    """The actual plumbing this feature needed: an explicit attribute_levels
+    grouping makes a real (non-normalized-away) neighbor_depth usable, and
+    the flat name list build_codes needs is derived from the grouping, not
+    from the (here, intentionally stale) `attributes` argument."""
+    from charge_experiments.predictors.sieve_predictor import _build_config
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    levels = (("element",), ("degree", "aromatic"))
+    config = _build_config(
+        mset.mols,
+        attributes=("this", "is", "unused", "when", "attribute_levels", "is", "set"),
+        attribute_levels=levels,
+        neighbor_depth=1,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    assert config.attribute_levels == levels
+    assert config.neighbor_depth == 1
+    assert set(config.attribute_codes) == {"element", "degree", "aromatic"}
+
+
+def test_sieve_charge_predictor_fits_with_neighbor_depth_end_to_end():
+    """The predictor-level path (not just _build_config directly): fit and
+    predict must both run and produce finite output with coarsening on."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=8, seed=2)
+    rng = np.random.default_rng(0)
+    predictor = SievePredictor(
+        attribute_levels=(("element",), ("degree", "aromatic", "num_h")),
+        neighbor_depth=1,
+        max_wl_depth=2,
+        minimum_support=1,
+    )
+    predictor.fit(mset, mset, rng=rng)
+    pred = predictor.predict(mset)
+
+    assert pred.atom_charge.shape == (mset.n_atoms,)
+    assert np.all(np.isfinite(pred.atom_charge))
+    assert predictor._config.neighbor_depth == 1
+
+
+def test_sieve_charge_predictor_save_load_round_trips_neighbor_depth(tmp_path):
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=8, seed=2)
+    rng = np.random.default_rng(0)
+    fitted = SievePredictor(
+        attribute_levels=(("element",), ("degree", "aromatic")),
+        neighbor_depth=1,
+        max_wl_depth=2,
+        minimum_support=1,
+    )
+    fitted.fit(mset, mset, rng=rng)
+    path = tmp_path / "model.npz"
+    fitted.save_model_state(path)
+
+    loaded = SievePredictor()
+    loaded.load_model_state(path)
+    assert loaded._config.neighbor_depth == 1
+    np.testing.assert_allclose(
+        fitted.predict(mset).atom_charge, loaded.predict(mset).atom_charge
+    )
+
+
 def test_sieve_charge_predictor_fits_and_predicts_end_to_end():
     from charge_experiments.predictors.sieve_predictor import SievePredictor
 

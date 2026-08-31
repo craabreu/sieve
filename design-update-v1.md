@@ -129,7 +129,7 @@ class SieveConfig:
     attribute_codes: Mapping[str, Mapping[str, int]]   # not in §9.2/§10.1 at all
     edge_codes: Mapping[str, int]                       # replaces edge_attributes
     max_wl_depth: int
-    neighbor_schema: tuple[str, ...] | None = None
+    neighbor_depth: int | None = None                   # was neighbor_schema; see §5 below
     n_min: int = 1
     alpha: float | None = None
     chunk_size: int | None = None
@@ -167,3 +167,22 @@ For the record, since this note exists to separate stale text from current text:
 §11.3, §11.4, and the merge *algebra* in §5.2 (as opposed to its §5.3 implementation sketch) were
 spot-checked against `refine.py`, `level.py`, `predict.py`, and `merge.py` and match the current
 code. Only the three items above were found to have drifted.
+
+---
+
+## 5. Coarse neighbor attributes implemented (§3.6, open question 8)
+
+§3.6 measured coarsening neighbors to element-only on cosmobase (no targets) and left it
+unadopted. The mechanism is now implemented, parametrized as `neighbor_depth: int | None` — an
+index into `attribute_levels` rather than a separate named schema (`neighbor_schema` above), so
+any prefix of the declared attribute order can be the coarse base, not just "element."
+`SieveConfig.level_kinds`/`level_parents`/`neighbor_source`/`backoff_path` are the single source
+of truth for the resulting level DAG; `refine`/`merge`/`predict` all read them rather than
+re-deriving level shape from indices.
+
+The mechanism was reproduced on real `charge_experiments` data (`dash-molecules-50k`,
+`MBIScharge` targets, `minimum_support=5` held fixed): element-only neighbors raised mean matched
+level from 4.144 to 4.301 and the share of atoms matching at depth ≥3 from 94.3% to 97.3% — the
+same direction §3.6 found on cosmobase's coverage-only measurement. **The accuracy question item
+8 actually asks — MAE at the matched class, coarse vs. full — is still open**; this only confirms
+the mechanism does what it claims, not that the trade is worth it for any given target.

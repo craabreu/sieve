@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from sieve.batch import NodeBatch
+from sieve.config import LEVEL_WL
 from sieve.merge import _lookup_rows as _lookup
 from sieve.merge import _translate
 from sieve.refine import refine
@@ -41,11 +42,28 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     With ``loo_y`` set, a training node's own contribution is subtracted from
     its class mean before the support check, and a class with only one member
     is treated as unsupported (design.md 10.3) rather than dividing by zero.
+
+    When ``cfg.neighbor_depth`` is set, ``query``/``model.levels`` also carry
+    the coarse neighbor chain (design.md 3.6). Its levels are translated and
+    looked up like any other -- the fine ``LEVEL_WL_PAIR`` rounds need their
+    class ids -- but never scored or backed off over; only levels on
+    ``cfg.backoff_path`` update ``matched``/``value``/etc. ``matched_level``
+    on the returned ``Predictions`` reports *position along that path*, not
+    the raw level index, so it stays comparable across different
+    ``neighbor_depth`` settings (reduces to the raw index when unset).
     """
     cfg = model.config
     n, d = batch.n_nodes, cfg.target_dim
-    n_attr = len(cfg.attribute_levels)
     query = refine(batch, cfg)
+
+    kinds = cfg.level_kinds
+    parents = cfg.level_parents
+    neighbor_src = cfg.neighbor_source
+    backoff_path = cfg.backoff_path
+    on_backoff = np.zeros(cfg.n_levels, bool)
+    on_backoff[list(backoff_path)] = True
+    backoff_pos = np.full(cfg.n_levels, -1, np.int64)
+    backoff_pos[list(backoff_path)] = np.arange(len(backoff_path))
 
     value = np.broadcast_to(model.global_mean, (n, d)).copy()
     matched = np.full(n, -1, np.int64)
@@ -54,17 +72,25 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     variance = np.full((n, d), np.nan)
     threshold = np.zeros(n, bool)
 
-    remap = None  # query class ids -> model class ids, previous level
+    remaps: list[np.ndarray] = []  # query class ids -> model class ids, per level
     alive = np.ones(n, bool)
     for k in range(cfg.n_levels):
-        lvl = model.levels[k]
-        q = query[k]
-        is_wl = k >= n_attr
-        sig = _translate(q.signatures, remap, cfg.n_edge_types, is_wl=is_wl)
-        found = _lookup(sig, lvl.signatures, is_wl)  # per query class
-        remap = found
         if not alive.any():
             break  # graph-level stop (6.2)
+        lvl = model.levels[k]
+        q = query[k]
+        kind = kinds[k]
+        p = parents[k]
+        remap_prev = None if p < 0 else remaps[p]
+        ns = neighbor_src[k]
+        remap_neighbor = None if ns is None else remaps[ns]
+        sig = _translate(
+            q.signatures, remap_prev, cfg.n_edge_types, kind, remap_neighbor
+        )
+        found = _lookup(sig, lvl.signatures, kind == LEVEL_WL)  # per query class
+        remaps.append(found)
+        if not on_backoff[k]:
+            continue  # coarse-chain scaffolding: never a backoff target itself
         cid = found[q.labels]
         ok = alive & (cid >= 0)
         enough = np.zeros(n, bool)
@@ -99,6 +125,13 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         variance[hit] = lvl.variance[cid[hit]]
         alive = hit  # prefix property (2.2)
 
+    # `matched` stays the raw level index for the shrinkage loop below (it
+    # indexes model.levels/shrunk, both raw-indexed); only the value handed
+    # back on Predictions is translated to backoff-path position, right
+    # before each return.
+    def _matched_out(matched: np.ndarray) -> np.ndarray:
+        return np.where(matched >= 0, backoff_pos[matched], -1)
+
     if cfg.shrinkage_strength is not None:
         from sieve.shrinkage import shrunk_means
 
@@ -115,21 +148,22 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         # shrunk estimate reduces to the identical formula (and identical
         # values) for `predict`, while getting `predict_loo` right too.
         shrunk = shrunk_means(model)
-        for k in range(cfg.n_levels):
+        for k in backoff_path:
             sel = matched == k
             if sel.any():
                 nn = support[sel].astype(np.float64)
-                if k == 0:
+                p = parents[k]
+                if p < 0:
                     parent_est = np.broadcast_to(model.global_mean, (sel.sum(), d))
                 else:
-                    parent_est = shrunk[k - 1][model.levels[k].parent[class_id[sel]]]
+                    parent_est = shrunk[p][model.levels[k].parent[class_id[sel]]]
                 value[sel] = (
                     nn[:, None] * raw[sel] + cfg.shrinkage_strength * parent_est
                 ) / (nn[:, None] + cfg.shrinkage_strength)
                 weight[sel] = nn / (nn + cfg.shrinkage_strength)
         return Predictions(
             value,
-            matched,
+            _matched_out(matched),
             class_id,
             support,
             variance,
@@ -138,7 +172,9 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
             shrinkage_weight=weight,
         )
 
-    return Predictions(value, matched, class_id, support, variance, threshold)
+    return Predictions(
+        value, _matched_out(matched), class_id, support, variance, threshold
+    )
 
 
 def predict_detailed(model, batch: NodeBatch) -> Predictions:

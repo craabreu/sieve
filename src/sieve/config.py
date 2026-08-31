@@ -10,6 +10,11 @@ from types import MappingProxyType
 
 FORMAT_VERSION = 2
 
+# Level kinds returned by SieveConfig.level_kinds (design.md 3.6).
+LEVEL_ATTR = "attr"
+LEVEL_WL = "wl"
+LEVEL_WL_PAIR = "wl_pair"
+
 
 @dataclass(frozen=True)
 class SieveConfig:
@@ -29,16 +34,12 @@ class SieveConfig:
     attribute_codes: Mapping[str, Mapping[str, int]]
     edge_codes: Mapping[str, int]
     max_wl_depth: int
-    neighbor_schema: tuple[str, ...] | None = None
+    neighbor_depth: int | None = None
     minimum_support: int = 1
     shrinkage_strength: float | None = None
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
-        if self.neighbor_schema is not None:
-            raise NotImplementedError(
-                "neighbor_schema is evaluated but not adopted; see design.md 3.6"
-            )
         if not self.attribute_levels:
             raise ValueError("at least one attribute level is required")
         if any(not group for group in self.attribute_levels):
@@ -51,6 +52,22 @@ class SieveConfig:
             raise ValueError("target_dim must be >= 1")
         if self.minimum_support < 1:
             raise ValueError("minimum_support must be >= 1")
+        if self.neighbor_depth is not None:
+            a = len(self.attribute_levels)
+            if not (1 <= self.neighbor_depth <= a):
+                raise ValueError(
+                    f"neighbor_depth must be between 1 and {a} "
+                    f"(len(attribute_levels)), got {self.neighbor_depth}"
+                )
+            # "No coarsening" gets exactly one spelling, so configs that
+            # behave identically also hash identically. Two ways to say it:
+            # keeping every attribute level, or having no WL round for a
+            # neighbor to be seen through in the first place -- with
+            # max_wl_depth == 0 nothing ever reads a neighbor, so the coarse
+            # chain would be zero levels long and pure dead weight (it also
+            # left level_parents indexing off the end of its own list).
+            if self.neighbor_depth == a or self.max_wl_depth == 0:
+                object.__setattr__(self, "neighbor_depth", None)
         self._freeze_mappings()
 
     def _freeze_mappings(self) -> None:
@@ -101,8 +118,74 @@ class SieveConfig:
 
     @property
     def n_levels(self) -> int:
-        """Total refinement levels: attribute levels, then WL depths."""
-        return len(self.attribute_levels) + self.max_wl_depth
+        """Total refinement levels: attribute levels, then WL depths --
+        doubled when ``neighbor_depth`` is set, since neighbors then get
+        their own coarse WL chain (design.md 3.6) alongside the main one
+        (see ``level_kinds``)."""
+        extra = self.max_wl_depth if self.neighbor_depth is not None else 0
+        return len(self.attribute_levels) + self.max_wl_depth + extra
+
+    @property
+    def level_kinds(self) -> tuple[str, ...]:
+        """One kind per level: ``LEVEL_ATTR``, ``LEVEL_WL`` (an ordinary
+        sorted-multiset WL round), or ``LEVEL_WL_PAIR`` (a main-chain WL
+        round whose neighbor identity comes from the coarse chain instead of
+        its own previous round -- design.md 3.6).
+
+        The single source of truth for level shape: ``refine``/``merge``/
+        ``predict`` all read this instead of re-deriving it from level
+        indices.
+        """
+        a = len(self.attribute_levels)
+        kinds = [LEVEL_ATTR] * a + [LEVEL_WL] * self.max_wl_depth
+        if self.neighbor_depth is not None:
+            kinds += [LEVEL_WL_PAIR] * self.max_wl_depth
+        return tuple(kinds)
+
+    @property
+    def level_parents(self) -> tuple[int, ...]:
+        """Absolute index of the level each level's ``parent`` ids refer
+        into (``-1`` at level 0, meaning "no parent"). ``k - 1`` everywhere
+        except the two branch roots of a coarsened chain: the coarse chain's
+        first WL round branches off attribute level ``neighbor_depth - 1``,
+        and the main chain's first WL round still branches off the last
+        attribute level -- both instead of the level immediately before
+        them in the tuple.
+        """
+        a = len(self.attribute_levels)
+        depth = self.max_wl_depth
+        parents = [j - 1 for j in range(a)] + [a + r - 1 for r in range(depth)]
+        if self.neighbor_depth is not None:
+            parents[a] = self.neighbor_depth - 1  # coarse chain's own root
+            first_h = a + depth
+            parents += [(a - 1 if r == 0 else first_h + r - 1) for r in range(depth)]
+        return tuple(parents)
+
+    @property
+    def neighbor_source(self) -> tuple[int | None, ...]:
+        """For each ``LEVEL_WL_PAIR`` level, the absolute index of the
+        coarse chain's level supplying its neighbor identity; ``None``
+        everywhere else."""
+        a = len(self.attribute_levels)
+        depth = self.max_wl_depth
+        src: list[int | None] = [None] * (a + depth)
+        if self.neighbor_depth is not None:
+            src += [a + r for r in range(depth)]
+        return tuple(src)
+
+    @property
+    def backoff_path(self) -> tuple[int, ...]:
+        """Absolute indices of the levels ``predict`` actually backs off
+        over, in matching order -- the attribute levels then the main WL
+        chain. Equal to ``range(n_levels)`` unless ``neighbor_depth`` is
+        set, in which case it skips the coarse chain's own levels
+        (scaffolding only, never a backoff target itself)."""
+        a = len(self.attribute_levels)
+        depth = self.max_wl_depth
+        if self.neighbor_depth is None:
+            return tuple(range(a + depth))
+        first_h = a + depth
+        return tuple(range(a)) + tuple(range(first_h, first_h + depth))
 
     @property
     def n_edge_types(self) -> int:
@@ -126,7 +209,7 @@ class SieveConfig:
             },
             "edge_codes": dict(sorted(self.edge_codes.items())),
             "max_wl_depth": self.max_wl_depth,
-            "neighbor_schema": self.neighbor_schema,
+            "neighbor_depth": self.neighbor_depth,
         }
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
