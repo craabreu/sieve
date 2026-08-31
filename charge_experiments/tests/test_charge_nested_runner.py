@@ -190,7 +190,9 @@ def test_execute_nested_rejects_a_dirty_tree_by_default(tmp_path, monkeypatch):
         nested_runner_mod._runner,
         "_git_info",
         lambda repo_root: {
-            "commit": "deadbeef", "branch": "main", "dirty": True,
+            "commit": "deadbeef",
+            "branch": "main",
+            "dirty": True,
             "describe": "deadbeef-dirty",
         },
     )

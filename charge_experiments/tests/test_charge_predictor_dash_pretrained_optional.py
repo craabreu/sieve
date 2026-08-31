@@ -131,7 +131,10 @@ def test_dash_pretrained_predict_raw_matches_predict_before_normalization():
     pred = predictor.predict(mset)
 
     expected = std_weighted_normalize(
-        raw.atom_charge, raw.atom_std, mset.net_charge, mset.atom_mol_id,
+        raw.atom_charge,
+        raw.atom_std,
+        mset.net_charge,
+        mset.atom_mol_id,
         mset.n_conformers,
     )
     np.testing.assert_array_equal(pred.atom_charge, expected)

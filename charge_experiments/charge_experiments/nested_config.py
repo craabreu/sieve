@@ -102,7 +102,10 @@ def _build(raw: Mapping[str, Any]) -> NestedExperimentCfg:
         )
 
     return NestedExperimentCfg(
-        run=run, data=data, predictor=predictor, tree_stats=tree_stats,
+        run=run,
+        data=data,
+        predictor=predictor,
+        tree_stats=tree_stats,
         children=children,
     )
 

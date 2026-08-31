@@ -17,8 +17,11 @@ def _tiny_cfg() -> ExperimentCfg:
     return ExperimentCfg(
         run=RunCfg(experiment="charge-smoke-test", seed=0, tags={"stage": "smoke"}),
         data=DataCfg(
-            store="synthetic", split_column="split",
-            train_split="train", val_split="val", eval_split="test",
+            store="synthetic",
+            split_column="split",
+            train_split="train",
+            val_split="val",
+            eval_split="test",
         ),
         predictor=PredictorCfg(name="global_mean", params={}),
     )
@@ -69,7 +72,8 @@ def test_smoke_rejects_dirty_tree_by_default(tmp_path, monkeypatch):
     import pytest
 
     monkeypatch.setattr(
-        runner_mod, "_git_info",
+        runner_mod,
+        "_git_info",
         lambda repo_root: {
             "commit": "deadbeef",
             "branch": "main",

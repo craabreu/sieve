@@ -159,7 +159,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="run one experiment from a YAML config")
     p_run.add_argument("--config", required=True, type=Path)
     p_run.add_argument(
-        "--set", action="append", default=[], metavar="key.path=value",
+        "--set",
+        action="append",
+        default=[],
+        metavar="key.path=value",
         help="override a config value; may be passed multiple times",
     )
     p_run.add_argument(
@@ -180,7 +183,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run_nested.add_argument("--config", required=True, type=Path)
     p_run_nested.add_argument(
-        "--set", action="append", default=[], metavar="key.path=value",
+        "--set",
+        action="append",
+        default=[],
+        metavar="key.path=value",
         help="override a config value; may be passed multiple times",
     )
     p_run_nested.add_argument(
@@ -213,15 +219,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_subsample.add_argument("dest", help="name of the new, subsampled store")
     p_subsample.add_argument(
-        "--source", default="dash-molecules",
+        "--source",
+        default="dash-molecules",
         help="name of the already-split source store (default: dash-molecules)",
     )
     p_subsample.add_argument(
-        "--n-molecules", type=int, default=50_000,
+        "--n-molecules",
+        type=int,
+        default=50_000,
         help="target total molecule count across all splits (default: 50000)",
     )
     p_subsample.add_argument(
-        "--conformers-per-molecule", type=int, default=1,
+        "--conformers-per-molecule",
+        type=int,
+        default=1,
         help="max conformers kept per selected molecule (default: 1)",
     )
     p_subsample.add_argument(
@@ -236,7 +247,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ua.add_argument("dest", help="name of the new, united-atom store")
     p_ua.add_argument(
-        "--source", default="dash-molecules",
+        "--source",
+        default="dash-molecules",
         help="name of the already-prepared source store (default: dash-molecules)",
     )
     p_ua.set_defaults(func=_cmd_to_united_atom)

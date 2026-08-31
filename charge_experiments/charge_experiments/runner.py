@@ -83,7 +83,14 @@ def _git_info(repo_root: Path) -> dict[str, Any]:
 def _package_versions() -> dict[str, str]:
     out: dict[str, str] = {}
     package_names = (
-        "sieve", "numpy", "scipy", "pyyaml", "rdkit", "pandas", "pyarrow", "mlflow",
+        "sieve",
+        "numpy",
+        "scipy",
+        "pyyaml",
+        "rdkit",
+        "pandas",
+        "pyarrow",
+        "mlflow",
     )
     for name in package_names:
         try:
@@ -405,9 +412,7 @@ def _log_mlflow_run(
     mlflow.set_tags(tags)
     mlflow.log_params(params)
     clean_metrics = {
-        k: v
-        for k, v in run_metrics.items()
-        if isinstance(v, float) and not np.isnan(v)
+        k: v for k, v in run_metrics.items() if isinstance(v, float) and not np.isnan(v)
     }
     mlflow.log_metrics({f"test/{k}": v for k, v in clean_metrics.items()})
     mlflow.log_artifacts(str(run_dir))

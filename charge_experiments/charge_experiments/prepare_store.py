@@ -387,8 +387,8 @@ def assign_splits(
         .agg(n_conformers=("mol", "size"))
         .reindex(["train", "val", "test"])
     )
-    summary["n_molecules"] = mol_key.groupby(df["split"]).nunique().reindex(
-        ["train", "val", "test"]
+    summary["n_molecules"] = (
+        mol_key.groupby(df["split"]).nunique().reindex(["train", "val", "test"])
     )
     summary["fraction"] = summary["n_conformers"] / len(df)
     summary_text = summary.to_string()
@@ -482,7 +482,10 @@ def subsample_store(
             logger.warning(
                 "%s split of %r only has %d molecule(s), fewer than the "
                 "%d requested; using all of them",
-                split_name, source_store, len(keys), target,
+                split_name,
+                source_store,
+                len(keys),
+                target,
             )
         picked = rng.choice(len(keys), size=n_pick, replace=False)
         for i in picked:
@@ -513,8 +516,8 @@ def subsample_store(
         .agg(n_conformers=("mol", "size"))
         .reindex(["train", "val", "test"])
     )
-    summary["n_molecules"] = out_mol_key.groupby(out_df["split"]).nunique().reindex(
-        ["train", "val", "test"]
+    summary["n_molecules"] = (
+        out_mol_key.groupby(out_df["split"]).nunique().reindex(["train", "val", "test"])
     )
     summary["fraction"] = summary["n_conformers"] / len(out_df)
     summary_text = summary.to_string()
@@ -522,7 +525,11 @@ def subsample_store(
 
     logger.info(
         "subsampled %r -> %r: %d molecule(s), %d conformer(s)\n%s",
-        source_store, dest_store, out_mol_key.nunique(), len(out_df), summary_text,
+        source_store,
+        dest_store,
+        out_mol_key.nunique(),
+        len(out_df),
+        summary_text,
     )
     return summary_text
 
@@ -662,7 +669,11 @@ def to_united_atom_store(
     logger.info(
         "united-atom store %r -> %r: %d conformer(s), %d H removed, "
         "%d H kept (rdkit declined)",
-        source_store, dest_store, n_conformers, n_h_removed, n_h_kept,
+        source_store,
+        dest_store,
+        n_conformers,
+        n_h_removed,
+        n_h_kept,
     )
 
 
