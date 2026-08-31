@@ -64,7 +64,7 @@ def test_neighbor_depth_rejects_out_of_range_values():
 
 
 def test_neighbor_depth_equal_to_attribute_count_normalizes_to_none():
-    """"No coarsening" has exactly one spelling, so a config that spells it
+    """ "No coarsening" has exactly one spelling, so a config that spells it
     as neighbor_depth == len(attribute_levels) hashes identically to one
     that leaves neighbor_depth unset."""
     cfg = base(attribute_levels=(("element",), ("aromatic",)))

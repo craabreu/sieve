@@ -100,8 +100,10 @@ def _naive_coarse_wl(batch: NodeBatch, config: SieveConfig) -> list[np.ndarray]:
     for group in config.attribute_levels[:m]:
         cols = batch.node_attrs[:, used : used + len(group)]
         used += len(group)
-        sig = cols if coarse_base is None else np.concatenate(
-            [coarse_base[:, None], cols], axis=1
+        sig = (
+            cols
+            if coarse_base is None
+            else np.concatenate([coarse_base[:, None], cols], axis=1)
         )
         coarse_base, _ = dense_rows(sig)
 
@@ -111,8 +113,10 @@ def _naive_coarse_wl(batch: NodeBatch, config: SieveConfig) -> list[np.ndarray]:
     for group in config.attribute_levels:
         cols = batch.node_attrs[:, used : used + len(group)]
         used += len(group)
-        sig = cols if fine_base is None else np.concatenate(
-            [fine_base[:, None], cols], axis=1
+        sig = (
+            cols
+            if fine_base is None
+            else np.concatenate([fine_base[:, None], cols], axis=1)
         )
         fine_base, _ = dense_rows(sig)
 
@@ -198,8 +202,9 @@ def test_neighbor_depth_none_reduces_to_todays_chain():
 
 def test_neighbor_depth_none_reduces_predictions_too():
     batch = random_batch(n_graphs=10, seed=3)
-    train, test = split_batch(batch, batch.graph_id < 7), split_batch(
-        batch, batch.graph_id >= 7
+    train, test = (
+        split_batch(batch, batch.graph_id < 7),
+        split_batch(batch, batch.graph_id >= 7),
     )
     m_none = sieve.fit(train, coarse_config(neighbor_depth=None))
     m_full = sieve.fit(train, coarse_config(neighbor_depth=2))
@@ -320,8 +325,9 @@ def test_matched_level_is_position_along_backoff_path_not_raw_index():
     matched_level, which is exactly the comparison design.md 3.6's own
     "reach" measurement needs."""
     batch = random_batch(n_graphs=10, seed=8)
-    train, test = split_batch(batch, batch.graph_id < 7), split_batch(
-        batch, batch.graph_id >= 7
+    train, test = (
+        split_batch(batch, batch.graph_id < 7),
+        split_batch(batch, batch.graph_id >= 7),
     )
     cfg = coarse_config(neighbor_depth=1, minimum_support=1)
     m = sieve.fit(train, cfg)
