@@ -170,7 +170,7 @@ code. Only the three items above were found to have drifted.
 
 ---
 
-## 5. Coarse neighbor attributes implemented (§3.6, open question 8)
+## 5. Coarse neighbor attributes implemented (§3.6, open question 6)
 
 §3.6 measured coarsening neighbors to element-only on cosmobase (no targets) and left it
 unadopted. The mechanism is now implemented, parametrized as `neighbor_depth: int | None` — an

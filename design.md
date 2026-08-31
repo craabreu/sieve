@@ -130,12 +130,19 @@ Two corollaries:
 
 ```python
 # for each depth k
-vocab[k]  : dict[bytes, int]      # WL identifier -> local class id
-count[k]  : np.ndarray[int64]     # (n_classes,)      N -- scalar even for vector targets
-mean[k]   : np.ndarray[float64]   # (n_classes, d)    ybar
-msd[k]    : np.ndarray[float64]   # (n_classes, d)    sigma^2, divisor N, per dimension (§1)
-parent[k] : np.ndarray[int32]     # (n_classes,)      index into level k-1; -1 at level 0
+signatures[k] : np.ndarray[int64] # (n_classes, width) the vocabulary itself -- row cid is class
+                                   #   cid's own signature; class ids are the row index
+count[k]      : np.ndarray[int64] # (n_classes,)      N -- scalar even for vector targets
+mean[k]       : np.ndarray[float64]  # (n_classes, d) ybar
+msd[k]        : np.ndarray[float64]  # (n_classes, d) sigma^2, divisor N, per dimension (§1)
+parent[k]     : np.ndarray[int32] # (n_classes,)      index into level k-1; -1 at level 0
 ```
+
+(An earlier draft of this document showed `vocab[k] : dict[bytes, int]` here — a hash-keyed
+lookup table separate from the class data. §7.2/§9 below already settled on the array shown
+above: a class's identity *is* its row in `signatures`, found by a 64-bit row key rather than a
+literal byte-string hash, with no separate dict ever built. This section was never updated to
+match; it now matches.)
 
 Class ids are local to a depth and dense from $0$. `parent[k][cid]` indexes directly into the
 depth-$(k-1)$ arrays, so ancestor traversal involves no hashing at all.
@@ -618,7 +625,7 @@ overhead dominates regardless of algorithm.
 
 Practical consequence: a caller wanting parallel fitting should own a long-lived worker pool across
 many `fit()` calls, not create one per call. This isn't yet exposed as a documented API (`sieve.fit`
-has no `n_jobs` or pool-aware entry point) — §13.9.
+has no `n_jobs` or pool-aware entry point) — §13.7.
 
 ---
 
@@ -710,7 +717,7 @@ $J_{ij}=0$ asserts node independence, which is false — bonded atoms' charges a
 anti-correlated. So this is the exact MLE of an idealized model, and a principled *heuristic* for the
 real one. Two consequences worth stating in advance. It should beat spreading the residual equally
 (that scheme is $\eta_i$ constant — every node equally soft). And it should fail where $J$ carries
-the physics, on strongly polarized bonds. Neither claim is established here; §13 item 10 records the
+the physics, on strongly polarized bonds. Neither claim is established here; §13 item 8 records the
 comparison that would settle it.
 
 **Degenerate cases fall out of the formula rather than needing machinery.** A node with
@@ -1207,62 +1214,57 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
 2. **Raw vs shrunk as the headline model.** Shrinkage handles low support continuously and is the
    more defensible default; raw deepest-match is the configuration most exposed to criticism.
 3. **Choice of $K$**, and whether to auto-detect WL partition stabilization on the training fold.
-4. **Serialization format.** The columnar layout maps onto `.npz` plus a small JSON sidecar for
-   `vocab` and config, but this is not yet decided.
-5. **Whether `vocab` should stay `dict[bytes, int]`** or move to a sorted array with binary search,
-   which would serialize more compactly at some lookup cost.
-6. **The attribute order in §3.5**, and its granularity — one level per attribute, or grouped levels
+4. **The attribute order in §3.5**, and its granularity — one level per attribute, or grouped levels
    (e.g. aromaticity and hybridization together). The proposed chemical default is a starting point,
    not a measured one.
-7. **Whether to store the full class covariance** rather than its diagonal (§5.2). The merge upgrades
+5. **Whether to store the full class covariance** rather than its diagonal (§5.2). The merge upgrades
    by one term and is already verified; the cost is $O(d^2)$ per class instead of $O(d)$. Deferred
    until there is a use for the off-diagonal structure — correlated σ-profile bins would be the
    obvious one. Whether $\alpha$ (§4.2) should then become per-dimension is a separate question, and
    should stay scalar without evidence.
-8. **Whether neighbors should carry a coarser attribute schema than the center (§3.6).** Measured on
-   cosmobase: coarsening buys ~0.6 levels of extra reach at identical support. What remains open is
-   whether that reach is *worth* the attribute resolution it costs, which needs targets. Run the
-   comparison again with real σ-profiles or partial charges and decide on MAE at the matched class.
-   Implement as a configurable neighbor schema — an ablation flag, not an architecture. This
-   comparison is part of the planned ablation suite rather than a design decision to be made in
-   advance; the entry stays open until that suite runs.
-9. **Whether `sieve` should expose a pool-aware parallel-fitting entry point** (§5.5), or leave pool
+6. **Whether neighbors should carry a coarser attribute schema than the center (§3.6).** Measured on
+   cosmobase: coarsening buys ~0.6 levels of extra reach at identical support. **Implemented** as
+   `SieveConfig.neighbor_depth` (design-update-v1.md §5) — an index into `attribute_levels`, so any
+   prefix of the declared attribute order can be the coarse base. What remains open is whether that
+   reach is *worth* the attribute resolution it costs, which needs targets: run the comparison again
+   with real σ-profiles or partial charges and decide on MAE at the matched class, not coverage.
+7. **Whether `sieve` should expose a pool-aware parallel-fitting entry point** (§5.5), or leave pool
    lifecycle entirely to the caller. Measured: a persistent worker pool pays off and a per-call pool
    does not, so an API that quietly creates one pool per `fit()` call would be actively harmful — if
    this is ever exposed, the pool's lifetime needs to be a caller-visible decision, not an implicit one.
-10. **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
-    post-normalization MAE against equal-weighted spreading and DASH's own std-weighted eq 4. Note
-    the three differ in exponent, not in kind: the correction is spread $\propto\sigma^0$,
-    $\sigma^1$, $\sigma^2$ respectively, and only $\sigma^2$ has a derivation behind it. Variance
-    weighting is also the most aggressive of the three, concentrating the residual hardest on
-    high-variance nodes — which, after §4.3's $(1+1/N)$ inflation, are disproportionately the
-    low-support nodes whose predictions are already least reliable. That could amplify error rather
-    than reduce it; being the MLE of an idealized model does not settle it. `charge_experiments`'
-    `NORMALIZERS` registry and nested-run machinery already apply several schemes to one set of raw
-    predictions, so this is a three-way comparison on identical inputs, not three separate runs.
-11. **How $\alpha$ (§4.2) and $\alpha^v$ (§4.3) should be set.** Both admit systematic treatment, by
-    different routes, and both are inference-time parameters — so a whole sweep costs one fit.
-    - $\alpha$ has a closed form. Sieve's weight $N/(N+\alpha)$ *is* the normal–normal hierarchical
-      posterior mean, so matching term for term gives $\alpha=\sigma^2/\tau^2$ — within-class over
-      between-class variance. Both are estimable from a fitted model ($\sigma^2$ the pooled
-      $\mathrm{msd}$ at that level, $\tau^2$ the spread of child means about their parent, debiased
-      as $\hat\tau^2=\max(0,\ \mathrm{Var}(\bar y_c)-\mathbb E[\sigma^2/N_c])$; clamping at zero is
-      meaningful, and says shrink fully). This comes out **per level**, which §4.2's $\alpha_k$
-      notation already allows and a single scalar does not.
-    - $\alpha^v$ needs a different criterion, since MAE barely sees it — it reaches predictions only
-      through §6.4. But §4.3 makes a falsifiable distributional claim, so test that directly:
-      standardized held-out residuals $z=(y-\mu)/\sigma_{\text{pred}}$ should be standard normal.
-      Tune for $\mathrm{Var}(z)=1$, or maximize held-out Gaussian log-likelihood. This validates the
-      variance model rather than merely selecting a constant, and needs no constraint step at all.
-    - They are separable, so this is sequential rather than a 2-D search: fix $\alpha$ on raw
-      prediction error, then $\alpha^v$ by calibration, then optionally refine jointly on
-      post-constraint MAE.
-    - **Tune on a held-out split, not `predict_loo`.** §10.3's correction removes a node's own
-      contribution at the *matched* level, but the parent estimate it blends against comes from the
-      shrunk-mean pass over the whole model, which still contains that node. The residual leakage
-      through the ancestor chain is small but biased in exactly the direction that matters here — it
-      flatters parent estimates, and so inflates the apparent optimal $\alpha$.
-12. **Whether to restore the coupling $J_{ij}$ dropped in §6.4.** The honest gap in that section is
+8. **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
+   post-normalization MAE against equal-weighted spreading and DASH's own std-weighted eq 4. Note
+   the three differ in exponent, not in kind: the correction is spread $\propto\sigma^0$,
+   $\sigma^1$, $\sigma^2$ respectively, and only $\sigma^2$ has a derivation behind it. Variance
+   weighting is also the most aggressive of the three, concentrating the residual hardest on
+   high-variance nodes — which, after §4.3's $(1+1/N)$ inflation, are disproportionately the
+   low-support nodes whose predictions are already least reliable. That could amplify error rather
+   than reduce it; being the MLE of an idealized model does not settle it. `charge_experiments`'
+   `NORMALIZERS` registry and nested-run machinery already apply several schemes to one set of raw
+   predictions, so this is a three-way comparison on identical inputs, not three separate runs.
+9. **How $\alpha$ (§4.2) and $\alpha^v$ (§4.3) should be set.** Both admit systematic treatment, by
+   different routes, and both are inference-time parameters — so a whole sweep costs one fit.
+   - $\alpha$ has a closed form. Sieve's weight $N/(N+\alpha)$ *is* the normal–normal hierarchical
+     posterior mean, so matching term for term gives $\alpha=\sigma^2/\tau^2$ — within-class over
+     between-class variance. Both are estimable from a fitted model ($\sigma^2$ the pooled
+     $\mathrm{msd}$ at that level, $\tau^2$ the spread of child means about their parent, debiased
+     as $\hat\tau^2=\max(0,\ \mathrm{Var}(\bar y_c)-\mathbb E[\sigma^2/N_c])$; clamping at zero is
+     meaningful, and says shrink fully). This comes out **per level**, which §4.2's $\alpha_k$
+     notation already allows and a single scalar does not.
+   - $\alpha^v$ needs a different criterion, since MAE barely sees it — it reaches predictions only
+     through §6.4. But §4.3 makes a falsifiable distributional claim, so test that directly:
+     standardized held-out residuals $z=(y-\mu)/\sigma_{\text{pred}}$ should be standard normal.
+     Tune for $\mathrm{Var}(z)=1$, or maximize held-out Gaussian log-likelihood. This validates the
+     variance model rather than merely selecting a constant, and needs no constraint step at all.
+   - They are separable, so this is sequential rather than a 2-D search: fix $\alpha$ on raw
+     prediction error, then $\alpha^v$ by calibration, then optionally refine jointly on
+     post-constraint MAE.
+   - **Tune on a held-out split, not `predict_loo`.** §10.3's correction removes a node's own
+     contribution at the *matched* level, but the parent estimate it blends against comes from the
+     shrunk-mean pass over the whole model, which still contains that node. The residual leakage
+     through the ancestor chain is small but biased in exactly the direction that matters here — it
+     flatters parent estimates, and so inflates the apparent optimal $\alpha$.
+10. **Whether to restore the coupling $J_{ij}$ dropped in §6.4.** The honest gap in that section is
     one named term, not a vague correlation worry, and the literature fixes its shape: a screened
     Coulomb kernel in $r_{ij}$. The general form is standard constrained GLS,
     $x=\mu+\Sigma c(c^\top\Sigma c)^{-1}(X-c^\top\mu)$, which §6.4 is the diagonal-$\Sigma$ case of;
@@ -1271,7 +1273,7 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
     how much they demand of Sieve. A **fixed, physics-supplied** $J$ from conformer geometry (already
     in the store) needs nothing new from Sieve at all. A **learned** $J$ would need node-pair
     covariance keyed on class pairs and their geometric relationship, which Sieve structurally does
-    not have — its classes are per-node, and nothing relates two of them. Note this is *not* item 7:
+    not have — its classes are per-node, and nothing relates two of them. Note this is *not* item 5:
     that concerns covariance across target dimensions within one class, a different object entirely.
 
 ---

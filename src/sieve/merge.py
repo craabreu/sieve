@@ -61,7 +61,10 @@ def _translate(
         # re-canonicalized or equal multisets stop comparing equal.
         out[:, 1:] = np.sort(out[:, 1:], axis=1)
     elif kind == LEVEL_WL_PAIR:
-        assert remap_neighbor is not None  # required by callers for this kind
+        if remap_neighbor is None:
+            # Required by callers for this kind; a real raise, not assert,
+            # since assert is compiled away under `python -O`.
+            raise AssertionError("remap_neighbor is None for a LEVEL_WL_PAIR level")
         out[:, 1] = remap_neighbor[sig[:, 1]]
     return out
 

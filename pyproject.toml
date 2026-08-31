@@ -109,6 +109,10 @@ allowed-unresolved-imports = [
 ]
 
 [[tool.ty.overrides]]
+# numpy-stubs gap, confirmed a false positive: save()'s `np.savez(path,
+# **arrays)` passes arbitrary ndarrays through **kwds, but the stub
+# resolves that against `allow_pickle: bool` instead of `**kwds:
+# ArrayLike`, reporting every array argument as "expected bool".
 include = ["src/sieve/model.py"]
 
 [tool.ty.overrides.rules]

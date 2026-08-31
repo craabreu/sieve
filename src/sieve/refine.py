@@ -113,7 +113,12 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
             # already aggregated over its neighbors, so no separate multiset
             # is needed here -- just the pair (self, coarse neighbor state).
             ns = neighbor_src[offset]
-            assert ns is not None  # config guarantees this for LEVEL_WL_PAIR
+            if ns is None:
+                # config guarantees this for LEVEL_WL_PAIR; a real raise, not
+                # assert, since assert is compiled away under `python -O`.
+                raise AssertionError(
+                    "neighbor_source is None for a LEVEL_WL_PAIR level"
+                )
             neighbor = levels[ns].labels
             sig = np.concatenate([base[:, None], neighbor[:, None]], axis=1)
         labels, uniq = dense_rows(sig)
