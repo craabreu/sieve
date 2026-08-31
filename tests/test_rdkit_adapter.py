@@ -144,3 +144,144 @@ def test_y_and_y_from_atom_prop_are_mutually_exclusive():
 
     with pytest.raises(ValueError, match="y_from_atom_prop"):
         from_rdkit([mol], y=np.zeros((2, 1)), config=cfg, y_from_atom_prop="q")
+
+
+def test_chirality_attribute_uses_canonical_cip_code_not_raw_tag():
+    """Same physical stereoisomer, written with two different atom orders
+    (so the raw ChiralTag differs between them -- verified directly with
+    rdkit elsewhere), must get the SAME chirality attribute code, since
+    _CIPCode (unlike the raw tag) is order-independent."""
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    variant_a = Chem.MolFromSmiles("F[C@H](Cl)Br")
+    variant_b = Chem.MolFromSmiles("Cl[C@@H](F)Br")  # same physical molecule
+
+    cfg = cfg_for(["F[C@H](Cl)Br"], attrs=(("element", "chirality"),))
+    ba = from_rdkit([variant_a], config=cfg)
+    bb = from_rdkit([variant_b], config=cfg)
+
+    assert ba.elements is not None
+    assert bb.elements is not None
+    center_a = next(i for i, e in enumerate(ba.elements) if e == 6)
+    center_b = next(i for i, e in enumerate(bb.elements) if e == 6)
+    chirality_col = list(cfg.attribute_levels[0]).index("chirality")
+    assert (
+        ba.node_attrs[center_a, chirality_col] == bb.node_attrs[center_b, chirality_col]
+    )
+
+
+def test_chirality_attribute_falls_back_when_not_rigorously_labeled():
+    """A plain Chem.MolFromSmiles mol has a raw ChiralTag (from the @/@@
+    marker) and even a legacy _CIPCode from default sanitization -- but not
+    CIP_LABELED_PROP, so from_rdkit must still compute the rigorous label,
+    not trust whatever legacy value happens to already be sitting there
+    (see _ensure_cip_labels' own docstring for why presence of _CIPCode
+    alone is not a safe gate)."""
+    from sieve.io.rdkit_adapter import CIP_LABELED_PROP, from_rdkit
+
+    mol = Chem.MolFromSmiles("F[C@H](Cl)Br")
+    assert not mol.HasProp(CIP_LABELED_PROP)  # sanity: not marked as prepped
+
+    cfg = cfg_for(["F[C@H](Cl)Br"], attrs=(("element", "chirality"),))
+    b = from_rdkit([mol], config=cfg)
+
+    chirality_col = list(cfg.attribute_levels[0]).index("chirality")
+    none_code = cfg.attribute_codes["chirality"]["none"]
+    assert b.elements is not None
+    center = next(i for i, e in enumerate(b.elements) if e == 6)
+    assert b.node_attrs[center, chirality_col] != none_code
+    assert mol.HasProp(CIP_LABELED_PROP)  # marked, so a second call is a no-op
+
+
+def test_chirality_attribute_matches_between_prepped_and_unprepped_input():
+    """The actual property that matters: a mol pre-labeled and marked the
+    way charge_experiments' own prepare_store.py does, and the same mol
+    left unprepped (triggering from_rdkit's fallback), must produce the
+    same attribute code."""
+    from rdkit.Chem import rdCIPLabeler
+
+    from sieve.io.rdkit_adapter import CIP_LABELED_PROP, from_rdkit
+
+    unprepped = Chem.MolFromSmiles("F[C@H](Cl)Br")
+    prepped = Chem.MolFromSmiles("F[C@H](Cl)Br")
+    Chem.AssignStereochemistry(prepped, cleanIt=True, force=True)
+    rdCIPLabeler.AssignCIPLabels(prepped)
+    prepped.SetBoolProp(CIP_LABELED_PROP, True)
+
+    cfg = cfg_for(["F[C@H](Cl)Br"], attrs=(("element", "chirality"),))
+    b_unprepped = from_rdkit([unprepped], config=cfg)
+    b_prepped = from_rdkit([prepped], config=cfg)
+
+    chirality_col = list(cfg.attribute_levels[0]).index("chirality")
+    assert b_unprepped.elements is not None
+    assert b_prepped.elements is not None
+    c1 = next(i for i, e in enumerate(b_unprepped.elements) if e == 6)
+    c2 = next(i for i, e in enumerate(b_prepped.elements) if e == 6)
+    assert (
+        b_unprepped.node_attrs[c1, chirality_col]
+        == b_prepped.node_attrs[c2, chirality_col]
+    )
+
+
+def test_chirality_attribute_uses_rigorous_cip_not_legacy_sanitization_default():
+    """Regression test for a real, confirmed discrepancy: Chem.MolFromSmiles'
+    own default sanitization already sets a *legacy* _CIPCode, which can
+    genuinely disagree with rdCIPLabeler's rigorous one for pseudo-asymmetric
+    centers -- verified directly: this bridged-bicyclic SMILES gives legacy
+    'S'/'S' for two specific atoms but rigorous 'r'/'s'. from_rdkit must
+    reflect the rigorous value."""
+    from rdkit.Chem import rdCIPLabeler
+
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    smi = "[H]/N=C(/N)NC[C@@]12C[C@@H]3C[C@@H](C[C@H]1C3)C2"
+    mol = Chem.MolFromSmiles(smi)
+
+    # confirm legacy (from default sanitization) actually differs here,
+    # so this test is exercising the real discrepancy, not a no-op
+    legacy = {
+        a.GetIdx(): a.GetPropsAsDict().get("_CIPCode")
+        for a in mol.GetAtoms()
+        if a.HasProp("_CIPCode")
+    }
+    rigorous_check = Chem.MolFromSmiles(smi)
+    Chem.AssignStereochemistry(rigorous_check, cleanIt=True, force=True)
+    rdCIPLabeler.AssignCIPLabels(rigorous_check)
+    rigorous = {
+        a.GetIdx(): a.GetPropsAsDict().get("_CIPCode")
+        for a in rigorous_check.GetAtoms()
+        if a.HasProp("_CIPCode")
+    }
+    assert legacy != rigorous  # sanity: this molecule exercises the bug
+
+    cfg = cfg_for([smi], attrs=(("element", "chirality"),))
+    b = from_rdkit([mol], config=cfg)
+    chirality_col = list(cfg.attribute_levels[0]).index("chirality")
+    code_to_value = {v: k for k, v in cfg.attribute_codes["chirality"].items()}
+    got = {idx: code_to_value[b.node_attrs[idx, chirality_col]] for idx in rigorous}
+    assert got == rigorous
+
+
+def test_chirality_attribute_is_none_for_non_stereocenters():
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    mol = Chem.MolFromSmiles("CCO")  # no stereocenters at all
+    cfg = cfg_for(["CCO"], attrs=(("element", "chirality"),))
+    b = from_rdkit([mol], config=cfg)
+
+    chirality_col = list(cfg.attribute_levels[0]).index("chirality")
+    none_code = cfg.attribute_codes["chirality"]["none"]
+    assert (b.node_attrs[:, chirality_col] == none_code).all()
+
+
+def test_build_codes_discovers_cip_vocabulary_from_unprepped_mols():
+    """build_codes runs before from_rdkit in the normal fit path
+    (sieve_predictor.py's own _build_config) -- it must apply the same
+    fallback, or an unprepped training corpus would silently discover only
+    "none" as the whole chirality vocabulary."""
+    mols = [Chem.MolFromSmiles("F[C@H](Cl)Br"), Chem.MolFromSmiles("CCO")]
+    codes, _ = build_codes(mols, ["chirality"])
+    assert set(codes["chirality"]) >= {"none", "R"} or set(codes["chirality"]) >= {
+        "none",
+        "S",
+    }
