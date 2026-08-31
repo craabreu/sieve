@@ -14,7 +14,16 @@ _ATTRS = {
     "aromatic": lambda a: str(a.GetIsAromatic()),
     "formal_charge": lambda a: str(a.GetFormalCharge()),
     "num_h": lambda a: str(a.GetTotalNumHs()),
-    "chirality": lambda a: str(a.GetChiralTag()),
+    # RDKit's raw ChiralTag (CW/CCW) is defined relative to the atom's own
+    # neighbor traversal order -- not canonical, so the same physical
+    # stereocenter can get a different raw tag purely from incidental atom
+    # numbering. _CIPCode (R/S, or r/s for pseudo-asymmetric centers) is
+    # RDKit's own canonical, order-independent descriptor instead. It is
+    # not set by molblock parsing alone; see from_rdkit's own fallback
+    # computation below for callers that reach here without it already set
+    # (e.g. from_smiles, or any Mol built outside charge_experiments'
+    # prepare_store.py, which sets it once at data-prep time).
+    "chirality": lambda a: a.GetPropsAsDict().get("_CIPCode", "none"),
 }
 
 
@@ -25,6 +34,14 @@ def build_codes(mols, attributes):
     categories: an unknown value must fail to match at level 0 and back off,
     never silently collide with a seen one.
     """
+    if "chirality" in attributes:
+        # Same fallback from_rdkit applies -- needed here too, since a
+        # fresh fit's own code-table discovery (this function) typically
+        # runs on the training mols *before* from_rdkit ever sees them.
+        # Without it, an un-prepped corpus would silently discover only
+        # "none" as the observed chirality vocabulary.
+        for m in mols:
+            _ensure_cip_labels(m)
     codes = {}
     for name in attributes:
         fn = _ATTRS[name]
@@ -32,6 +49,40 @@ def build_codes(mols, attributes):
         codes[name] = {v: i for i, v in enumerate(seen)}
     edge_codes = {"SINGLE": 1, "DOUBLE": 2, "TRIPLE": 3, "AROMATIC": 4}
     return codes, edge_codes
+
+
+# Public so a caller that pre-computes CIP labels itself (e.g.
+# charge_experiments' own prepare_store.py, at data-prep time) can set the
+# same marker and skip _ensure_cip_labels' own recomputation -- the whole
+# point of storing labels ahead of time.
+CIP_LABELED_PROP = "_sieve_rigorous_cip_labeled"
+
+
+def _ensure_cip_labels(mol) -> None:
+    """Fallback for a ``Mol`` that reaches ``from_rdkit`` without
+    pre-computed, *rigorous* ``_CIPCode`` atom props (e.g. built via
+    ``from_smiles``, or from any caller other than ``charge_experiments``'s
+    own ``prepare_store.py``, which sets these once at data-prep time).
+
+    Gated on a dedicated mol-level marker, not on ``atom.HasProp("_CIPCode")``
+    -- ``Chem.MolFromSmiles``'s own default sanitization already sets a
+    *legacy* ``_CIPCode``, which can genuinely disagree with
+    ``rdCIPLabeler``'s rigorous one for pseudo-asymmetric centers (verified:
+    a bridged-bicyclic case gave legacy 'S'/'S' vs. rigorous 'r'/'s' for the
+    same two atoms) -- checking prop presence alone would silently accept
+    the legacy value and never call the rigorous labeler. The marker is a
+    plain mol-level bool prop, so it survives the same ``mol_to_blob``
+    round trip ``_CIPCode`` itself does.
+    """
+    if mol.HasProp(CIP_LABELED_PROP):
+        return
+    from rdkit import Chem
+    from rdkit.Chem import rdCIPLabeler
+
+    if any(a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED for a in mol.GetAtoms()):
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+        rdCIPLabeler.AssignCIPLabels(mol)
+    mol.SetBoolProp(CIP_LABELED_PROP, True)
 
 
 def from_rdkit(
@@ -53,7 +104,10 @@ def from_rdkit(
     y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
     src, dst, attr = [], [], []
     off = 0
+    needs_cip = "chirality" in flat
     for gi, mol in enumerate(mols):
+        if needs_cip:
+            _ensure_cip_labels(mol)
         order = (
             list(range(mol.GetNumAtoms()))
             if node_order is None

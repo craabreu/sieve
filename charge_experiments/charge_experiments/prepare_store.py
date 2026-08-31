@@ -180,6 +180,21 @@ def _parse_one_record(
     _assign_stereo_if_needed(mol)
 
     from rdkit import Chem
+    from rdkit.Chem import rdCIPLabeler
+
+    # Unconditional, unlike _assign_stereo_if_needed's own 3D-perception
+    # step: a record whose stereo was already fully specified by the
+    # molblock's own parity bits skips that conditional branch entirely,
+    # but _CIPCode is set by AssignStereochemistry/AssignCIPLabels, not by
+    # molblock parsing itself -- so it would be missing for that (common)
+    # case if this call were nested inside _assign_stereo_if_needed's own
+    # "only if unassigned" branch. AssignCIPLabels needs
+    # AssignStereochemistry's own ChiralTag perception to already have run
+    # (it labels tagged centers, it doesn't discover them) -- cheap to
+    # call again here even when _assign_stereo_if_needed already ran it,
+    # since re-running is idempotent.
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    rdCIPLabeler.AssignCIPLabels(mol)
 
     net_charge = float(Chem.GetFormalCharge(mol))
 
@@ -196,6 +211,16 @@ def _parse_one_record(
     # objects, not the Mol's own property dict.
     for name in list(mol.GetPropNames()):
         mol.ClearProp(name)
+
+    # Set *after* the clear-props loop above, not before -- CIP_LABELED_PROP
+    # is a mol-level marker (this loop clears exactly those), unlike
+    # MBIScharge/_CIPCode, which live on the Atom objects and are
+    # unaffected by it. Tells sieve.io.rdkit_adapter's own
+    # _ensure_cip_labels that the rigorous rdCIPLabeler already ran here,
+    # so featurization never needs to recompute it.
+    from sieve.io.rdkit_adapter import CIP_LABELED_PROP
+
+    mol.SetBoolProp(CIP_LABELED_PROP, True)
 
     return {
         "chembl_id": chembl_id,

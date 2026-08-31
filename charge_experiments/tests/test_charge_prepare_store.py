@@ -513,6 +513,30 @@ def test_to_united_atom_keeps_a_hydrogen_rdkit_declines_to_remove():
     assert total_after == pytest.approx(total_before)
 
 
+def test_to_united_atom_preserves_cip_code_on_surviving_heavy_atoms():
+    """RemoveHs is documented to preserve atom props for atoms that survive
+    it (the same guarantee MBIScharge's own redistribution above already
+    relies on) -- checked directly here for _CIPCode rather than assumed,
+    since it's a *private* (underscore-prefixed) prop and this session
+    already found one real case (mol_to_blob) where private-prop
+    preservation needed an explicit opt-in rather than "just working"."""
+    from charge_experiments.prepare_store import _to_united_atom
+    from rdkit import Chem
+    from rdkit.Chem import rdCIPLabeler
+
+    mol = _ua_test_mol("F[C@H](Cl)Br")
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    rdCIPLabeler.AssignCIPLabels(mol)
+    stereocenter_before = next(a for a in mol.GetAtoms() if a.HasProp("_CIPCode"))
+    assert stereocenter_before.GetPropsAsDict()["_CIPCode"] == "R"
+
+    ua_mol, _n_removed, _n_kept = _to_united_atom(mol)
+
+    assert ua_mol.GetNumAtoms() == 4  # F, C, Cl, Br -- no H's kept
+    stereocenter_after = next(a for a in ua_mol.GetAtoms() if a.HasProp("_CIPCode"))
+    assert stereocenter_after.GetPropsAsDict()["_CIPCode"] == "R"
+
+
 def test_to_united_atom_heavy_atom_charge_is_original_plus_its_hs():
     from charge_experiments.prepare_store import _to_united_atom
 
@@ -564,3 +588,84 @@ def test_to_united_atom_store_transforms_every_row_and_preserves_other_columns(
     source_total = sum(a.GetDoubleProp("MBIScharge") for a in source_mol.GetAtoms())
     ua_total = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
     assert ua_total == pytest.approx(source_total)
+
+
+def _chiral_sdf_text(chembl_id="CHEMBL_CHIRAL", conf_id="conf_00"):
+    """A real, valid SDF record with a genuine tetrahedral stereocenter
+    (CIP R, verified independently), built via rdkit itself rather than
+    hand-crafted coordinates -- MolToMolBlock writes fully-specified parity
+    bits (rdkit wedges the bond from the mol's own ChiralTag, generating 2D
+    coords as needed), so re-parsing this record does NOT hit
+    _assign_stereo_if_needed's own "unassigned center" branch, exactly the
+    case the unconditional AssignStereochemistry/AssignCIPLabels call in
+    _parse_one_record exists to still cover correctly."""
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles("F[C@H](Cl)Br")
+    charges = [0.1 * (i + 1) for i in range(mol.GetNumAtoms())]
+    molblock = Chem.MolToMolBlock(mol, kekulize=True)
+    charge_str = "|".join(str(c) for c in charges)
+    return (
+        f"{molblock}"
+        f">  <CHEMBL_ID>  (1)\n{chembl_id}\n\n"
+        f">  <CONF_ID>  (1)\n{conf_id}\n\n"
+        f">  <MBIScharge>  (1)\n{charge_str}\n\n"
+        f"$$$$\n"
+    )
+
+
+def test_parse_dash_molecules_sets_rigorous_cip_labels(tmp_path):
+    """Regression test for the fix's own stated bug: a record whose stereo
+    is already fully specified by the molblock's own parity bits (not the
+    "unassigned, needs 3D perception" case) must still get a real _CIPCode
+    -- confirmed here by checking FindMolChiralCenters reports no "?" (so
+    _assign_stereo_if_needed's own conditional branch does not fire) while
+    _CIPCode still ends up set. Reads the mol back from the written
+    parquet, not the in-memory object, so this also exercises the
+    mol_to_blob/blob_to_mol round trip."""
+    from charge_experiments.data import blob_to_mol
+    from charge_experiments.prepare_store import parse_dash_molecules
+    from rdkit import Chem
+
+    sdf_path = tmp_path / "chiral.sdf"
+    sdf_path.write_text(_chiral_sdf_text())
+    out_path = tmp_path / "molecules.parquet"
+    parse_dash_molecules(sdf_path, out_path)
+
+    import pandas as pd
+
+    df = pd.read_parquet(out_path)
+    assert len(df) == 1
+    mol = blob_to_mol(df.loc[0, "mol"])
+
+    # Checked *before* any further rdkit call: FindMolChiralCenters (below)
+    # would itself compute and set _CIPCode as a side effect if it were
+    # missing, silently masking whether it actually survived mol_to_blob's
+    # own round trip -- verified directly (a mol with a real chiral tag but
+    # no _CIPCode gets one from FindMolChiralCenters alone). Checking here,
+    # first, is what makes this a real regression test for that persistence.
+    stereocenter = next(a for a in mol.GetAtoms() if a.HasProp("_CIPCode"))
+    assert stereocenter.GetPropsAsDict()["_CIPCode"] == "R"
+
+    centers = Chem.FindMolChiralCenters(
+        mol, includeUnassigned=True, useLegacyImplementation=False
+    )
+    assert not any(tag == "?" for _, tag in centers)  # sanity: parity bits alone
+
+
+def test_parse_dash_molecules_sets_cip_labeled_marker(tmp_path):
+    from charge_experiments.data import blob_to_mol
+    from charge_experiments.prepare_store import parse_dash_molecules
+
+    from sieve.io.rdkit_adapter import CIP_LABELED_PROP
+
+    sdf_path = tmp_path / "chiral.sdf"
+    sdf_path.write_text(_chiral_sdf_text())
+    out_path = tmp_path / "molecules.parquet"
+    parse_dash_molecules(sdf_path, out_path)
+
+    import pandas as pd
+
+    df = pd.read_parquet(out_path)
+    mol = blob_to_mol(df.loc[0, "mol"])
+    assert mol.HasProp(CIP_LABELED_PROP)

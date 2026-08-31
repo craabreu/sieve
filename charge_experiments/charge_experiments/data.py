@@ -32,16 +32,28 @@ DEFAULT_CACHE_DIR = REPO_ROOT / "charge_experiments" / "cache"
 # propertyFlags -- passed explicitly here anyway, rather than relying on
 # rdkit's own global pickle-property default, so this doesn't silently
 # break if that default ever changes upstream.
+#
+# PrivateProps is required too, not just AtomProps/MolProps: rdkit treats
+# any underscore-prefixed property name as "private" and silently drops it
+# from ToBinary()'s output unless PrivateProps is explicitly OR'd in --
+# confirmed empirically (a round trip without it produces a Mol with an
+# *empty* prop dict for such names, no error). MBIScharge survives without
+# this flag only because its name happens not to start with "_"; RDKit's
+# own CIP labels (``_CIPCode`` and friends) and this codebase's own
+# ``_sieve_rigorous_cip_labeled`` marker (see prepare_store.py /
+# sieve.io.rdkit_adapter.CIP_LABELED_PROP) both need it.
 
 
 def mol_to_blob(mol: Any) -> bytes:
     """Serialize ``mol`` to bytes, preserving atom/mol properties (which is
-    where ``MBIScharge`` lives) and stereo/chiral tags (intrinsic, always
-    preserved)."""
+    where ``MBIScharge`` and the CIP-label props live) and stereo/chiral
+    tags (intrinsic, always preserved)."""
     from rdkit import Chem
 
     return mol.ToBinary(
-        Chem.PropertyPickleOptions.AtomProps | Chem.PropertyPickleOptions.MolProps
+        Chem.PropertyPickleOptions.AtomProps
+        | Chem.PropertyPickleOptions.MolProps
+        | Chem.PropertyPickleOptions.PrivateProps
     )
 
 
