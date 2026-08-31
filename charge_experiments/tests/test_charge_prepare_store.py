@@ -152,9 +152,7 @@ def test_parse_dash_molecules_synthesizes_sequential_conf_ids_per_dash_id(tmp_pa
 def test_parse_dash_molecules_skips_record_with_neither_identity(tmp_path):
     from charge_experiments.prepare_store import parse_dash_molecules
 
-    no_identity = _TINY_SDF_DASH_ID.replace(
-        ">  <DASH_IDX>  (1)\nRest_2\n\n", ""
-    )
+    no_identity = _TINY_SDF_DASH_ID.replace(">  <DASH_IDX>  (1)\nRest_2\n\n", "")
     assert "DASH_IDX" not in no_identity  # sanity-check the replace actually fired
 
     sdf_path = tmp_path / "tiny.sdf"
@@ -206,9 +204,7 @@ def test_assign_splits_handles_a_mixed_store_of_both_schemas(tmp_path):
     for i in range(3):
         for conf in ("conf_00", "conf_01"):
             records.append(
-                _TINY_SDF.replace("CHEMBL185198", f"CHEMBL{i}").replace(
-                    "conf_00", conf
-                )
+                _TINY_SDF.replace("CHEMBL185198", f"CHEMBL{i}").replace("conf_00", conf)
             )
     for i in range(3):
         records.append(_TINY_SDF_DASH_ID.replace("Rest_2", f"Rest_{i}"))
@@ -243,9 +239,7 @@ def test_assign_splits_never_splits_a_chembl_id_across_splits(tmp_path):
     for i in range(3):
         for conf in ("conf_00", "conf_01"):
             records.append(
-                _TINY_SDF.replace("CHEMBL185198", f"CHEMBL{i}").replace(
-                    "conf_00", conf
-                )
+                _TINY_SDF.replace("CHEMBL185198", f"CHEMBL{i}").replace("conf_00", conf)
             )
     sdf_path = tmp_path / "tiny.sdf"
     sdf_path.write_text("".join(records))
@@ -301,8 +295,12 @@ def test_subsample_store_preserves_source_split_fractions_approximately(tmp_path
     _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
 
     subsample_store(
-        "source-store", "dest-store", stores_root=tmp_path,
-        n_molecules=20, conformers_per_molecule=1, seed=0,
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=20,
+        conformers_per_molecule=1,
+        seed=0,
     )
 
     import pandas as pd
@@ -318,13 +316,15 @@ def test_subsample_store_preserves_source_split_fractions_approximately(tmp_path
 def test_subsample_store_caps_conformers_per_molecule(tmp_path):
     from charge_experiments.prepare_store import subsample_store
 
-    _synthetic_split_store(
-        tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=5
-    )
+    _synthetic_split_store(tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=5)
 
     subsample_store(
-        "source-store", "dest-store", stores_root=tmp_path,
-        n_molecules=15, conformers_per_molecule=2, seed=0,
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=15,
+        conformers_per_molecule=2,
+        seed=0,
     )
 
     import pandas as pd
@@ -339,13 +339,15 @@ def test_subsample_store_never_pads_a_molecule_with_fewer_conformers(tmp_path):
 
     # Every molecule has exactly 1 conformer -- conformers_per_molecule=3
     # must not fabricate extras.
-    _synthetic_split_store(
-        tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=1
-    )
+    _synthetic_split_store(tmp_path, n_train=5, n_val=5, n_test=5, conformers_per_mol=1)
 
     subsample_store(
-        "source-store", "dest-store", stores_root=tmp_path,
-        n_molecules=15, conformers_per_molecule=3, seed=0,
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=15,
+        conformers_per_molecule=3,
+        seed=0,
     )
 
     import pandas as pd
@@ -361,12 +363,20 @@ def test_subsample_store_is_reproducible_with_the_same_seed(tmp_path):
     _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
 
     subsample_store(
-        "source-store", "dest-a", stores_root=tmp_path,
-        n_molecules=20, conformers_per_molecule=1, seed=7,
+        "source-store",
+        "dest-a",
+        stores_root=tmp_path,
+        n_molecules=20,
+        conformers_per_molecule=1,
+        seed=7,
     )
     subsample_store(
-        "source-store", "dest-b", stores_root=tmp_path,
-        n_molecules=20, conformers_per_molecule=1, seed=7,
+        "source-store",
+        "dest-b",
+        stores_root=tmp_path,
+        n_molecules=20,
+        conformers_per_molecule=1,
+        seed=7,
     )
 
     import pandas as pd
@@ -384,8 +394,12 @@ def test_subsample_store_clamps_when_source_split_is_too_small(tmp_path):
     # 20-molecule target would ask round(20*2/42)~1 of val -- fine either
     # way, so make the request absurdly large to force real clamping.
     subsample_store(
-        "source-store", "dest-store", stores_root=tmp_path,
-        n_molecules=1000, conformers_per_molecule=1, seed=0,
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=1000,
+        conformers_per_molecule=1,
+        seed=0,
     )
 
     import pandas as pd
@@ -405,8 +419,13 @@ def test_subsample_store_raises_without_a_split_column(tmp_path):
     store_dir = tmp_path / "unsplit-store"
     store_dir.mkdir()
     pd.DataFrame(
-        {"chembl_id": ["A"], "conf_id": ["conf_00"], "dash_id": [None],
-         "mol": [b""], "net_charge": [0.0]}
+        {
+            "chembl_id": ["A"],
+            "conf_id": ["conf_00"],
+            "dash_id": [None],
+            "mol": [b""],
+            "net_charge": [0.0],
+        }
     ).to_parquet(store_dir / "molecules.parquet")
 
     with pytest.raises(ValueError, match="split column"):
@@ -421,8 +440,12 @@ def test_subsample_store_writes_a_summary_file(tmp_path):
     _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
 
     summary_text = subsample_store(
-        "source-store", "dest-store", stores_root=tmp_path,
-        n_molecules=20, conformers_per_molecule=1, seed=0,
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=20,
+        conformers_per_molecule=1,
+        seed=0,
     )
 
     summary_path = tmp_path / "dest-store" / "split_summary.txt"
@@ -488,9 +511,7 @@ def test_to_united_atom_conserves_total_charge_on_a_larger_molecule():
 
     total_after = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
     assert total_after == pytest.approx(total_before)
-    assert n_removed + n_kept == sum(
-        1 for a in mol.GetAtoms() if a.GetAtomicNum() == 1
-    )
+    assert n_removed + n_kept == sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() == 1)
 
 
 def test_to_united_atom_keeps_a_hydrogen_rdkit_declines_to_remove():

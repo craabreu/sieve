@@ -73,6 +73,12 @@ ignore = ["E402"]
 # upstream's own line lengths.
 "charge_experiments/charge_experiments/_chalcedon/**" = ["E501"]
 
+[tool.ruff.format]
+# Same vendored-verbatim files as the E501 ignore above -- `ruff format`
+# would rewrap upstream's own (long) lines, breaking "byte-for-byte except
+# one import path" the moment CI's format check covered charge_experiments.
+exclude = ["charge_experiments/charge_experiments/_chalcedon/**"]
+
 [tool.ty.analysis]
 # CI's lint job installs [dev,chem] only, not the heavier `charges` extra
 # (mlflow, pandas, pyarrow), so ty cannot resolve these imports there.
@@ -89,6 +95,12 @@ allowed-unresolved-imports = [
     "pyarrow.**",
     "matplotlib",
     "matplotlib.**",
+    # butina_cluster.py's unconditional `from tqdm.auto import tqdm` --
+    # tqdm ships in the `charges` extra (prepare-store's real progress
+    # bars), not in CI's [dev,chem] install (see
+    # test_charge_chalcedon.py's matching pytest.importorskip("tqdm")).
+    "tqdm",
+    "tqdm.**",
     # rinikerlab/DASH-tree, sys.path-shimmed from
     # charge_experiments/external/DASH-tree rather than pip-installed --
     # see charge_experiments/predictors/dash.py.

@@ -51,7 +51,10 @@ class NestedRunResult:
 
 
 def _tags_for(
-    cfg: NestedExperimentCfg, *, normalization: str, tree_stats_source: str,
+    cfg: NestedExperimentCfg,
+    *,
+    normalization: str,
+    tree_stats_source: str,
     run_dir: Path,
 ) -> dict[str, str]:
     return {
@@ -120,16 +123,20 @@ def _write_one_run(
         },
         "config": {
             "run": {
-                "experiment": cfg.run.experiment, "seed": cfg.run.seed,
+                "experiment": cfg.run.experiment,
+                "seed": cfg.run.seed,
                 "tags": dict(cfg.run.tags),
             },
             "data": {
-                "store": cfg.data.store, "split_column": cfg.data.split_column,
-                "train_split": cfg.data.train_split, "val_split": cfg.data.val_split,
+                "store": cfg.data.store,
+                "split_column": cfg.data.split_column,
+                "train_split": cfg.data.train_split,
+                "val_split": cfg.data.val_split,
                 "eval_split": cfg.data.eval_split,
             },
             "predictor": {
-                "name": cfg.predictor.name, "params": dict(cfg.predictor.params),
+                "name": cfg.predictor.name,
+                "params": dict(cfg.predictor.params),
             },
         },
         **extra_manifest,
@@ -265,10 +272,15 @@ def execute_nested(
     )
     with parent_ctx:
         parent_result = _write_one_run(
-            run_name=parent_run_name, cfg=cfg, test=splits["test"],
+            run_name=parent_run_name,
+            cfg=cfg,
+            test=splits["test"],
             pred=Prediction(atom_charge=parent_charges["test"]),
-            run_metrics=parent_metrics, runs_root=runs_root, started=started,
-            git_info=git_info, extra_manifest=parent_extra_manifest,
+            run_metrics=parent_metrics,
+            runs_root=runs_root,
+            started=started,
+            git_info=git_info,
+            extra_manifest=parent_extra_manifest,
         )
         # Automatic and unconditional whenever fit() actually ran: the
         # saved state lives inside the run it came from, so the run
@@ -281,10 +293,14 @@ def execute_nested(
         if tracking_ok:
             _runner._log_mlflow_run(
                 _tags_for(
-                    cfg, normalization="raw", tree_stats_source=tree_stats_source,
+                    cfg,
+                    normalization="raw",
+                    tree_stats_source=tree_stats_source,
                     run_dir=parent_result.run_dir,
                 ),
-                _params_for(cfg), parent_metrics, parent_result.run_dir,
+                _params_for(cfg),
+                parent_metrics,
+                parent_result.run_dir,
             )
 
         for name in cfg.children:
@@ -292,8 +308,11 @@ def execute_nested(
             child_charges = {
                 split_name: (
                     normalize_fn(
-                        raw.atom_charge, raw.atom_std, splits[split_name].net_charge,
-                        splits[split_name].atom_mol_id, splits[split_name].n_conformers,
+                        raw.atom_charge,
+                        raw.atom_std,
+                        splits[split_name].net_charge,
+                        splits[split_name].atom_mol_id,
+                        splits[split_name].n_conformers,
                     )
                     if splits[split_name].n_conformers
                     else np.zeros(0)
@@ -317,19 +336,27 @@ def execute_nested(
             )
             with child_ctx:
                 child_result = _write_one_run(
-                    run_name=child_run_name, cfg=cfg, test=splits["test"],
+                    run_name=child_run_name,
+                    cfg=cfg,
+                    test=splits["test"],
                     pred=Prediction(atom_charge=child_charges["test"]),
-                    run_metrics=child_metrics, runs_root=runs_root,
-                    started=datetime.now(UTC), git_info=git_info,
+                    run_metrics=child_metrics,
+                    runs_root=runs_root,
+                    started=datetime.now(UTC),
+                    git_info=git_info,
                     extra_manifest=child_extra_manifest,
                 )
                 if tracking_ok:
                     child_tags = _tags_for(
-                        cfg, normalization=name, tree_stats_source=tree_stats_source,
+                        cfg,
+                        normalization=name,
+                        tree_stats_source=tree_stats_source,
                         run_dir=child_result.run_dir,
                     )
                     _runner._log_mlflow_run(
-                        child_tags, _params_for(cfg), child_metrics,
+                        child_tags,
+                        _params_for(cfg),
+                        child_metrics,
                         child_result.run_dir,
                     )
                 children_results[name] = child_result
@@ -357,6 +384,11 @@ def run_nested(
     data_seconds = time.perf_counter() - t0
 
     return execute_nested(
-        cfg, mset, masks, runs_root=runs_root, allow_dirty=allow_dirty,
-        tracking=tracking, data_seconds=data_seconds,
+        cfg,
+        mset,
+        masks,
+        runs_root=runs_root,
+        allow_dirty=allow_dirty,
+        tracking=tracking,
+        data_seconds=data_seconds,
     )

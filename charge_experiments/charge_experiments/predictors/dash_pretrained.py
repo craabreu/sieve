@@ -207,7 +207,10 @@ class DASHPretrainedChargePredictor:
     def predict(self, test: MoleculeSet) -> Prediction:
         raw = self.predict_raw(test)
         atom_charge = std_weighted_normalize(
-            raw.atom_charge, raw.atom_std, test.net_charge, test.atom_mol_id,
+            raw.atom_charge,
+            raw.atom_std,
+            test.net_charge,
+            test.atom_mol_id,
             test.n_conformers,
         )
 

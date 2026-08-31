@@ -36,9 +36,7 @@ def test_build_parser_run_nested_defaults():
     from charge_experiments.cli import build_parser
 
     parser = build_parser()
-    args = parser.parse_args(
-        ["run-nested", "--config", "some-config.yaml"]
-    )
+    args = parser.parse_args(["run-nested", "--config", "some-config.yaml"])
     assert args.set == []
     assert args.limit is None
     assert args.allow_dirty is False
@@ -63,11 +61,16 @@ def test_build_parser_subsample_store_accepts_all_flags():
     parser = build_parser()
     args = parser.parse_args(
         [
-            "subsample-store", "my-small-store",
-            "--source", "some-other-store",
-            "--n-molecules", "1000",
-            "--conformers-per-molecule", "3",
-            "--seed", "42",
+            "subsample-store",
+            "my-small-store",
+            "--source",
+            "some-other-store",
+            "--n-molecules",
+            "1000",
+            "--conformers-per-molecule",
+            "3",
+            "--seed",
+            "42",
         ]
     )
     assert args.dest == "my-small-store"

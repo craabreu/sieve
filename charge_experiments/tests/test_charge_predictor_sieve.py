@@ -42,8 +42,12 @@ def test_batch_for_reads_mbis_charge_directly_off_the_mols():
 
     mset = synthetic_molecule_set(n_mol=4, seed=1)
     config = _build_config(
-        mset.mols, attributes=DEFAULT_ATTRIBUTES, target_dim=1,
-        max_wl_depth=3, minimum_support=1, shrinkage_strength=None,
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
     )
     batch = _batch_for(mset.mols, config, with_target=True)
     assert batch.n_nodes == mset.n_atoms
