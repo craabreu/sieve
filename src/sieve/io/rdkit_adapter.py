@@ -105,6 +105,17 @@ def from_rdkit(
     src, dst, attr = [], [], []
     off = 0
     needs_cip = "chirality" in flat
+    # Hoisted out of the per-atom loop below: all three are loop-invariant,
+    # and the loop runs once per atom *per attribute* -- at 1.69M atoms and 5
+    # attributes that is 8.4M repetitions of work that never changes.
+    # `max(table.values())` alone profiled at ~10% of this function. The
+    # plain-dict copy matters too: config.attribute_codes is a nested
+    # MappingProxyType (config._freeze_mappings), whose lookup is measurably
+    # slower than a dict's.
+    getters = [_ATTRS[name] for name in flat]
+    tables = [dict(config.attribute_codes[name]) for name in flat]
+    unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
+    edge_codes = dict(config.edge_codes)
     for gi, mol in enumerate(mols):
         if needs_cip:
             _ensure_cip_labels(mol)
@@ -118,10 +129,8 @@ def from_rdkit(
         for local, idx in enumerate(order):
             a = mol.GetAtomWithIdx(int(idx))
             g = off + local
-            for j, name in enumerate(flat):
-                table = config.attribute_codes[name]
-                unknown = max(table.values()) + 1 if table else 0
-                node_attrs[g, j] = table.get(_ATTRS[name](a), unknown)
+            for j in range(len(flat)):
+                node_attrs[g, j] = tables[j].get(getters[j](a), unknowns[j])
             elements[g] = a.GetAtomicNum()
             graph_id[g] = gi
             if y_out is not None:
@@ -129,7 +138,7 @@ def from_rdkit(
         for b in mol.GetBonds():
             u = off + int(inv[b.GetBeginAtomIdx()])
             v = off + int(inv[b.GetEndAtomIdx()])
-            c = config.edge_codes.get(str(b.GetBondType()), 0)
+            c = edge_codes.get(str(b.GetBondType()), 0)
             src += [u, v]
             dst += [v, u]
             attr += [c, c]
