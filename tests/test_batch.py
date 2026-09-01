@@ -5,7 +5,7 @@ import time
 import numpy as np
 import pytest
 
-from sieve.batch import NodeBatch, check_alignment
+from sieve.batch import NodeBatch, check_alignment, concat_batches
 
 
 def ring(n):
@@ -346,3 +346,123 @@ def test_alignment_guard_catches_permutation():
         check_alignment(
             b, node_counts=np.array([3, 1]), elements=np.array([1, 6, 1, 8], np.int64)
         )
+
+
+def _small_batch(offset_graph_id, n_graphs, seed):
+    """A batch of `n_graphs` disjoint triangles, each node carrying a
+    deterministic attribute/target, for concat_batches' own tests. graph_id
+    deliberately starts at `offset_graph_id` and is non-contiguous with
+    other calls' output -- concat_batches must not assume 0-based ids."""
+    rng = np.random.default_rng(seed)
+    per = 3
+    n = per * n_graphs
+    src, dst, gid = [], [], []
+    for g in range(n_graphs):
+        off = g * per
+        for i in range(per):
+            j = (i + 1) % per
+            src += [off + i, off + j]
+            dst += [off + j, off + i]
+        gid += [offset_graph_id + g] * per
+    return NodeBatch(
+        node_attrs=rng.integers(0, 4, size=(n, 2)).astype(np.int64),
+        edge_src=np.array(src, np.int64),
+        edge_dst=np.array(dst, np.int64),
+        edge_attr=np.ones(len(src), np.int64),
+        graph_id=np.array(gid, np.int64),
+        y=rng.normal(size=(n, 1)),
+        elements=rng.integers(1, 20, size=n).astype(np.int64),
+    )
+
+
+def test_concat_batches_is_the_inverse_of_a_graph_id_split():
+    whole = _small_batch(offset_graph_id=0, n_graphs=8, seed=0)
+    mask = whole.graph_id < 4
+    parts = [whole[mask], whole[~mask]]
+    r = concat_batches(parts)
+
+    assert r.n_nodes == whole.n_nodes
+    assert r.n_edges == whole.n_edges
+    assert r.y is not None and whole.y is not None
+    np.testing.assert_array_equal(r.node_attrs, whole.node_attrs)
+    np.testing.assert_allclose(r.y, whole.y)
+    np.testing.assert_array_equal(r.elements, whole.elements)
+    assert len(np.unique(r.graph_id)) == len(np.unique(whole.graph_id))
+    # Re-validate through the real constructor, not just _with_trusted_edges'
+    # bypass -- proves the edges concat_batches built are genuinely
+    # bidirectional and in range, not merely accepted because the check was
+    # skipped.
+    NodeBatch(
+        node_attrs=r.node_attrs,
+        edge_src=r.edge_src,
+        edge_dst=r.edge_dst,
+        edge_attr=r.edge_attr,
+        graph_id=r.graph_id,
+        y=r.y,
+        elements=r.elements,
+    )
+
+
+def test_concat_batches_renumbers_colliding_graph_ids():
+    """The bug this function exists to prevent: two parts whose own graph_id
+    both start at 0 (e.g. two from_rdkit chunks) must not have their graph 0
+    silently merged into one."""
+    a = _small_batch(offset_graph_id=0, n_graphs=3, seed=1)
+    b = _small_batch(offset_graph_id=0, n_graphs=2, seed=2)  # also starts at 0
+    r = concat_batches([a, b])
+
+    assert len(np.unique(r.graph_id)) == 5
+    counts = np.bincount(r.graph_id)
+    assert (counts == 3).all()  # every triangle stays 3 nodes, none merged
+
+
+def test_concat_batches_handles_non_contiguous_input_graph_ids():
+    """graph_id is densified per part, not assumed already 0-based/contiguous."""
+    a = _small_batch(offset_graph_id=10, n_graphs=2, seed=3)
+    b = _small_batch(offset_graph_id=100, n_graphs=2, seed=4)
+    r = concat_batches([a, b])
+    assert len(np.unique(r.graph_id)) == 4
+    assert set(r.graph_id.tolist()) == {0, 1, 2, 3}
+
+
+def test_concat_batches_rejects_empty_input():
+    with pytest.raises(ValueError, match="at least one"):
+        concat_batches([])
+
+
+def test_concat_batches_rejects_mixed_y():
+    a = _small_batch(offset_graph_id=0, n_graphs=2, seed=5)
+    b = NodeBatch(
+        node_attrs=a.node_attrs,
+        edge_src=a.edge_src,
+        edge_dst=a.edge_dst,
+        edge_attr=a.edge_attr,
+        graph_id=a.graph_id,
+        y=None,
+        elements=a.elements,
+    )
+    with pytest.raises(ValueError, match="y is set on some but not all"):
+        concat_batches([a, b])
+
+
+def test_concat_batches_rejects_mixed_elements():
+    a = _small_batch(offset_graph_id=0, n_graphs=2, seed=6)
+    b = NodeBatch(
+        node_attrs=a.node_attrs,
+        edge_src=a.edge_src,
+        edge_dst=a.edge_dst,
+        edge_attr=a.edge_attr,
+        graph_id=a.graph_id,
+        y=a.y,
+        elements=None,
+    )
+    with pytest.raises(ValueError, match="elements is set on some but not all"):
+        concat_batches([a, b])
+
+
+def test_concat_batches_single_part_is_identity():
+    a = _small_batch(offset_graph_id=0, n_graphs=3, seed=7)
+    r = concat_batches([a])
+    np.testing.assert_array_equal(r.node_attrs, a.node_attrs)
+    np.testing.assert_array_equal(r.edge_src, a.edge_src)
+    np.testing.assert_array_equal(r.graph_id, a.graph_id)

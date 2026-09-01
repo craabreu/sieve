@@ -32,6 +32,7 @@ SUMMARY_COLUMNS = [
     "val/r2",
     "time/fit_s",
     "time/predict_s",
+    "time/featurize_s",
     "time/data_s",
     "git_commit",
     "run_dir",

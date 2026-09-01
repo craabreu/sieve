@@ -2,7 +2,7 @@
 name = "sieve"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.24", "scipy>=1.10"]
+dependencies = ["numpy>=1.24", "scipy>=1.10", "joblib>=1.3"]
 
 [project.optional-dependencies]
 chem = ["rdkit>=2023.3"]
@@ -130,6 +130,9 @@ invalid-argument-type = "ignore"
 include = [
     "charge_experiments/charge_experiments/data.py",
     "charge_experiments/charge_experiments/prepare_store.py",
+    # Same Chem.Mol(bytes) gap: _deserialize_mol's own worker-side
+    # blob -> Mol reconstruction for parallel featurization (n_jobs).
+    "src/sieve/io/rdkit_adapter.py",
 ]
 
 [tool.ty.overrides.rules]

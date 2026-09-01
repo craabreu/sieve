@@ -104,6 +104,26 @@ def test_build_config_accepts_graded_attribute_levels_and_neighbor_depth():
     assert set(config.attribute_codes) == {"element", "degree", "aromatic"}
 
 
+def test_sieve_charge_predictor_n_jobs_matches_sequential():
+    """n_jobs is an execution-strategy choice, never a change in meaning --
+    fit+predict under n_jobs=4 must reproduce n_jobs=None exactly."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=12, seed=4)
+
+    seq = SievePredictor(max_wl_depth=2, minimum_support=1)
+    seq.fit(mset, mset, rng=np.random.default_rng(0))
+    seq_pred = seq.predict(mset)
+
+    par = SievePredictor(max_wl_depth=2, minimum_support=1, n_jobs=4)
+    par.fit(mset, mset, rng=np.random.default_rng(0))
+    par_pred = par.predict(mset)
+
+    np.testing.assert_array_equal(par_pred.atom_charge, seq_pred.atom_charge)
+
+
 def test_sieve_charge_predictor_fits_with_neighbor_depth_end_to_end():
     """The predictor-level path (not just _build_config directly): fit and
     predict must both run and produce finite output with coarsening on."""
