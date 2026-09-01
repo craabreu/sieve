@@ -67,6 +67,51 @@ def test_smoke_metrics_include_r2_and_charge_conservation(tmp_path):
     assert "max_abs_residual" not in result.metrics
 
 
+def test_smoke_reports_featurize_time_for_sieve_predictor(tmp_path):
+    """time/featurize_s surfaces SievePredictor's own build_codes/from_rdkit
+    time, separately from time/fit_s -- both of which already include it
+    without breaking it out. Absent (not zero, absent) for predictors that
+    don't expose last_featurize_s, since runner.py reads it via getattr and
+    only sets the key when present."""
+    import pytest
+
+    pytest.importorskip("rdkit")
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = _tiny_cfg()
+    cfg = cfg.__class__(
+        run=cfg.run,
+        data=cfg.data,
+        predictor=PredictorCfg(name="sieve", params={"max_wl_depth": 2}),
+    )
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    # Not compared against time/fit_s: featurize_s is measured as a sub-span
+    # inside fit's own timed span, so it is structurally <= fit_s, but at
+    # this corpus's sub-millisecond scale perf_counter's own granularity
+    # makes a strict numeric comparison flaky -- the real point of this test
+    # is that the key surfaces at all, correctly, only for a predictor that
+    # actually tracks it (see the "omits" test below for the negative case).
+    assert "time/featurize_s" in result.metrics
+    assert result.metrics["time/featurize_s"] >= 0.0
+
+
+def test_smoke_omits_featurize_time_for_predictors_without_it(tmp_path):
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = _tiny_cfg()  # global_mean predictor -- no last_featurize_s attribute
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    assert "time/featurize_s" not in result.metrics
+
+
 def test_smoke_rejects_dirty_tree_by_default(tmp_path, monkeypatch):
     import charge_experiments.runner as runner_mod
     import pytest

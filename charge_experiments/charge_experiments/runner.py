@@ -333,6 +333,15 @@ def _execute_inner(
     run_metrics["time/fit_s"] = fit_s
     run_metrics["time/predict_s"] = predict_s
     run_metrics["time/data_s"] = data_seconds
+    # Optional, predictor-specific: today only SievePredictor tracks this
+    # (build_codes/from_rdkit, accumulated across fit's own featurization and
+    # every predict_raw call this run made -- test, plus train/val above).
+    # time/fit_s and time/predict_s each already include their own share of
+    # it but do not separate it out, so without this the featurization/core
+    # split (~96%/~4% on real data) is invisible in every recorded run.
+    featurize_s = getattr(predictor, "last_featurize_s", None)
+    if featurize_s is not None:
+        run_metrics["time/featurize_s"] = featurize_s
 
     manifest = {
         "schema_version": 1,
