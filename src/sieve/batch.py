@@ -196,6 +196,84 @@ class NodeBatch:
         )
 
 
+def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
+    """Concatenate several batches into one, as disjoint graphs.
+
+    The inverse of ``__getitem__``/boolean masking (``split_batch`` in the
+    test suite): where those split one batch into several, this rejoins
+    several into one. Written for parallel featurization -- each worker
+    featurizes its own slice of molecules into its own small batch, and the
+    parent process reassembles them -- but it is a general concat, not
+    specific to that caller.
+
+    Node-indexed arrays concatenate directly. Edge endpoints are offset by a
+    running node count so they still index correctly into the combined
+    ``node_attrs``. ``graph_id`` cannot simply concatenate: each part's own
+    ids are local to that part (e.g. ``from_rdkit`` numbers every batch's
+    graphs from 0), so without renumbering, graph 0 of part 2 would silently
+    collide with graph 0 of part 1 -- ``check_alignment``'s
+    ``np.unique(graph_id)`` would merge two unrelated molecules into one atom
+    count, a wrong answer with no error. Each part's ids are first densified
+    to ``0..n_graphs-1`` via ``np.unique(..., return_inverse=True)`` (not
+    assumed to already be dense or 0-based -- only that no part's own graph
+    ids alias across nodes that belong to different graphs, which
+    ``NodeBatch``'s own invariants already require), then offset by a running
+    graph count.
+
+    ``y``/``elements`` must be all-``None`` or all-set across every part --
+    concatenating a real array with a placeholder zero-column would silently
+    fabricate targets/elements for the parts that had none.
+    """
+    if not parts:
+        raise ValueError("concat_batches requires at least one batch")
+
+    has_y = {p.y is not None for p in parts}
+    if len(has_y) > 1:
+        raise ValueError("cannot concat batches where y is set on some but not all")
+    has_elements = {p.elements is not None for p in parts}
+    if len(has_elements) > 1:
+        raise ValueError(
+            "cannot concat batches where elements is set on some but not all"
+        )
+
+    node_attrs = np.concatenate([p.node_attrs for p in parts], axis=0)
+    y = np.concatenate([p.y for p in parts], axis=0) if has_y == {True} else None
+    elements = (
+        np.concatenate([p.elements for p in parts], axis=0)
+        if has_elements == {True}
+        else None
+    )
+
+    edge_src, edge_dst, edge_attr, graph_id = [], [], [], []
+    node_off = 0
+    graph_off = 0
+    for p in parts:
+        edge_src.append(p.edge_src + node_off)
+        edge_dst.append(p.edge_dst + node_off)
+        edge_attr.append(p.edge_attr)
+        _, inv = np.unique(p.graph_id, return_inverse=True)
+        dense_gid = np.asarray(inv, dtype=np.int64).ravel()
+        graph_id.append(dense_gid + graph_off)
+        node_off += p.n_nodes
+        graph_off += int(np.max(dense_gid)) + 1 if dense_gid.size else 0
+
+    # _with_trusted_edges skips the O(edges) bidirectionality/range check
+    # (_check_edges): legitimate here because each part already satisfies it
+    # on its own, and both the node and graph offsets above are injective and
+    # applied identically to src and dst, so an edge's forward and reverse
+    # direction move together and stay in range.
+    # parts is non-empty (checked above), so every list here has >= 1 entry.
+    return NodeBatch._with_trusted_edges(
+        node_attrs=node_attrs,
+        edge_src=np.concatenate(edge_src),
+        edge_dst=np.concatenate(edge_dst),
+        edge_attr=np.concatenate(edge_attr),
+        graph_id=np.concatenate(graph_id),
+        y=y,
+        elements=elements,
+    )
+
+
 def check_alignment(
     batch: NodeBatch, node_counts: np.ndarray, elements: np.ndarray
 ) -> None:
