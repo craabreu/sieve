@@ -87,6 +87,97 @@ def test_period_and_group_attributes():
     assert b.node_attrs[nd_idx, group_col] == none_code
 
 
+def _global_atom_idx(mols, predicate):
+    """Row of the first atom (across the concatenated batch) satisfying
+    ``predicate(atom)``."""
+    offset = 0
+    for m in mols:
+        for a in m.GetAtoms():
+            if predicate(a):
+                return offset + a.GetIdx()
+        offset += m.GetNumAtoms()
+    raise AssertionError("no atom matched the predicate")
+
+
+def test_min_ring_size_discovers_smallest_ring_per_atom():
+    """min_ring_size is a molecule-level attribute (needs whole-molecule ring
+    perception): each atom gets the size of the smallest SSSR ring it sits in,
+    or "none" when acyclic."""
+    smis = ["C1CC1", "c1ccccc1", "CCO"]
+    cfg = cfg_for(smis, attrs=(("element",), ("min_ring_size",)))
+    assert set(cfg.attribute_codes["min_ring_size"]) == {"3", "6", "none"}
+
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["min_ring_size"]
+
+    cyclopropane_c = _global_atom_idx(mols, lambda a: a.IsInRingSize(3))
+    benzene_c = _global_atom_idx(mols, lambda a: a.GetIsAromatic())
+    ethanol_o = _global_atom_idx(mols, lambda a: a.GetSymbol() == "O")
+
+    assert b.node_attrs[cyclopropane_c, col] == codes["3"]
+    assert b.node_attrs[benzene_c, col] == codes["6"]
+    assert b.node_attrs[ethanol_o, col] == codes["none"]
+
+
+def test_min_ring_size_uses_smallest_ring_in_a_fused_system():
+    """An atom shared between a 5- and a 6-membered ring (indane's ring
+    fusion) reports 5, not 6 -- MinAtomRingSize, not just 'is in a ring'."""
+    smi = "C1CCc2ccccc21"  # indane: fused cyclopentane + benzene
+    cfg = cfg_for([smi], attrs=(("element",), ("min_ring_size",)))
+    b = from_smiles([smi], config=cfg)
+    mol = Chem.MolFromSmiles(smi)
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["min_ring_size"]
+
+    fusion_atom = _global_atom_idx(
+        [mol], lambda a: a.IsInRingSize(5) and a.IsInRingSize(6)
+    )
+    assert b.node_attrs[fusion_atom, col] == codes["5"]
+
+
+def test_min_ring_size_respects_node_order():
+    """The molecule-level provider returns values in RDKit atom-index order;
+    a permuted node_order must still land each atom's value on its own row."""
+    smi = "C1CCc2ccccc21"
+    cfg = cfg_for([smi], attrs=(("element",), ("min_ring_size",)))
+    mol = Chem.MolFromSmiles(smi)
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["min_ring_size"]
+    rev = [list(range(mol.GetNumAtoms()))[::-1]]
+
+    b = from_rdkit([mol], config=cfg, node_order=rev)
+    # row r holds original atom index (n-1-r)
+    n = mol.GetNumAtoms()
+    ri = mol.GetRingInfo()
+    for r in range(n):
+        orig = n - 1 - r
+        want = str(ri.MinAtomRingSize(orig)) if ri.NumAtomRings(orig) else "none"
+        assert b.node_attrs[r, col] == codes[want]
+
+
+def test_min_ring_size_unseen_size_falls_back_to_unknown_code():
+    cfg = cfg_for(["c1ccccc1"], attrs=(("element",), ("min_ring_size",)))  # only "6"
+    b = from_smiles(["C1CC1"], config=cfg)
+    col = len(cfg.attribute_levels[0])
+    unknown = max(cfg.attribute_codes["min_ring_size"].values()) + 1
+    assert (b.node_attrs[:, col] == unknown).all()
+
+
+@pytest.mark.parametrize("n_jobs", [None, 1, 2, 4])
+def test_min_ring_size_n_jobs_is_deterministic(n_jobs):
+    mols = _chiral_corpus()
+    cfg = cfg_for(_CHIRAL_SMILES, attrs=(("element",), ("min_ring_size", "aromatic")))
+    baseline = from_rdkit(_chiral_corpus(), config=cfg)
+    got = from_rdkit(mols, config=cfg, n_jobs=n_jobs)
+    np.testing.assert_array_equal(got.node_attrs, baseline.node_attrs)
+
+    codes_baseline, _ = build_codes(_chiral_corpus(), ["min_ring_size"])
+    codes_got, _ = build_codes(_chiral_corpus(), ["min_ring_size"], n_jobs=n_jobs)
+    assert codes_got == codes_baseline
+
+
 def test_unknown_atoms_fall_back_rather_than_colliding():
     cfg = cfg_for(["CCO"])
     train = from_smiles(["CCO"], y=np.zeros((3, 1)), config=cfg)

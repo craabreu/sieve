@@ -83,6 +83,48 @@ _ATTRS = {
 }
 
 
+def _min_ring_size(mol) -> list[str]:
+    """Size of the smallest SSSR ring each atom belongs to, ``"none"`` when
+    the atom is acyclic (the same sentinel ``group``/``chirality`` use).
+
+    Ring perception is a whole-molecule computation, so a molecule-level
+    provider runs it once per ``Mol`` -- the reason ``_MOL_ATTRS`` exists
+    alongside the per-atom ``_ATTRS``. RDKit caches the ring info on the
+    ``Mol``, so the ``GetSymmSSSR`` call is cheap on any repeat.
+
+    Returns one value per atom in RDKit atom-index order; callers index it
+    by raw atom index, so a permuted ``node_order`` stays correct.
+    """
+    from rdkit import Chem
+
+    Chem.GetSymmSSSR(mol)
+    ri = mol.GetRingInfo()
+    return [
+        str(ri.MinAtomRingSize(i)) if ri.NumAtomRings(i) else "none"
+        for i in range(mol.GetNumAtoms())
+    ]
+
+
+# Molecule-level attribute providers: ``f(mol) -> Sequence[str]``, one value
+# per atom in RDKit atom-index order. Distinct from ``_ATTRS`` (per-atom
+# callables) so that whole-molecule precomputation -- ``Chem.GetSymmSSSR``,
+# ``mol.GetRingInfo()`` and the like -- happens once per molecule rather than
+# once per atom. A name lives in exactly one of the two registries.
+_MOL_ATTRS = {
+    "min_ring_size": _min_ring_size,
+}
+
+
+def _observed_values(name: str, mols) -> set[str]:
+    """The set of raw string values ``name`` takes across ``mols`` -- the unit
+    ``build_codes`` unions across chunks before assigning dense codes."""
+    if name in _MOL_ATTRS:
+        f = _MOL_ATTRS[name]
+        return {v for m in mols for v in f(m)}
+    f = _ATTRS[name]
+    return {f(a) for m in mols for a in m.GetAtoms()}
+
+
 def _serialize_mol(mol) -> bytes:
     """Explicit, all-properties serialization for shipping a ``Mol`` across a
     process boundary.
@@ -184,10 +226,7 @@ def _discover_codes_chunk(blobs: list[bytes], attributes) -> dict[str, set[str]]
     chunks there are or which finishes first).
     """
     mols = [_deserialize_mol(b) for b in blobs]
-    return {
-        name: {_ATTRS[name](a) for m in mols for a in m.GetAtoms()}
-        for name in attributes
-    }
+    return {name: _observed_values(name, mols) for name in attributes}
 
 
 def build_codes(mols, attributes, *, n_jobs: int | None = None):
@@ -219,10 +258,7 @@ def build_codes(mols, attributes, *, n_jobs: int | None = None):
             _ensure_cip_labels(m)
 
     if n_jobs is None or n_jobs == 1 or len(mols) < 2:
-        seen_by_attr = {
-            name: {_ATTRS[name](a) for m in mols for a in m.GetAtoms()}
-            for name in attributes
-        }
+        seen_by_attr = {name: _observed_values(name, mols) for name in attributes}
     else:
         n_chunks = 4 * effective_n_jobs(n_jobs)
         bounds = _chunk_boundaries_by_atom_count(mols, n_chunks)
@@ -271,13 +307,18 @@ def _from_rdkit_sequential(
     # plain-dict copy matters too: config.attribute_codes is a nested
     # MappingProxyType (config._freeze_mappings), whose lookup is measurably
     # slower than a dict's.
-    getters = [_ATTRS[name] for name in flat]
+    getters = [_ATTRS.get(name) for name in flat]
+    mol_getters = [_MOL_ATTRS.get(name) for name in flat]
     tables = [dict(config.attribute_codes[name]) for name in flat]
     unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
     edge_codes = dict(config.edge_codes)
     for gi, mol in enumerate(mols):
         if needs_cip:
             _ensure_cip_labels(mol)
+        # Molecule-level attributes (ring size, ...) do their whole-molecule
+        # precompute here, once, rather than once per atom below. Indexed by
+        # raw RDKit atom index, so a permuted `order` still lands right.
+        mol_vals = [f(mol) if f is not None else None for f in mol_getters]
         order = (
             list(range(mol.GetNumAtoms()))
             if node_order is None
@@ -289,7 +330,8 @@ def _from_rdkit_sequential(
             a = mol.GetAtomWithIdx(int(idx))
             g = off + local
             for j in range(len(flat)):
-                node_attrs[g, j] = tables[j].get(getters[j](a), unknowns[j])
+                raw = mol_vals[j][idx] if mol_vals[j] is not None else getters[j](a)
+                node_attrs[g, j] = tables[j].get(raw, unknowns[j])
             elements[g] = a.GetAtomicNum()
             graph_id[g] = gi
             if y_out is not None:
