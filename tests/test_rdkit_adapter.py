@@ -55,6 +55,38 @@ def test_unseen_category_gets_the_reserved_unknown_code():
     assert unknown in b.node_attrs[:, 0].tolist()
 
 
+def test_period_and_group_attributes():
+    """period/group are periodic-table position, not element identity: two
+    different elements in the same column (O, S -- both group 16) must get
+    the same group code, and lanthanides (no well-defined group) must fall
+    back to the "none" bucket rather than a spurious column."""
+    smis = ["CCO", "CS(=O)(=O)C", "[Nd]"]
+    cfg = cfg_for(smis, attrs=(("element",), ("period", "group")))
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    period_col = len(cfg.attribute_levels[0])  # element is level 0
+    group_col = period_col + 1
+
+    def global_idx(symbol):
+        offset = 0
+        for m in mols:
+            for a in m.GetAtoms():
+                if a.GetSymbol() == symbol:
+                    return offset + a.GetIdx()
+            offset += m.GetNumAtoms()
+        raise AssertionError(f"no atom with symbol {symbol}")
+
+    o_idx = global_idx("O")
+    s_idx = global_idx("S")
+    nd_idx = global_idx("Nd")
+
+    assert b.node_attrs[o_idx, group_col] == b.node_attrs[s_idx, group_col]
+    assert b.node_attrs[o_idx, period_col] != b.node_attrs[s_idx, period_col]
+    none_code = cfg.attribute_codes["group"]["none"]
+    assert b.node_attrs[nd_idx, group_col] == none_code
+
+
 def test_unknown_atoms_fall_back_rather_than_colliding():
     cfg = cfg_for(["CCO"])
     train = from_smiles(["CCO"], y=np.zeros((3, 1)), config=cfg)

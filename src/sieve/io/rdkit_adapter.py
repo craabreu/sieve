@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import itertools
 
 import numpy as np
@@ -10,6 +11,56 @@ from joblib import Parallel, delayed, effective_n_jobs
 from sieve.batch import NodeBatch, concat_batches
 from sieve.config import SieveConfig
 
+
+@functools.lru_cache(maxsize=1)
+def _periodic_table():
+    from rdkit import Chem
+
+    return Chem.GetPeriodicTable()
+
+
+def _period(a) -> str:
+    return str(_periodic_table().GetRow(a.GetAtomicNum()))
+
+
+# Row lengths of the long-form periodic table (period 1 through 7): 2 for the
+# s-only first row, 8 while the d-block is absent, 18 once it appears, 32
+# once the f-block appears too. First-atomic-number-of-each-period follows
+# by cumulative sum.
+_PERIOD_LENGTHS = (2, 8, 8, 18, 18, 32, 32)
+_PERIOD_STARTS = tuple(itertools.accumulate((1, *_PERIOD_LENGTHS[:-1])))
+
+
+def _group(a) -> str:
+    """IUPAC group (1-18) from atomic number and period, computed rather than
+    tabulated: within a period, position and group coincide once every block
+    present in that period's row is accounted for.
+
+    Position 1/2 (s-block) is always group 1/2, except period 1 (H, He),
+    where He's own position (2) is not its group -- it is a noble gas placed
+    in group 18 by convention, not by any block-filling logic, so period 1
+    is a hardcoded exception rather than an instance of the general rule.
+    Elsewhere, a period of length 8 or 18 has no gap: position p beyond the
+    s-block maps to group p + (18 - length) (verified against the full
+    118-element table this replaced). A period of length 32 inserts a
+    14/15-wide f-block with no well-defined group between the s- and
+    d-blocks (positions 3-17, i.e. the lanthanides/actinides) -- those atoms
+    fall back to "none", the same sentinel "chirality" uses for its own
+    undefined case, which also covers atomic number 0 (RDKit's dummy atom).
+    """
+    z = a.GetAtomicNum()
+    if z <= 0:
+        return "none"
+    period = _periodic_table().GetRow(z)
+    start, length = _PERIOD_STARTS[period - 1], _PERIOD_LENGTHS[period - 1]
+    p = z - start + 1
+    if period == 1:
+        return "1" if p == 1 else "18"
+    if length == 32 and 3 <= p <= 17:
+        return "none"
+    return str(p if p <= 2 else p + (18 - length))
+
+
 _ATTRS = {
     "element": lambda a: a.GetSymbol(),
     "degree": lambda a: str(a.GetDegree()),
@@ -17,6 +68,8 @@ _ATTRS = {
     "aromatic": lambda a: str(a.GetIsAromatic()),
     "formal_charge": lambda a: str(a.GetFormalCharge()),
     "num_h": lambda a: str(a.GetTotalNumHs()),
+    "period": _period,
+    "group": _group,
     # RDKit's raw ChiralTag (CW/CCW) is defined relative to the atom's own
     # neighbor traversal order -- not canonical, so the same physical
     # stereocenter can get a different raw tag purely from incidental atom
