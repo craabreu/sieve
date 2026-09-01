@@ -49,6 +49,26 @@ def test_mol_to_blob_round_trip_preserves_chiral_tags():
     assert restored_tags == original_tags
 
 
+def test_mol_to_blob_round_trip_preserves_bond_cip_codes():
+    """rdCIPLabeler writes a double bond's canonical E/Z to that *bond's*
+    own _CIPCode, which sieve's `bond_stereo` attribute reads. Serializing
+    without BondProps dropped it silently: prepare_store ran the labeler and
+    the mol-level CIP_LABELED_PROP marker survived, so _ensure_cip_labels
+    short-circuited on load and every stored molecule read "none"."""
+    from charge_experiments.data import blob_to_mol, mol_to_blob
+    from rdkit import Chem
+    from rdkit.Chem import rdCIPLabeler
+
+    mol = Chem.MolFromSmiles("C/C=C/C")
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    rdCIPLabeler.AssignCIPLabels(mol)
+    original = [b.GetPropsAsDict().get("_CIPCode") for b in mol.GetBonds()]
+    assert "E" in original
+
+    restored = blob_to_mol(mol_to_blob(mol))
+    assert [b.GetPropsAsDict().get("_CIPCode") for b in restored.GetBonds()] == original
+
+
 def test_synthetic_molecule_set_select_preserves_alignment():
     from charge_experiments.tests.helpers import synthetic_molecule_set
 

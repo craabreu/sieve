@@ -45,13 +45,24 @@ DEFAULT_CACHE_DIR = REPO_ROOT / "charge_experiments" / "cache"
 
 
 def mol_to_blob(mol: Any) -> bytes:
-    """Serialize ``mol`` to bytes, preserving atom/mol properties (which is
-    where ``MBIScharge`` and the CIP-label props live) and stereo/chiral
-    tags (intrinsic, always preserved)."""
+    """Serialize ``mol`` to bytes, preserving atom/bond/mol properties (which
+    is where ``MBIScharge`` and the CIP-label props live) and stereo/chiral
+    tags (intrinsic, always preserved).
+
+    ``BondProps`` matters as much as ``AtomProps``: ``rdCIPLabeler`` writes
+    the canonical E/Z descriptor of a double bond to that *bond's* own
+    ``_CIPCode``, which sieve's ``bond_stereo`` attribute reads. Omitting the
+    bit dropped those silently -- ``prepare_store`` ran the labeler, the
+    mol-level ``CIP_LABELED_PROP`` marker survived the round trip, so
+    ``_ensure_cip_labels`` short-circuited on load and never recomputed, and
+    every stored molecule reported ``bond_stereo == "none"``. Stores written
+    before this fix must be rebuilt for that attribute to carry any signal.
+    """
     from rdkit import Chem
 
     return mol.ToBinary(
         Chem.PropertyPickleOptions.AtomProps
+        | Chem.PropertyPickleOptions.BondProps
         | Chem.PropertyPickleOptions.MolProps
         | Chem.PropertyPickleOptions.PrivateProps
     )
