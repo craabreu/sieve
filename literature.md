@@ -256,6 +256,21 @@ model's posterior mean, and Morris's own method-of-moments estimator for the mod
 is what makes $\alpha=\sigma^2/\tau^2$ (design.md §13 item 9) a computable quantity from a fitted
 model rather than a free regularization knob chosen by fiat.
 
+Worth checking against how the closest statistical precedent actually sets its own analogous
+parameter in practice, not just its published formula. `imodels`
+([csinva.io/imodels](https://csinva.io/imodels)) is the reference implementation of
+[Agarwal2022HierarchicalShrinkage], by overlapping authors. Its `HSTreeRegressorCV`/
+`HSTreeClassifierCV` do not use a closed-form estimator: they grid-search a fixed candidate list
+(`[0, 0.1, 1, 10, 50, 100, 500]`) via k-fold CV. Reading its `_shrink_tree` source directly also
+shows the formula itself is not the same recursion, despite the shared "shrink toward ancestors"
+framing: unrolled one level, its default scheme shrinks the *increment* between child and parent by
+a fixed constant $\lambda$, weighted by the **parent's** sample count
+($v_{\text{parent}}+\frac{N_{\text{parent}}}{N_{\text{parent}}+\lambda}(v_{\text{child}}-v_{\text{parent}})$),
+where Sieve's recursion blends the child's raw mean against the already-shrunk parent directly,
+weighted by the **child's** own sample count, with $\alpha$ an estimated variance ratio rather than
+a swept constant. So the closed-form route is a genuine departure from precedent's own practice, not
+merely the same idea formalized differently.
+
 ### 4.13 Uncertainty
 
 Jonas and Kuhn developed NMR prediction with quantified uncertainty [JonasKuhn2019Uncertainty]. Not

@@ -1254,6 +1254,24 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
      an *estimated* $\tau^2$ rather than a known one [Morris1983EmpiricalBayes] — not a bespoke
      derivation. It comes out **per level**, which §4.2's $\alpha_k$ notation already allows and a
      single scalar does not.
+   - **Worth checking against precedent's own practice, not just its formula.** `imodels`
+     ([csinva.io/imodels](https://csinva.io/imodels)), the reference implementation of
+     [Agarwal2022HierarchicalShrinkage] — this repo's own closest statistical precedent, per
+     literature.md's own relevance ranking — does not use a closed-form estimator for its own
+     shrinkage strength.
+     `HSTreeRegressorCV`/`HSTreeClassifierCV` grid-search a fixed candidate list
+     (`[0, 0.1, 1, 10, 50, 100, 500]`) via k-fold CV. Their formula is also not the same recursion
+     as the one above, despite the shared "shrink toward ancestors" framing: unrolled one level,
+     their default (`node_based`) scheme gives
+     $\tilde v_{\text{child}}=v_{\text{parent}}+\frac{N_{\text{parent}}}{N_{\text{parent}}+\lambda}
+     (v_{\text{child}}-v_{\text{parent}})$ — a *fixed* constant $\lambda$ regularizing the
+     child-minus-parent increment, weighted by the **parent's** sample count, against the parent's
+     *raw* (already-shrunk, via the same recursion one level up) value. Sieve's recursion blends the
+     child's own raw mean against the already-shrunk parent directly, weighted by the **child's**
+     own sample count, with $\alpha$ an *estimated* variance ratio rather than a constant swept by
+     CV. So the closed-form route taken here is a genuine departure from precedent's own practice,
+     not merely the same idea formalized — and CV over a small grid remains the natural fallback to
+     compare it against if the closed form underperforms.
    - $\alpha^v$ needs a different criterion, since MAE barely sees it — it reaches predictions only
      through §6.4. But §4.3 makes a falsifiable distributional claim, so test that directly:
      standardized held-out residuals $z=(y-\mu)/\sigma_{\text{pred}}$ should be standard normal.
