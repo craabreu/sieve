@@ -130,6 +130,9 @@ invalid-argument-type = "ignore"
 include = [
     "charge_experiments/charge_experiments/data.py",
     "charge_experiments/charge_experiments/prepare_store.py",
+    # Same Chem.Mol(bytes) gap: _deserialize_mol's own worker-side
+    # blob -> Mol reconstruction for parallel featurization (n_jobs).
+    "src/sieve/io/rdkit_adapter.py",
 ]
 
 [tool.ty.overrides.rules]

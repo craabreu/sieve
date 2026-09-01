@@ -9,7 +9,7 @@ from rdkit.Chem import rdFingerprintGenerator
 import sieve
 from sieve.batch import check_alignment
 from sieve.config import SieveConfig
-from sieve.io.rdkit_adapter import build_codes, from_smiles
+from sieve.io.rdkit_adapter import build_codes, from_rdkit, from_smiles
 from sieve.refine import refine
 
 SMILES = ["CCO", "c1ccccc1", "CC(=O)N", "CCl"]
@@ -285,3 +285,124 @@ def test_build_codes_discovers_cip_vocabulary_from_unprepped_mols():
         "none",
         "S",
     }
+
+
+# --- n_jobs: determinism and the specific silent-corruption hazards -------
+#
+# Everything below must produce output BYTE-IDENTICAL to n_jobs=None,
+# because that is the whole safety argument for offering n_jobs at all: the
+# chunking is an execution-strategy choice, never a change in meaning. Three
+# things fail *silently* rather than raising if the chunking is wrong, which
+# is exactly why each gets its own direct test rather than relying on the
+# determinism tests to catch it as a side effect:
+#   1. graph_id colliding across chunks (concat_batches' own job, but
+#      exercised here through the real from_rdkit path)
+#   2. naive pickling of live Mol objects instead of explicit
+#      ToBinary(AllProps) -- chirality would quietly become "none"
+#      everywhere rather than erroring
+#   3. y/node_order sliced by the wrong index (molecule vs. cumulative atom
+#      count)
+
+_CHIRAL_SMILES = [
+    "F[C@H](Cl)Br",
+    "Cl[C@@H](F)Br",
+    "CCO",
+    "c1ccccc1C",
+    "CC(=O)O",
+    "CCN",
+    "CCCl",
+    "CO",
+    "CCC",
+    "F[C@@H](Cl)Br",
+]
+
+
+def _chiral_corpus(repeat=3):
+    """A corpus mixing chiral and achiral molecules -- large enough, and
+    varied enough in atom count, that a 4-chunk split lands mid-corpus."""
+    return [Chem.MolFromSmiles(s) for s in _CHIRAL_SMILES * repeat]
+
+
+@pytest.mark.parametrize("n_jobs", [None, 1, 2, 4])
+def test_from_rdkit_n_jobs_is_deterministic(n_jobs):
+    mols = _chiral_corpus()
+    cfg = cfg_for(
+        _CHIRAL_SMILES, attrs=(("element",), ("degree", "aromatic", "chirality"))
+    )
+    baseline = from_rdkit(_chiral_corpus(), config=cfg)
+    got = from_rdkit(mols, config=cfg, n_jobs=n_jobs)
+
+    np.testing.assert_array_equal(got.node_attrs, baseline.node_attrs)
+    np.testing.assert_array_equal(got.edge_src, baseline.edge_src)
+    np.testing.assert_array_equal(got.edge_dst, baseline.edge_dst)
+    np.testing.assert_array_equal(got.edge_attr, baseline.edge_attr)
+    np.testing.assert_array_equal(got.graph_id, baseline.graph_id)
+    assert got.elements is not None and baseline.elements is not None
+    np.testing.assert_array_equal(got.elements, baseline.elements)
+
+
+@pytest.mark.parametrize("n_jobs", [None, 1, 2, 4])
+def test_build_codes_n_jobs_is_deterministic(n_jobs):
+    attrs = ["element", "degree", "aromatic", "chirality"]
+    baseline, edge_baseline = build_codes(_chiral_corpus(), attrs)
+    got, edge_got = build_codes(_chiral_corpus(), attrs, n_jobs=n_jobs)
+    assert got == baseline
+    assert edge_got == edge_baseline
+
+
+def test_from_rdkit_n_jobs_does_not_silently_lose_chirality():
+    """The specific hazard n_jobs introduces: naive pickling of a live Mol
+    across a process boundary drops every atom property (RDKit's global
+    default pickle setting is NoProps), and unlike MBIScharge-style targets
+    (which fail loudly -- GetDoubleProp raises on a missing prop),
+    chirality reads via a .get(..., "none") fallback and would silently
+    become "none" for every atom instead of erroring. n_jobs > 1 must
+    recover the same real R/S/r/s codes as sequential, not a corpus that
+    quietly discovered only "none"."""
+    mols = _chiral_corpus()
+    cfg = cfg_for(_CHIRAL_SMILES, attrs=(("element", "chirality"),))
+    chirality_col = list(cfg.attribute_levels[0]).index("chirality")
+    none_code = cfg.attribute_codes["chirality"]["none"]
+
+    b = from_rdkit(mols, config=cfg, n_jobs=4)
+    assert b.elements is not None
+    carbon_mask = b.elements == 6
+    # F[C@H](Cl)Br's own chiral carbon must show a real code, not "none".
+    assert (b.node_attrs[carbon_mask, chirality_col] != none_code).any()
+
+
+def test_from_rdkit_n_jobs_respects_node_order_per_chunk():
+    """node_order is indexed positionally per molecule -- a parallel chunk
+    must slice it the same way it slices mols, not by a flat/global index."""
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    smis = ["CCO", "CCC", "c1ccccc1C", "CC(=O)O", "CCN", "CCCl", "CCCC", "CO"] * 3
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    cfg = cfg_for(smis, attrs=(("element",),))
+    rng = np.random.default_rng(0)
+    node_order = [rng.permutation(m.GetNumAtoms()) for m in mols]
+
+    seq = from_rdkit(mols, config=cfg, node_order=node_order, n_jobs=None)
+    par = from_rdkit(mols, config=cfg, node_order=node_order, n_jobs=4)
+    np.testing.assert_array_equal(seq.node_attrs, par.node_attrs)
+    np.testing.assert_array_equal(seq.graph_id, par.graph_id)
+
+
+def test_from_rdkit_n_jobs_slices_array_y_by_atom_count_not_molecule_count():
+    """y, when passed as an array, is per-node -- a chunk boundary at
+    molecule index k must slice y at the cumulative *atom* count up to k,
+    not at k itself. Deliberately uses molecules of different sizes so a
+    molecule-index slice would misalign."""
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    smis = ["CO", "CCO", "CCCO", "CCCCO", "CO", "CCO", "CCCO", "CCCCO"] * 2
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    cfg = cfg_for(smis, attrs=(("element",),))
+    n_atoms = sum(m.GetNumAtoms() for m in mols)
+    y = np.arange(n_atoms, dtype=np.float64).reshape(-1, 1)  # unique per row
+
+    seq = from_rdkit(mols, y=y, config=cfg, n_jobs=None)
+    par = from_rdkit(mols, y=y, config=cfg, n_jobs=4)
+    assert seq.y is not None and par.y is not None
+    np.testing.assert_array_equal(seq.y, par.y)
+    np.testing.assert_array_equal(seq.node_attrs, par.node_attrs)
