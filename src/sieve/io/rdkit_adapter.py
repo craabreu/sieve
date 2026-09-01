@@ -70,16 +70,6 @@ _ATTRS = {
     "num_h": lambda a: str(a.GetTotalNumHs()),
     "period": _period,
     "group": _group,
-    # RDKit's raw ChiralTag (CW/CCW) is defined relative to the atom's own
-    # neighbor traversal order -- not canonical, so the same physical
-    # stereocenter can get a different raw tag purely from incidental atom
-    # numbering. _CIPCode (R/S, or r/s for pseudo-asymmetric centers) is
-    # RDKit's own canonical, order-independent descriptor instead. It is
-    # not set by molblock parsing alone; see from_rdkit's own fallback
-    # computation below for callers that reach here without it already set
-    # (e.g. from_smiles, or any Mol built outside charge_experiments'
-    # prepare_store.py, which sets it once at data-prep time).
-    "chirality": lambda a: a.GetPropsAsDict().get("_CIPCode", "none"),
 }
 
 
@@ -105,13 +95,33 @@ def _min_ring_size(mol) -> list[str]:
     ]
 
 
+def _chirality(mol) -> list[str]:
+    """Canonical CIP descriptor (R/S, or r/s for pseudo-asymmetric centers)
+    per atom, ``"none"`` where undefined.
+
+    RDKit's raw ChiralTag (CW/CCW) is defined relative to the atom's own
+    neighbor traversal order -- not canonical, so the same physical
+    stereocenter can get a different raw tag purely from incidental atom
+    numbering. ``_CIPCode`` is RDKit's order-independent descriptor instead,
+    but it is not set by molblock/SMILES parsing rigorously; ``rdCIPLabeler``
+    (via ``_ensure_cip_labels``) computes it. That is a whole-molecule
+    computation, so chirality is a molecule-level provider -- run once per
+    ``Mol`` here rather than depending on a separately threaded pre-pass.
+
+    Returns one value per atom in RDKit atom-index order.
+    """
+    _ensure_cip_labels(mol)
+    return [a.GetPropsAsDict().get("_CIPCode", "none") for a in mol.GetAtoms()]
+
+
 # Molecule-level attribute providers: ``f(mol) -> Sequence[str]``, one value
 # per atom in RDKit atom-index order. Distinct from ``_ATTRS`` (per-atom
 # callables) so that whole-molecule precomputation -- ``Chem.GetSymmSSSR``,
-# ``mol.GetRingInfo()`` and the like -- happens once per molecule rather than
-# once per atom. A name lives in exactly one of the two registries.
+# ``rdCIPLabeler`` and the like -- happens once per molecule rather than once
+# per atom. A name lives in exactly one of the two registries.
 _MOL_ATTRS = {
     "min_ring_size": _min_ring_size,
+    "chirality": _chirality,
 }
 
 
@@ -132,10 +142,12 @@ def _serialize_mol(mol) -> bytes:
     RDKit's *global* default pickle-property setting is ``NoProps`` -- naive
     pickling (which is what joblib's default ``loky`` backend does to task
     arguments) silently drops every atom/mol property. ``MBIScharge``-style
-    targets would fail loudly on the worker side (``GetDoubleProp`` raises on
-    a missing prop); the ``chirality`` attribute would not -- it reads
-    ``.GetPropsAsDict().get("_CIPCode", "none")`` and would silently become
-    ``"none"`` for every atom instead of raising. ``AllProps`` (rather than
+    ``y_from_atom_prop`` targets would fail loudly on the worker side
+    (``GetDoubleProp`` raises on a missing prop); a mol pre-labeled by
+    ``prepare_store.py`` would fail *silently* -- its ``CIP_LABELED_PROP``
+    marker and rigorous ``_CIPCode`` props would vanish, so ``_chirality``'s
+    ``_ensure_cip_labels`` call would recompute on the worker (correct
+    result, wasted work) rather than short-circuit. ``AllProps`` (rather than
     naming ``AtomProps``/``MolProps``/``PrivateProps`` individually) is used
     deliberately: it is the literal union of every pickle-property bit,
     confirmed to include the "private" bit that underscore-prefixed props
@@ -218,7 +230,8 @@ def _ensure_cip_labels(mol) -> None:
 
 def _discover_codes_chunk(blobs: list[bytes], attributes) -> dict[str, set[str]]:
     """Worker body for ``build_codes``: the per-attribute *set* of observed
-    values for one chunk of (already CIP-labeled, if needed) molecules.
+    values for one chunk of molecules (molecule-level attributes run their
+    own precompute -- CIP labeling, ring perception -- on the worker's copy).
 
     Returns raw sets, not code tables -- assigning dense integer codes needs
     the union across every chunk first, so numbering happens once in the
@@ -241,22 +254,13 @@ def build_codes(mols, attributes, *, n_jobs: int | None = None):
     from workers gives the exact same discovered vocabulary as the
     sequential pass, just found in a different order (codes are assigned
     from the sorted union, so the *numbering* is unaffected by chunk count
-    or completion order too). The CIP-labeling pre-pass below always runs
-    sequentially in this process first, so workers never need to compute or
-    return labels themselves -- only from_rdkit's own worker path has that
-    concern.
+    or completion order too). Molecule-level attributes that need
+    whole-molecule precomputation (``chirality``'s rigorous CIP labeling,
+    ``min_ring_size``'s ring perception) do it inside their ``_MOL_ATTRS``
+    provider, once per molecule -- in the worker for the parallel path, on
+    the worker's own copy, which is enough since only the discovered value
+    set flows back.
     """
-    if "chirality" in attributes:
-        # Same fallback from_rdkit applies -- needed here too, since a
-        # fresh fit's own code-table discovery (this function) typically
-        # runs on the training mols *before* from_rdkit ever sees them.
-        # Without it, an un-prepped corpus would silently discover only
-        # "none" as the observed chirality vocabulary. Runs before any
-        # chunking/dispatch, so every worker's serialized blob already
-        # carries the labels.
-        for m in mols:
-            _ensure_cip_labels(m)
-
     if n_jobs is None or n_jobs == 1 or len(mols) < 2:
         seen_by_attr = {name: _observed_values(name, mols) for name in attributes}
     else:
@@ -299,7 +303,6 @@ def _from_rdkit_sequential(
     y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
     src, dst, attr = [], [], []
     off = 0
-    needs_cip = "chirality" in flat
     # Hoisted out of the per-atom loop below: all three are loop-invariant,
     # and the loop runs once per atom *per attribute* -- at 1.69M atoms and 5
     # attributes that is 8.4M repetitions of work that never changes.
@@ -313,11 +316,10 @@ def _from_rdkit_sequential(
     unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
     edge_codes = dict(config.edge_codes)
     for gi, mol in enumerate(mols):
-        if needs_cip:
-            _ensure_cip_labels(mol)
-        # Molecule-level attributes (ring size, ...) do their whole-molecule
-        # precompute here, once, rather than once per atom below. Indexed by
-        # raw RDKit atom index, so a permuted `order` still lands right.
+        # Molecule-level attributes (ring perception, CIP labeling, ...) do
+        # their whole-molecule precompute here, once, rather than once per
+        # atom below. Indexed by raw RDKit atom index, so a permuted `order`
+        # still lands each atom's value on its own row.
         mol_vals = [f(mol) if f is not None else None for f in mol_getters]
         order = (
             list(range(mol.GetNumAtoms()))

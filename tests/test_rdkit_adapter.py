@@ -269,6 +269,34 @@ def test_y_and_y_from_atom_prop_are_mutually_exclusive():
         from_rdkit([mol], y=np.zeros((2, 1)), config=cfg, y_from_atom_prop="q")
 
 
+def test_chirality_is_a_molecule_level_attribute():
+    """CIP labeling is whole-molecule precomputation (Chem.AssignStereochemistry
+    / rdCIPLabeler), so chirality belongs in _MOL_ATTRS and runs once per
+    molecule via the generic path -- not in _ATTRS with _ensure_cip_labels
+    threaded separately through every call site."""
+    from sieve.io.rdkit_adapter import _ATTRS, _MOL_ATTRS
+
+    assert "chirality" in _MOL_ATTRS
+    assert "chirality" not in _ATTRS
+
+
+def test_chirality_and_min_ring_size_coexist_as_molecule_level_attrs():
+    """Two molecule-level attributes in one config, each precomputed once per
+    molecule, must not interfere -- and n_jobs stays byte-identical."""
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    mols = _chiral_corpus()
+    cfg = cfg_for(_CHIRAL_SMILES, attrs=(("element",), ("chirality", "min_ring_size")))
+    baseline = from_rdkit(_chiral_corpus(), config=cfg)
+    par = from_rdkit(mols, config=cfg, n_jobs=4)
+    np.testing.assert_array_equal(par.node_attrs, baseline.node_attrs)
+
+    chir_col = len(cfg.attribute_levels[0])
+    none_code = cfg.attribute_codes["chirality"]["none"]
+    assert baseline.elements is not None
+    assert (baseline.node_attrs[baseline.elements == 6, chir_col] != none_code).any()
+
+
 def test_chirality_attribute_uses_canonical_cip_code_not_raw_tag():
     """Same physical stereoisomer, written with two different atom orders
     (so the raw ChiralTag differs between them -- verified directly with
