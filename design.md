@@ -1249,8 +1249,11 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
      between-class variance. Both are estimable from a fitted model ($\sigma^2$ the pooled
      $\mathrm{msd}$ at that level, $\tau^2$ the spread of child means about their parent, debiased
      as $\hat\tau^2=\max(0,\ \mathrm{Var}(\bar y_c)-\mathbb E[\sigma^2/N_c])$; clamping at zero is
-     meaningful, and says shrink fully). This comes out **per level**, which §4.2's $\alpha_k$
-     notation already allows and a single scalar does not.
+     meaningful, and says shrink fully). This is Morris's own parametric-empirical-Bayes estimator
+     for the two-level normal hierarchical model, including the finite-sample correction for using
+     an *estimated* $\tau^2$ rather than a known one [Morris1983EmpiricalBayes] — not a bespoke
+     derivation. It comes out **per level**, which §4.2's $\alpha_k$ notation already allows and a
+     single scalar does not.
    - $\alpha^v$ needs a different criterion, since MAE barely sees it — it reaches predictions only
      through §6.4. But §4.3 makes a falsifiable distributional claim, so test that directly:
      standardized held-out residuals $z=(y-\mu)/\sigma_{\text{pred}}$ should be standard normal.

@@ -248,7 +248,15 @@ high-cardinality categorical variables and its regularization [MicciBarreca2001H
 literature motivates shrinkage, the leave-one-out requirement for in-sample diagnostics, and the
 strict anti-leakage protocol.
 
-### 4.12 Uncertainty
+### 4.12 Shrinkage as empirical Bayes
+
+Morris reviewed parametric empirical-Bayes shrinkage estimators for the two-level normal hierarchical
+model [Morris1983EmpiricalBayes]. Sieve's weight $N/(N+\alpha)$ (design.md §4.2) is exactly that
+model's posterior mean, and Morris's own method-of-moments estimator for the model's variance ratio
+is what makes $\alpha=\sigma^2/\tau^2$ (design.md §13 item 9) a computable quantity from a fitted
+model rather than a free regularization knob chosen by fiat.
+
+### 4.13 Uncertainty
 
 Jonas and Kuhn developed NMR prediction with quantified uncertainty [JonasKuhn2019Uncertainty]. Not
 the same estimator, but the relevant background if calibrated uncertainty is ever added to Sieve's
@@ -363,6 +371,8 @@ DOI, or if any document cites a key that is not registered. See `references/READ
 **[Morgan1965]** Morgan, H. L. *The Generation of a Unique Machine Description for Chemical Structures — A Technique Developed at Chemical Abstracts Service.* **Journal of Chemical Documentation** **5**(2), 107–113 (1965). DOI: `10.1021/c160017a018`
 
 **[Bremser1978HOSE]** Bremser, W. *HOSE — A Novel Substructure Code.* **Analytica Chimica Acta** **103**(4), 355–365 (1978). DOI: `10.1016/S0003-2670(01)83100-7`
+
+**[Morris1983EmpiricalBayes]** Morris, C. N. *Parametric Empirical Bayes Inference: Theory and Applications.* **Journal of the American Statistical Association** **78**(381), 47–55 (1983). DOI: `10.1080/01621459.1983.10477920`
 
 **[Katz1987Backoff]** Katz, S. M. *Estimation of Probabilities from Sparse Data for the Language Model Component of a Speech Recognizer.* **IEEE Transactions on Acoustics, Speech, and Signal Processing** **35**(3), 400–401 (1987). DOI: `10.1109/TASSP.1987.1165125`
 
