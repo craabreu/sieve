@@ -199,6 +199,25 @@ def _bond_num_ring_memberships(mol) -> list[str]:
     return [str(ri.NumBondRings(i)) for i in range(mol.GetNumBonds())]
 
 
+def _bond_stereo(mol) -> list[str]:
+    """Canonical E/Z of each double bond, read from that bond's own
+    ``_CIPCode`` -- the same rigorous, order-independent descriptor
+    ``_chirality`` reads for atoms, and for the same reason: ``GetStereo()``
+    reports ``STEREOE``/``STEREOZ`` on a freshly parsed SMILES but the
+    order-dependent ``STEREOCIS``/``STEREOTRANS`` *after* ``AssignCIPLabels``
+    has run, so its meaning depends on whether labeling happened. ``"none"``
+    for bonds with no assigned E/Z (single bonds, non-stereogenic doubles,
+    and cumulenes -- whose stereochemistry is axial, not per-bond).
+
+    ``_ensure_cip_labels`` -- whose gate this attribute widened to notice
+    bond stereo -- runs the labeler once per molecule, so this is a
+    ``_MOL_BOND_ATTRS`` provider. One value per bond in RDKit bond-index
+    order.
+    """
+    _ensure_cip_labels(mol)
+    return [b.GetPropsAsDict().get("_CIPCode", "none") for b in mol.GetBonds()]
+
+
 # Molecule-level bond attribute providers: ``f(mol) -> Sequence[str]``, one
 # value per bond in RDKit *bond*-index order (the atom-side ``_MOL_ATTRS`` uses
 # atom-index order). Same rationale: whole-molecule precomputation runs once
@@ -207,6 +226,7 @@ _MOL_BOND_ATTRS = {
     "bond_in_ring": _bond_in_ring,
     "bond_min_ring_size": _bond_min_ring_size,
     "bond_num_ring_memberships": _bond_num_ring_memberships,
+    "bond_stereo": _bond_stereo,
 }
 
 
@@ -387,7 +407,14 @@ def _ensure_cip_labels(mol) -> None:
     from rdkit import Chem
     from rdkit.Chem import rdCIPLabeler
 
-    if any(a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED for a in mol.GetAtoms()):
+    # Bond stereo counts too, not only atom chirality: a molecule can carry
+    # double-bond geometry with no stereocenter anywhere (C/C=C/C), and the
+    # atom-only guard skipped exactly those -- leaving `bond_stereo` reading
+    # "none" for the molecules it is meant to describe.
+    has_stereo = any(
+        a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED for a in mol.GetAtoms()
+    ) or any(b.GetStereo() != Chem.BondStereo.STEREONONE for b in mol.GetBonds())
+    if has_stereo:
         Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
         rdCIPLabeler.AssignCIPLabels(mol)
     mol.SetBoolProp(CIP_LABELED_PROP, True)
