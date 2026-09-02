@@ -117,6 +117,40 @@ def test_electronegativity_attribute_buckets_by_rounded_pauling_scale():
     assert b.node_attrs[row("*"), en_col] == none_code
 
 
+def test_block_and_valence_electrons_attributes():
+    """block is the periodic-table block (s/p/d/f) and valence_electrons is
+    RDKit's outer-electron count; both are periodic-table position, so Fe sits
+    in the d block with 8 outer electrons, O in the p block with 6, Na in the s
+    block with 1, a lanthanide in the f block, and the dummy atom falls back to
+    the shared "none" sentinel for both."""
+    smis = ["[Na]O[Fe]", "[La]", "[*]"]
+    cfg = cfg_for(smis, attrs=(("element",), ("block", "valence_electrons")))
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    block_col = len(cfg.attribute_levels[0])
+    ve_col = block_col + 1
+    block_of = {v: k for k, v in cfg.attribute_codes["block"].items()}
+    ve_of = {v: k for k, v in cfg.attribute_codes["valence_electrons"].items()}
+
+    def row(symbol):
+        return _global_atom_idx(mols, lambda a: a.GetSymbol() == symbol)
+
+    assert block_of[b.node_attrs[row("Fe"), block_col]] == "d"
+    assert ve_of[b.node_attrs[row("Fe"), ve_col]] == "8"
+    assert block_of[b.node_attrs[row("O"), block_col]] == "p"
+    assert ve_of[b.node_attrs[row("O"), ve_col]] == "6"
+    assert block_of[b.node_attrs[row("Na"), block_col]] == "s"
+    assert ve_of[b.node_attrs[row("Na"), ve_col]] == "1"
+    assert block_of[b.node_attrs[row("La"), block_col]] == "f"
+
+    assert b.node_attrs[row("*"), block_col] == cfg.attribute_codes["block"]["none"]
+    assert (
+        b.node_attrs[row("*"), ve_col]
+        == cfg.attribute_codes["valence_electrons"]["none"]
+    )
+
+
 def _global_atom_idx(mols, predicate):
     """Row of the first atom (across the concatenated batch) satisfying
     ``predicate(atom)``."""

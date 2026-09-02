@@ -98,6 +98,42 @@ def _pauling_electronegativity(a) -> str:
     return f"{round(en / step) * step:.1f}"
 
 
+def _periodic_table_block(a) -> str:
+    """Periodic-table block -- ``"s"``, ``"p"``, ``"d"`` or ``"f"`` -- from
+    atomic number and period position, ``"none"`` for RDKit's dummy atom.
+
+    Within a period, position ``p`` past the s-block (``p <= 2``) maps to a
+    block by how much of the row is filled: periods 2-3 have no d/f-block, so
+    everything past ``p == 2`` is p-block; periods 4-5 open a 10-wide d-block
+    (``p <= 12``) before the p-block; periods 6-7 also open a 14-wide f-block
+    (``p <= 16``) ahead of the d-block, which then runs to ``p == 26``. Period
+    1 (H, He) is all s-block by electron configuration.
+    """
+    z = a.GetAtomicNum()
+    if z <= 0:
+        return "none"
+    period = _periodic_table().GetRow(z)
+    p = z - _PERIOD_STARTS[period - 1] + 1
+    if period == 1 or p <= 2:
+        return "s"
+    if period <= 3:
+        return "p"
+    if period <= 5:
+        return "d" if p <= 12 else "p"
+    if p <= 16:
+        return "f"
+    return "d" if p <= 26 else "p"
+
+
+def _valence_electrons(a) -> str:
+    """RDKit's outer-shell electron count for the element, ``"none"`` for the
+    dummy atom (the same sentinel ``group``/``block`` use)."""
+    z = a.GetAtomicNum()
+    if z <= 0:
+        return "none"
+    return str(_periodic_table().GetNOuterElecs(z))
+
+
 _ATTRS = {
     "element": lambda a: a.GetSymbol(),
     "degree": lambda a: str(a.GetDegree()),
@@ -108,6 +144,8 @@ _ATTRS = {
     "period": _periodic_table_period,
     "group": _periodic_table_group,
     "electronegativity": _pauling_electronegativity,
+    "block": _periodic_table_block,
+    "valence_electrons": _valence_electrons,
 }
 
 
