@@ -778,6 +778,18 @@ labels, uniq_rows = dense_rows(sig)           # dense ids
 parent = uniq_rows[:, 0]                      # column 0 is the parent id
 ```
 
+**Where `bond` comes from.** Edge attributes are a *flat* set — unlike the graded
+`attribute_levels`, every one of them contributes at full resolution at every level. The
+`(n_edges, n_edge_attr)` row collapses to the single `bond` code above by mixed radix, each
+attribute contributing its vocabulary plus one reserved unknown, so `n_edge_types` is the product of
+those radices (and 1 for an empty schema, degenerating `pair` to the neighbor label).
+
+The radices come from the **config**, never from the batch. Numbering them from the values present
+in a given batch — `dense_rows` over `edge_attrs`, the obvious spelling — would renumber the alphabet
+whenever a batch happened to be missing a value, so a model's class ids would mean one thing at fit
+time and another at predict time. This is the same hazard `schema_version` (§9.2) guards at the
+config level, arriving through the batch instead.
+
 Padding with $-1$ makes the row length uniform while still encoding degree, since a node's pad count
 is fixed. Two consequences worth noting:
 
@@ -943,7 +955,8 @@ file and let $\alpha$ drift out of sync with the values it produced.
   "target_dim": 50,
   "attribute_levels": [["element"], ["aromatic","hybridization"], ["formal_charge"]],
   "edge_attributes": ["bond_type"],
-  "neighbor_schema": null,
+  "edge_codes": {"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
+  "neighbor_depth": null,
   "max_wl_depth": 3,
   "n_levels": 6,
   "minimum_support": 5,
@@ -956,9 +969,11 @@ Two version fields, doing different jobs:
 - **`format_version`** describes the file layout. A reader that does not recognize it must refuse to
   load, not guess.
 - **`schema_version`** is a digest over everything that affects what a class *means* — the attribute
-  levels and their order, edge attributes, neighbor schema, depth. Two models may be merged (§5.4)
-  only if their `schema_version` matches. This is the mechanism behind "reject incompatible configs
-  loudly"; without it, config drift silently produces a model whose classes mean two different things.
+  levels and their order, the edge attributes **and their order**, every code table, the neighbor
+  coarsening depth, the WL depth. Two models may be merged (§5.4) only if their `schema_version`
+  matches. This is the
+  mechanism behind "reject incompatible configs loudly"; without it, config drift silently produces a
+  model whose classes mean two different things.
 
 `minimum_support` and `shrinkage_strength` are inference-time parameters, not part of
 `schema_version` — changing them does not invalidate the fitted statistics, and two models
@@ -992,9 +1007,11 @@ model.save(path);  SieveModel.load(path)
 class SieveConfig:
     target_dim: int
     attribute_levels: tuple[tuple[str, ...], ...]   # graded order, §3.5
+    attribute_codes: Mapping[str, Mapping[str, int]]
+    edge_codes: Mapping[str, Mapping[str, int]]     # name -> {value: code}
     max_wl_depth: int
-    edge_attributes: tuple[str, ...] = ("bond_type",)
-    neighbor_schema: tuple[str, ...] | None = None # §3.6; None = same as center
+    edge_attributes: tuple[str, ...] = ("bond_type",)   # flat, may be empty
+    neighbor_depth: int | None = None               # §3.6; None = no coarsening
     minimum_support: int = 1
     shrinkage_strength: float | None = None          # None = raw means, §4.2
     chunk_size: int | None = None                   # §4.1; None = whole corpus
@@ -1081,6 +1098,10 @@ class NodeBatch:
 ```
 
 Edges are stored **both directions** for undirected graphs; §7.1's CSR construction assumes it.
+
+`edge_attrs` carries one column per configured edge attribute, in `edge_attributes` order. A
+zero-width schema — `edge_attributes = ()` — is legal and gives an `(n_edges, 0)` array, which makes
+refinement depend on topology alone.
 
 Both that and the in-range endpoint requirement are checked on construction, and both checks are
 vectorized: an edge is encoded as `src * n_nodes + dst`, which is a bijection once endpoints are
