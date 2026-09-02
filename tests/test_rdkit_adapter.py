@@ -87,6 +87,188 @@ def test_period_and_group_attributes():
     assert b.node_attrs[nd_idx, group_col] == none_code
 
 
+def test_electronegativity_attribute_buckets_by_rounded_pauling_scale():
+    """electronegativity is the atom's Pauling electronegativity (from RDKit's
+    bundled atomic_data table) rounded to the nearest _ELECTRONEGATIVITY_ROUNDING
+    step: C (2.55) and S (2.58) land in the same 2.5 bucket, O (3.44) rounds up
+    to 3.5, and atoms with no tabulated value (noble gases, the dummy atom) fall
+    back to the shared "none" sentinel."""
+    from sieve.io.rdkit_adapter import _ELECTRONEGATIVITY_ROUNDING
+
+    assert _ELECTRONEGATIVITY_ROUNDING == 0.5
+
+    smis = ["CCO", "CS(=O)(=O)C", "[He]", "[*]"]
+    cfg = cfg_for(smis, attrs=(("element",), ("electronegativity",)))
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    en_col = len(cfg.attribute_levels[0])
+    value_of = {v: k for k, v in cfg.attribute_codes["electronegativity"].items()}
+
+    def row(symbol):
+        return _global_atom_idx(mols, lambda a: a.GetSymbol() == symbol)
+
+    assert value_of[b.node_attrs[row("C"), en_col]] == "2.5"
+    assert value_of[b.node_attrs[row("S"), en_col]] == "2.5"
+    assert value_of[b.node_attrs[row("O"), en_col]] == "3.5"
+
+    none_code = cfg.attribute_codes["electronegativity"]["none"]
+    assert b.node_attrs[row("He"), en_col] == none_code
+    assert b.node_attrs[row("*"), en_col] == none_code
+
+
+def test_block_and_valence_electrons_attributes():
+    """block is the periodic-table block (s/p/d/f) and valence_electrons is
+    RDKit's outer-electron count; both are periodic-table position, so Fe sits
+    in the d block with 8 outer electrons, O in the p block with 6, Na in the s
+    block with 1, a lanthanide in the f block, and the dummy atom falls back to
+    the shared "none" sentinel for both."""
+    smis = ["[Na]O[Fe]", "[La]", "[*]"]
+    cfg = cfg_for(smis, attrs=(("element",), ("block", "valence_electrons")))
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    block_col = len(cfg.attribute_levels[0])
+    ve_col = block_col + 1
+    block_of = {v: k for k, v in cfg.attribute_codes["block"].items()}
+    ve_of = {v: k for k, v in cfg.attribute_codes["valence_electrons"].items()}
+
+    def row(symbol):
+        return _global_atom_idx(mols, lambda a: a.GetSymbol() == symbol)
+
+    assert block_of[b.node_attrs[row("Fe"), block_col]] == "d"
+    assert ve_of[b.node_attrs[row("Fe"), ve_col]] == "8"
+    assert block_of[b.node_attrs[row("O"), block_col]] == "p"
+    assert ve_of[b.node_attrs[row("O"), ve_col]] == "6"
+    assert block_of[b.node_attrs[row("Na"), block_col]] == "s"
+    assert ve_of[b.node_attrs[row("Na"), ve_col]] == "1"
+    assert block_of[b.node_attrs[row("La"), block_col]] == "f"
+
+    assert b.node_attrs[row("*"), block_col] == cfg.attribute_codes["block"]["none"]
+    assert (
+        b.node_attrs[row("*"), ve_col]
+        == cfg.attribute_codes["valence_electrons"]["none"]
+    )
+
+
+def _global_atom_idx(mols, predicate):
+    """Row of the first atom (across the concatenated batch) satisfying
+    ``predicate(atom)``."""
+    offset = 0
+    for m in mols:
+        for a in m.GetAtoms():
+            if predicate(a):
+                return offset + a.GetIdx()
+        offset += m.GetNumAtoms()
+    raise AssertionError("no atom matched the predicate")
+
+
+def test_num_ring_memberships_counts_sssr_rings_per_atom():
+    """num_ring_memberships is a molecule-level attribute: each atom gets the
+    count of SSSR rings it sits in -- "2" for a ring-fusion atom, "1" for a
+    plain ring atom, "0" when acyclic -- distinguishing fusion/spiro centers
+    that min_ring_size cannot see."""
+    smi = "c1ccc2ccccc2c1C"  # naphthalene + a methyl
+    cfg = cfg_for([smi], attrs=(("element",), ("num_ring_memberships",)))
+    assert set(cfg.attribute_codes["num_ring_memberships"]) == {"0", "1", "2"}
+
+    b = from_smiles([smi], config=cfg)
+    mol = Chem.MolFromSmiles(smi)
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["num_ring_memberships"]
+
+    fusion_c = _global_atom_idx(
+        [mol], lambda a: a.GetIsAromatic() and a.GetDegree() == 3
+    )
+    plain_ring_c = _global_atom_idx(
+        [mol], lambda a: a.GetIsAromatic() and a.GetDegree() == 2
+    )
+    methyl_c = _global_atom_idx([mol], lambda a: not a.GetIsAromatic())
+
+    assert b.node_attrs[fusion_c, col] == codes["2"]
+    assert b.node_attrs[plain_ring_c, col] == codes["1"]
+    assert b.node_attrs[methyl_c, col] == codes["0"]
+
+
+def test_min_ring_size_discovers_smallest_ring_per_atom():
+    """min_ring_size is a molecule-level attribute (needs whole-molecule ring
+    perception): each atom gets the size of the smallest SSSR ring it sits in,
+    or "none" when acyclic."""
+    smis = ["C1CC1", "c1ccccc1", "CCO"]
+    cfg = cfg_for(smis, attrs=(("element",), ("min_ring_size",)))
+    assert set(cfg.attribute_codes["min_ring_size"]) == {"3", "6", "none"}
+
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["min_ring_size"]
+
+    cyclopropane_c = _global_atom_idx(mols, lambda a: a.IsInRingSize(3))
+    benzene_c = _global_atom_idx(mols, lambda a: a.GetIsAromatic())
+    ethanol_o = _global_atom_idx(mols, lambda a: a.GetSymbol() == "O")
+
+    assert b.node_attrs[cyclopropane_c, col] == codes["3"]
+    assert b.node_attrs[benzene_c, col] == codes["6"]
+    assert b.node_attrs[ethanol_o, col] == codes["none"]
+
+
+def test_min_ring_size_uses_smallest_ring_in_a_fused_system():
+    """An atom shared between a 5- and a 6-membered ring (indane's ring
+    fusion) reports 5, not 6 -- MinAtomRingSize, not just 'is in a ring'."""
+    smi = "C1CCc2ccccc21"  # indane: fused cyclopentane + benzene
+    cfg = cfg_for([smi], attrs=(("element",), ("min_ring_size",)))
+    b = from_smiles([smi], config=cfg)
+    mol = Chem.MolFromSmiles(smi)
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["min_ring_size"]
+
+    fusion_atom = _global_atom_idx(
+        [mol], lambda a: a.IsInRingSize(5) and a.IsInRingSize(6)
+    )
+    assert b.node_attrs[fusion_atom, col] == codes["5"]
+
+
+def test_min_ring_size_respects_node_order():
+    """The molecule-level provider returns values in RDKit atom-index order;
+    a permuted node_order must still land each atom's value on its own row."""
+    smi = "C1CCc2ccccc21"
+    cfg = cfg_for([smi], attrs=(("element",), ("min_ring_size",)))
+    mol = Chem.MolFromSmiles(smi)
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["min_ring_size"]
+    rev = [list(range(mol.GetNumAtoms()))[::-1]]
+
+    b = from_rdkit([mol], config=cfg, node_order=rev)
+    # row r holds original atom index (n-1-r)
+    n = mol.GetNumAtoms()
+    ri = mol.GetRingInfo()
+    for r in range(n):
+        orig = n - 1 - r
+        want = str(ri.MinAtomRingSize(orig)) if ri.NumAtomRings(orig) else "none"
+        assert b.node_attrs[r, col] == codes[want]
+
+
+def test_min_ring_size_unseen_size_falls_back_to_unknown_code():
+    cfg = cfg_for(["c1ccccc1"], attrs=(("element",), ("min_ring_size",)))  # only "6"
+    b = from_smiles(["C1CC1"], config=cfg)
+    col = len(cfg.attribute_levels[0])
+    unknown = max(cfg.attribute_codes["min_ring_size"].values()) + 1
+    assert (b.node_attrs[:, col] == unknown).all()
+
+
+@pytest.mark.parametrize("n_jobs", [None, 1, 2, 4])
+def test_min_ring_size_n_jobs_is_deterministic(n_jobs):
+    mols = _chiral_corpus()
+    cfg = cfg_for(_CHIRAL_SMILES, attrs=(("element",), ("min_ring_size", "aromatic")))
+    baseline = from_rdkit(_chiral_corpus(), config=cfg)
+    got = from_rdkit(mols, config=cfg, n_jobs=n_jobs)
+    np.testing.assert_array_equal(got.node_attrs, baseline.node_attrs)
+
+    codes_baseline, _ = build_codes(_chiral_corpus(), ["min_ring_size"])
+    codes_got, _ = build_codes(_chiral_corpus(), ["min_ring_size"], n_jobs=n_jobs)
+    assert codes_got == codes_baseline
+
+
 def test_unknown_atoms_fall_back_rather_than_colliding():
     cfg = cfg_for(["CCO"])
     train = from_smiles(["CCO"], y=np.zeros((3, 1)), config=cfg)
@@ -176,6 +358,34 @@ def test_y_and_y_from_atom_prop_are_mutually_exclusive():
 
     with pytest.raises(ValueError, match="y_from_atom_prop"):
         from_rdkit([mol], y=np.zeros((2, 1)), config=cfg, y_from_atom_prop="q")
+
+
+def test_chirality_is_a_molecule_level_attribute():
+    """CIP labeling is whole-molecule precomputation (Chem.AssignStereochemistry
+    / rdCIPLabeler), so chirality belongs in _MOL_ATTRS and runs once per
+    molecule via the generic path -- not in _ATTRS with _ensure_cip_labels
+    threaded separately through every call site."""
+    from sieve.io.rdkit_adapter import _ATTRS, _MOL_ATTRS
+
+    assert "chirality" in _MOL_ATTRS
+    assert "chirality" not in _ATTRS
+
+
+def test_chirality_and_min_ring_size_coexist_as_molecule_level_attrs():
+    """Two molecule-level attributes in one config, each precomputed once per
+    molecule, must not interfere -- and n_jobs stays byte-identical."""
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    mols = _chiral_corpus()
+    cfg = cfg_for(_CHIRAL_SMILES, attrs=(("element",), ("chirality", "min_ring_size")))
+    baseline = from_rdkit(_chiral_corpus(), config=cfg)
+    par = from_rdkit(mols, config=cfg, n_jobs=4)
+    np.testing.assert_array_equal(par.node_attrs, baseline.node_attrs)
+
+    chir_col = len(cfg.attribute_levels[0])
+    none_code = cfg.attribute_codes["chirality"]["none"]
+    assert baseline.elements is not None
+    assert (baseline.node_attrs[baseline.elements == 6, chir_col] != none_code).any()
 
 
 def test_chirality_attribute_uses_canonical_cip_code_not_raw_tag():

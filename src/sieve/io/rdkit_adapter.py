@@ -19,7 +19,7 @@ def _periodic_table():
     return Chem.GetPeriodicTable()
 
 
-def _period(a) -> str:
+def _periodic_table_period(a) -> str:
     return str(_periodic_table().GetRow(a.GetAtomicNum()))
 
 
@@ -31,7 +31,7 @@ _PERIOD_LENGTHS = (2, 8, 8, 18, 18, 32, 32)
 _PERIOD_STARTS = tuple(itertools.accumulate((1, *_PERIOD_LENGTHS[:-1])))
 
 
-def _group(a) -> str:
+def _periodic_table_group(a) -> str:
     """IUPAC group (1-18) from atomic number and period, computed rather than
     tabulated: within a period, position and group coincide once every block
     present in that period's row is accounted for.
@@ -61,6 +61,79 @@ def _group(a) -> str:
     return str(p if p <= 2 else p + (18 - length))
 
 
+# Step to which Pauling electronegativity is rounded before it becomes a
+# categorical bucket. 0.5 spreads Z=1-92 across ~7 buckets ("1.0".."4.0");
+# shrink it for finer resolution.
+_ELECTRONEGATIVITY_ROUNDING = 0.5
+
+
+@functools.lru_cache(maxsize=1)
+def _pauling_electronegativity_table() -> dict[int, float]:
+    """``{atomic number: Pauling electronegativity}`` from the ``atomic_data``
+    table RDKit bundles in ``RDData.sqlt`` (covers Z=1-92). Noble gases are
+    stored as ``0.0`` there; they stay out of this dict so they read as the
+    "none" sentinel alongside untabulated elements and the dummy atom."""
+    import os
+    import sqlite3
+
+    from rdkit import RDConfig
+
+    db = os.path.join(RDConfig.RDDataDir, "RDData.sqlt")
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT num, pauling_electroneg FROM atomic_data"
+        ).fetchall()
+    return {int(z): float(en) for z, en in rows if en}
+
+
+def _pauling_electronegativity(a) -> str:
+    """Pauling electronegativity rounded to ``_ELECTRONEGATIVITY_ROUNDING``,
+    ``"none"`` when the atom has no tabulated value (Z outside 1-92, noble
+    gases, RDKit's dummy atom) -- the same sentinel ``group``/``chirality`` use.
+    """
+    en = _pauling_electronegativity_table().get(a.GetAtomicNum())
+    if en is None:
+        return "none"
+    step = _ELECTRONEGATIVITY_ROUNDING
+    return f"{round(en / step) * step:.1f}"
+
+
+def _periodic_table_block(a) -> str:
+    """Periodic-table block -- ``"s"``, ``"p"``, ``"d"`` or ``"f"`` -- from
+    atomic number and period position, ``"none"`` for RDKit's dummy atom.
+
+    Within a period, position ``p`` past the s-block (``p <= 2``) maps to a
+    block by how much of the row is filled: periods 2-3 have no d/f-block, so
+    everything past ``p == 2`` is p-block; periods 4-5 open a 10-wide d-block
+    (``p <= 12``) before the p-block; periods 6-7 also open a 14-wide f-block
+    (``p <= 16``) ahead of the d-block, which then runs to ``p == 26``. Period
+    1 (H, He) is all s-block by electron configuration.
+    """
+    z = a.GetAtomicNum()
+    if z <= 0:
+        return "none"
+    period = _periodic_table().GetRow(z)
+    p = z - _PERIOD_STARTS[period - 1] + 1
+    if period == 1 or p <= 2:
+        return "s"
+    if period <= 3:
+        return "p"
+    if period <= 5:
+        return "d" if p <= 12 else "p"
+    if p <= 16:
+        return "f"
+    return "d" if p <= 26 else "p"
+
+
+def _valence_electrons(a) -> str:
+    """RDKit's outer-shell electron count for the element, ``"none"`` for the
+    dummy atom (the same sentinel ``group``/``block`` use)."""
+    z = a.GetAtomicNum()
+    if z <= 0:
+        return "none"
+    return str(_periodic_table().GetNOuterElecs(z))
+
+
 _ATTRS = {
     "element": lambda a: a.GetSymbol(),
     "degree": lambda a: str(a.GetDegree()),
@@ -68,19 +141,92 @@ _ATTRS = {
     "aromatic": lambda a: str(a.GetIsAromatic()),
     "formal_charge": lambda a: str(a.GetFormalCharge()),
     "num_h": lambda a: str(a.GetTotalNumHs()),
-    "period": _period,
-    "group": _group,
-    # RDKit's raw ChiralTag (CW/CCW) is defined relative to the atom's own
-    # neighbor traversal order -- not canonical, so the same physical
-    # stereocenter can get a different raw tag purely from incidental atom
-    # numbering. _CIPCode (R/S, or r/s for pseudo-asymmetric centers) is
-    # RDKit's own canonical, order-independent descriptor instead. It is
-    # not set by molblock parsing alone; see from_rdkit's own fallback
-    # computation below for callers that reach here without it already set
-    # (e.g. from_smiles, or any Mol built outside charge_experiments'
-    # prepare_store.py, which sets it once at data-prep time).
-    "chirality": lambda a: a.GetPropsAsDict().get("_CIPCode", "none"),
+    "period": _periodic_table_period,
+    "group": _periodic_table_group,
+    "electronegativity": _pauling_electronegativity,
+    "block": _periodic_table_block,
+    "valence_electrons": _valence_electrons,
 }
+
+
+def _min_ring_size(mol) -> list[str]:
+    """Size of the smallest SSSR ring each atom belongs to, ``"none"`` when
+    the atom is acyclic (the same sentinel ``group``/``chirality`` use).
+
+    Ring perception is a whole-molecule computation, so a molecule-level
+    provider runs it once per ``Mol`` -- the reason ``_MOL_ATTRS`` exists
+    alongside the per-atom ``_ATTRS``. RDKit caches the ring info on the
+    ``Mol``, so the ``GetSymmSSSR`` call is cheap on any repeat.
+
+    Returns one value per atom in RDKit atom-index order; callers index it
+    by raw atom index, so a permuted ``node_order`` stays correct.
+    """
+    from rdkit import Chem
+
+    Chem.GetSymmSSSR(mol)
+    ri = mol.GetRingInfo()
+    return [
+        str(ri.MinAtomRingSize(i)) if ri.NumAtomRings(i) else "none"
+        for i in range(mol.GetNumAtoms())
+    ]
+
+
+def _num_ring_memberships(mol) -> list[str]:
+    """Number of SSSR rings each atom belongs to -- ``"0"`` when acyclic,
+    ``"2"`` or more for a ring-fusion or spiro atom. Unlike ``min_ring_size``
+    a count of zero is meaningful, so acyclic atoms get ``"0"`` rather than
+    the ``"none"`` sentinel.
+
+    Ring perception is whole-molecule work, so this is a ``_MOL_ATTRS``
+    provider; RDKit caches the ring info, making the ``GetSymmSSSR`` call cheap
+    on repeat. One value per atom in RDKit atom-index order.
+    """
+    from rdkit import Chem
+
+    Chem.GetSymmSSSR(mol)
+    ri = mol.GetRingInfo()
+    return [str(ri.NumAtomRings(i)) for i in range(mol.GetNumAtoms())]
+
+
+def _chirality(mol) -> list[str]:
+    """Canonical CIP descriptor (R/S, or r/s for pseudo-asymmetric centers)
+    per atom, ``"none"`` where undefined.
+
+    RDKit's raw ChiralTag (CW/CCW) is defined relative to the atom's own
+    neighbor traversal order -- not canonical, so the same physical
+    stereocenter can get a different raw tag purely from incidental atom
+    numbering. ``_CIPCode`` is RDKit's order-independent descriptor instead,
+    but it is not set by molblock/SMILES parsing rigorously; ``rdCIPLabeler``
+    (via ``_ensure_cip_labels``) computes it. That is a whole-molecule
+    computation, so chirality is a molecule-level provider -- run once per
+    ``Mol`` here rather than depending on a separately threaded pre-pass.
+
+    Returns one value per atom in RDKit atom-index order.
+    """
+    _ensure_cip_labels(mol)
+    return [a.GetPropsAsDict().get("_CIPCode", "none") for a in mol.GetAtoms()]
+
+
+# Molecule-level attribute providers: ``f(mol) -> Sequence[str]``, one value
+# per atom in RDKit atom-index order. Distinct from ``_ATTRS`` (per-atom
+# callables) so that whole-molecule precomputation -- ``Chem.GetSymmSSSR``,
+# ``rdCIPLabeler`` and the like -- happens once per molecule rather than once
+# per atom. A name lives in exactly one of the two registries.
+_MOL_ATTRS = {
+    "min_ring_size": _min_ring_size,
+    "num_ring_memberships": _num_ring_memberships,
+    "chirality": _chirality,
+}
+
+
+def _observed_values(name: str, mols) -> set[str]:
+    """The set of raw string values ``name`` takes across ``mols`` -- the unit
+    ``build_codes`` unions across chunks before assigning dense codes."""
+    if name in _MOL_ATTRS:
+        f = _MOL_ATTRS[name]
+        return {v for m in mols for v in f(m)}
+    f = _ATTRS[name]
+    return {f(a) for m in mols for a in m.GetAtoms()}
 
 
 def _serialize_mol(mol) -> bytes:
@@ -90,10 +236,12 @@ def _serialize_mol(mol) -> bytes:
     RDKit's *global* default pickle-property setting is ``NoProps`` -- naive
     pickling (which is what joblib's default ``loky`` backend does to task
     arguments) silently drops every atom/mol property. ``MBIScharge``-style
-    targets would fail loudly on the worker side (``GetDoubleProp`` raises on
-    a missing prop); the ``chirality`` attribute would not -- it reads
-    ``.GetPropsAsDict().get("_CIPCode", "none")`` and would silently become
-    ``"none"`` for every atom instead of raising. ``AllProps`` (rather than
+    ``y_from_atom_prop`` targets would fail loudly on the worker side
+    (``GetDoubleProp`` raises on a missing prop); a mol pre-labeled by
+    ``prepare_store.py`` would fail *silently* -- its ``CIP_LABELED_PROP``
+    marker and rigorous ``_CIPCode`` props would vanish, so ``_chirality``'s
+    ``_ensure_cip_labels`` call would recompute on the worker (correct
+    result, wasted work) rather than short-circuit. ``AllProps`` (rather than
     naming ``AtomProps``/``MolProps``/``PrivateProps`` individually) is used
     deliberately: it is the literal union of every pickle-property bit,
     confirmed to include the "private" bit that underscore-prefixed props
@@ -176,7 +324,8 @@ def _ensure_cip_labels(mol) -> None:
 
 def _discover_codes_chunk(blobs: list[bytes], attributes) -> dict[str, set[str]]:
     """Worker body for ``build_codes``: the per-attribute *set* of observed
-    values for one chunk of (already CIP-labeled, if needed) molecules.
+    values for one chunk of molecules (molecule-level attributes run their
+    own precompute -- CIP labeling, ring perception -- on the worker's copy).
 
     Returns raw sets, not code tables -- assigning dense integer codes needs
     the union across every chunk first, so numbering happens once in the
@@ -184,10 +333,7 @@ def _discover_codes_chunk(blobs: list[bytes], attributes) -> dict[str, set[str]]
     chunks there are or which finishes first).
     """
     mols = [_deserialize_mol(b) for b in blobs]
-    return {
-        name: {_ATTRS[name](a) for m in mols for a in m.GetAtoms()}
-        for name in attributes
-    }
+    return {name: _observed_values(name, mols) for name in attributes}
 
 
 def build_codes(mols, attributes, *, n_jobs: int | None = None):
@@ -202,27 +348,15 @@ def build_codes(mols, attributes, *, n_jobs: int | None = None):
     from workers gives the exact same discovered vocabulary as the
     sequential pass, just found in a different order (codes are assigned
     from the sorted union, so the *numbering* is unaffected by chunk count
-    or completion order too). The CIP-labeling pre-pass below always runs
-    sequentially in this process first, so workers never need to compute or
-    return labels themselves -- only from_rdkit's own worker path has that
-    concern.
+    or completion order too). Molecule-level attributes that need
+    whole-molecule precomputation (``chirality``'s rigorous CIP labeling,
+    ``min_ring_size``'s ring perception) do it inside their ``_MOL_ATTRS``
+    provider, once per molecule -- in the worker for the parallel path, on
+    the worker's own copy, which is enough since only the discovered value
+    set flows back.
     """
-    if "chirality" in attributes:
-        # Same fallback from_rdkit applies -- needed here too, since a
-        # fresh fit's own code-table discovery (this function) typically
-        # runs on the training mols *before* from_rdkit ever sees them.
-        # Without it, an un-prepped corpus would silently discover only
-        # "none" as the observed chirality vocabulary. Runs before any
-        # chunking/dispatch, so every worker's serialized blob already
-        # carries the labels.
-        for m in mols:
-            _ensure_cip_labels(m)
-
     if n_jobs is None or n_jobs == 1 or len(mols) < 2:
-        seen_by_attr = {
-            name: {_ATTRS[name](a) for m in mols for a in m.GetAtoms()}
-            for name in attributes
-        }
+        seen_by_attr = {name: _observed_values(name, mols) for name in attributes}
     else:
         n_chunks = 4 * effective_n_jobs(n_jobs)
         bounds = _chunk_boundaries_by_atom_count(mols, n_chunks)
@@ -263,7 +397,6 @@ def _from_rdkit_sequential(
     y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
     src, dst, attr = [], [], []
     off = 0
-    needs_cip = "chirality" in flat
     # Hoisted out of the per-atom loop below: all three are loop-invariant,
     # and the loop runs once per atom *per attribute* -- at 1.69M atoms and 5
     # attributes that is 8.4M repetitions of work that never changes.
@@ -271,13 +404,30 @@ def _from_rdkit_sequential(
     # plain-dict copy matters too: config.attribute_codes is a nested
     # MappingProxyType (config._freeze_mappings), whose lookup is measurably
     # slower than a dict's.
-    getters = [_ATTRS[name] for name in flat]
     tables = [dict(config.attribute_codes[name]) for name in flat]
     unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
     edge_codes = dict(config.edge_codes)
+    # Resolve each flat attribute through exactly one registry, up front. Split
+    # into per-atom and molecule-level columns so the per-atom loop below has no
+    # None checks or `_MOL_ATTRS in?` lookups -- it runs once per atom *per
+    # attribute* (8.4M times on a 1.69M-atom, 5-attribute corpus).
+    atom_cols = []  # (column index, f(atom) -> str)
+    mol_cols = []  # (column index, f(mol) -> Sequence[str])
+    for j, name in enumerate(flat):
+        atom_f = _ATTRS.get(name)
+        mol_f = _MOL_ATTRS.get(name)
+        if mol_f is not None:
+            mol_cols.append((j, mol_f))
+        elif atom_f is not None:
+            atom_cols.append((j, atom_f))
+        else:
+            raise ValueError(f"unknown attribute {name!r}")
     for gi, mol in enumerate(mols):
-        if needs_cip:
-            _ensure_cip_labels(mol)
+        # Molecule-level attributes (ring perception, CIP labeling, ...) do
+        # their whole-molecule precompute here, once, rather than once per
+        # atom below. Indexed by raw RDKit atom index, so a permuted `order`
+        # still lands each atom's value on its own row.
+        mol_vals = {j: f(mol) for j, f in mol_cols}
         order = (
             list(range(mol.GetNumAtoms()))
             if node_order is None
@@ -288,8 +438,10 @@ def _from_rdkit_sequential(
         for local, idx in enumerate(order):
             a = mol.GetAtomWithIdx(int(idx))
             g = off + local
-            for j in range(len(flat)):
-                node_attrs[g, j] = tables[j].get(getters[j](a), unknowns[j])
+            for j, atom_f in atom_cols:
+                node_attrs[g, j] = tables[j].get(atom_f(a), unknowns[j])
+            for j, vals in mol_vals.items():
+                node_attrs[g, j] = tables[j].get(vals[idx], unknowns[j])
             elements[g] = a.GetAtomicNum()
             graph_id[g] = gi
             if y_out is not None:
