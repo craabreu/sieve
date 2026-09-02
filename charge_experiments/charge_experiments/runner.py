@@ -103,7 +103,7 @@ def _package_versions() -> dict[str, str]:
 
 def _run_name(cfg: ExperimentCfg) -> str:
     d = cfg.data
-    return f"{cfg.predictor.name}-{d.split_column}-s{cfg.run.seed}"
+    return f"{cfg.predictor.name}-{d.store}-s{cfg.run.seed}"
 
 
 def _savez_run(path: Path, test: MoleculeSet, pred: Prediction, /) -> None:
