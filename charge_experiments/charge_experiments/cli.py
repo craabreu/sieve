@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import logging
 import sys
 from pathlib import Path
@@ -111,34 +110,27 @@ def _cmd_to_united_atom(args: argparse.Namespace) -> int:
 
 def _cmd_summarize(args: argparse.Namespace) -> int:
     del args
+    from charge_experiments.aggregate import read_runs_from_dirs
+
     runs_root = DEFAULT_RUNS_ROOT
     rows = []
-    for manifest_path in sorted(runs_root.glob("*/*/manifest.json")):
-        run_dir = manifest_path.parent
-        manifest = json.loads(manifest_path.read_text())
-        metrics_path = run_dir / "metrics.json"
-        run_metrics = (
-            json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
-        )
+    for run_row in read_runs_from_dirs(runs_root):
         row = {
-            "run_name": manifest.get("run_name", ""),
-            "predictor": manifest.get("config", {})
-            .get("predictor", {})
-            .get("name", ""),
-            "split_column": manifest.get("data", {}).get("split_column", ""),
-            "seed": manifest.get("seed", ""),
-            "git_commit": manifest.get("git", {}).get("commit", ""),
-            "run_dir": str(run_dir),
+            "run_name": run_row.meta["run_name"],
+            "predictor": run_row.params.get("predictor.name", ""),
+            "split_column": run_row.meta["split_column"],
+            "seed": run_row.meta["seed"],
+            "git_commit": run_row.meta["git_commit"],
+            "run_dir": run_row.run_dir,
         }
         for key in SUMMARY_COLUMNS:
             if key not in row:
-                value = run_metrics.get(key, "")
-                if value == "":
-                    row[key] = ""
-                elif isinstance(value, float):
-                    row[key] = f"{value:.6g}"
-                else:
-                    row[key] = value
+                # read_runs_from_dirs drops non-finite metrics, so a NaN r2
+                # comes through as absent -> "" (matching a genuinely missing
+                # metric). The pre-2026-09 inline loop wrote the literal "nan"
+                # here instead.
+                value = run_row.metrics.get(key, "")
+                row[key] = f"{value:.6g}" if isinstance(value, float) else value
         rows.append(row)
 
     rows.sort(key=lambda r: (r["split_column"], r["predictor"], r["seed"]))
