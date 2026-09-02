@@ -14,24 +14,22 @@ predictors/dash.py's docstring and cosmo_experiments' own precedent),
 tuned -- see the design spec's "Out of scope" list.
 
 ``predict_raw``/``save_model_state``/``load_model_state`` mirror
-predictors/dash.py's own nested-runs support (see
-docs/superpowers/specs/2026-08-27-dash-charges-nested-runs-design.md):
-``predict_raw`` uses ``sieve.predict_detailed`` rather than the plain
-``sieve.predict`` wrapper -- the two compute identically (``predict`` is
-literally ``predict_detailed(...).value``), so this costs nothing extra,
-and it additionally exposes each atom's class ``variance`` as a real
-``atom_std`` (``sqrt(variance)``, NaN wherever ``support == 1`` -- sieve's
-own "no spread observed" case, not invented here), rather than a filler
-value. Only ``normalize.equal_weighted_normalize`` is wired into this
-series' own nested example config for now (see
-configs/sieve-nested-charge-example.yaml's ``children`` list) -- std_weighted
-normalization is left for a follow-up once this ``atom_std`` has been
+predictors/dash.py's own ``NormalizableChargePredictor`` support (see
+``config.ExperimentCfg.normalization``): ``predict_raw`` uses
+``sieve.predict_detailed`` rather than the plain ``sieve.predict`` wrapper
+-- the two compute identically (``predict`` is literally
+``predict_detailed(...).value``), so this costs nothing extra, and it
+additionally exposes each atom's class ``variance`` as a real ``atom_std``
+(``sqrt(variance)``, NaN wherever ``support == 1`` -- sieve's own "no spread
+observed" case, not invented here), rather than a filler value. Both
+``normalize.NORMALIZERS`` entries are usable against it, though
+``std_weighted`` is left for a follow-up once this ``atom_std`` has been
 checked against real data, not because ``predict_raw`` itself is missing
-anything std_weighted would need. ``save_model_state``/``load_model_state``
-delegate directly to ``sieve.SieveModel.save``/``.load`` (a single ``.npz``,
-already self-describing via its own ``format_version``/``schema_version``
-guards) -- no bespoke serialization needed here, unlike
-predictors/dash.py's own per-node stats table.
+anything it would need. ``save_model_state``/``load_model_state`` delegate
+directly to ``sieve.SieveModel.save``/``.load`` (a single ``.npz``, already
+self-describing via its own ``format_version``/``schema_version`` guards)
+-- no bespoke serialization needed here, unlike predictors/dash.py's own
+per-node stats table.
 """
 
 from __future__ import annotations

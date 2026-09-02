@@ -70,3 +70,51 @@ def test_to_dict_and_to_flat_params_round_trip(tmp_path):
     assert d["run"]["experiment"] == "charge-smoke"
     flat = to_flat_params(cfg)
     assert flat["data.store"] == "dash-molecules"
+
+
+def test_load_config_defaults_normalization_to_none(tmp_path):
+    from charge_experiments.config import load_config
+
+    path = _write_yaml(tmp_path, _base_raw())
+    cfg = load_config(path)
+    assert cfg.normalization is None
+
+
+def test_load_config_accepts_a_known_normalization_scheme(tmp_path):
+    from charge_experiments.config import load_config
+
+    raw = _base_raw()
+    raw["normalization"] = "std_weighted"
+    path = _write_yaml(tmp_path, raw)
+    cfg = load_config(path)
+    assert cfg.normalization == "std_weighted"
+
+
+def test_load_config_rejects_an_unknown_normalization_scheme(tmp_path):
+    from charge_experiments.config import load_config
+
+    raw = _base_raw()
+    raw["normalization"] = "bogus_scheme"
+    path = _write_yaml(tmp_path, raw)
+    with pytest.raises(ValueError, match="normalization"):
+        load_config(path)
+
+
+def test_to_dict_and_to_flat_params_include_normalization(tmp_path):
+    from charge_experiments.config import load_config, to_dict, to_flat_params
+
+    raw = _base_raw()
+    raw["normalization"] = "equal_weighted"
+    path = _write_yaml(tmp_path, raw)
+    cfg = load_config(path)
+    assert to_dict(cfg)["normalization"] == "equal_weighted"
+    assert to_flat_params(cfg)["normalization"] == "equal_weighted"
+
+
+def test_to_dict_and_to_flat_params_spell_out_none_normalization(tmp_path):
+    from charge_experiments.config import load_config, to_dict, to_flat_params
+
+    path = _write_yaml(tmp_path, _base_raw())
+    cfg = load_config(path)
+    assert to_dict(cfg)["normalization"] is None
+    assert to_flat_params(cfg)["normalization"] == "None"
