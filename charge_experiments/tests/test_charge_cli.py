@@ -53,6 +53,7 @@ def test_build_parser_subsample_store_defaults():
     assert args.n_molecules == 50_000
     assert args.conformers_per_molecule == 1
     assert args.seed == 0
+    assert args.n_stores == 1
 
 
 def test_build_parser_subsample_store_accepts_all_flags():
@@ -71,6 +72,8 @@ def test_build_parser_subsample_store_accepts_all_flags():
             "3",
             "--seed",
             "42",
+            "--n-stores",
+            "5",
         ]
     )
     assert args.dest == "my-small-store"
@@ -78,6 +81,7 @@ def test_build_parser_subsample_store_accepts_all_flags():
     assert args.n_molecules == 1000
     assert args.conformers_per_molecule == 3
     assert args.seed == 42
+    assert args.n_stores == 5
 
 
 def test_build_parser_to_united_atom_defaults():

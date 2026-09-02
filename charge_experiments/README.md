@@ -34,6 +34,20 @@ a biased slice like `run --limit`'s literal row prefix:
 
     uv run python -m charge_experiments subsample-store dash-molecules-50k
 
+For several such stores at once -- independent replicates, or folds whose
+molecules must not overlap -- `--n-stores` draws them *without replacement
+across all of them*: each split is shuffled once and handed out in
+contiguous blocks, so no molecule lands in two stores and every store still
+carries the source's own split fractions. They are named `DEST-1` ...
+`DEST-N` (with the default `--n-stores 1` the store keeps the bare `DEST`
+name):
+
+    uv run python -m charge_experiments subsample-store dash-molecules-10k --n-stores 5 --n-molecules 10000
+
+Because disjoint stores can't be clamped independently, a request the
+source can't fill raises before any store is written, naming the split that
+came up short -- unlike the single-store case, which clamps and warns.
+
 To also get a united-atom (heavy-atom-only) version of a store -- every
 conformer's hydrogens removed via rdkit's own `Chem.RemoveHs`, each removed
 H's charge folded onto the heavy atom it was bonded to, any H rdkit itself

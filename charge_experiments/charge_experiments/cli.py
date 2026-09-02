@@ -88,15 +88,22 @@ def _cmd_prepare_store(args: argparse.Namespace) -> int:
 def _cmd_subsample_store(args: argparse.Namespace) -> int:
     from charge_experiments.prepare_store import subsample_store
 
-    summary_text = subsample_store(
+    result = subsample_store(
         args.source,
         args.dest,
         stores_root=DEFAULT_STORES_ROOT,
         n_molecules=args.n_molecules,
         conformers_per_molecule=args.conformers_per_molecule,
         seed=args.seed,
+        n_stores=args.n_stores,
     )
-    print(f"wrote {args.dest!r} (subsampled from {args.source!r}):\n{summary_text}")
+    if args.n_stores == 1:
+        names, summaries = [args.dest], [result]
+    else:
+        names = [f"{args.dest}-{i + 1}" for i in range(args.n_stores)]
+        summaries = result
+    for name, summary_text in zip(names, summaries):
+        print(f"wrote {name!r} (subsampled from {args.source!r}):\n{summary_text}")
     return 0
 
 
@@ -286,6 +293,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_subsample.add_argument(
         "--seed", type=int, default=0, help="random seed for reproducible sampling"
+    )
+    p_subsample.add_argument(
+        "--n-stores",
+        type=int,
+        default=1,
+        help="number of mutually disjoint stores to draw, named DEST-1 ... "
+        "DEST-N (default: 1, which keeps the bare DEST name)",
     )
     p_subsample.set_defaults(func=_cmd_subsample_store)
 

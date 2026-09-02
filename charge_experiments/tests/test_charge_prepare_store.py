@@ -450,6 +450,7 @@ def test_subsample_store_writes_a_summary_file(tmp_path):
 
     summary_path = tmp_path / "dest-store" / "split_summary.txt"
     assert summary_path.exists()
+    assert isinstance(summary_text, str)  # n_stores=1 returns one summary
     assert summary_path.read_text().strip() == summary_text.strip()
     assert "train" in summary_text
     assert "n_molecules" in summary_text
@@ -465,6 +466,132 @@ def test_subsample_store_defaults_match_the_cli(tmp_path):
     sig = inspect.signature(subsample_store)
     assert sig.parameters["n_molecules"].default == 50_000
     assert sig.parameters["conformers_per_molecule"].default == 1
+    assert sig.parameters["n_stores"].default == 1
+
+
+def test_subsample_store_n_stores_writes_suffixed_stores_that_are_disjoint(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    summaries = subsample_store(
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=10,
+        conformers_per_molecule=1,
+        seed=0,
+        n_stores=3,
+    )
+    assert isinstance(summaries, list)
+    assert len(summaries) == 3
+
+    import pandas as pd
+
+    key_sets = []
+    for i in (1, 2, 3):
+        store_dir = tmp_path / f"dest-store-{i}"
+        assert (store_dir / "split_summary.txt").exists()
+        out = pd.read_parquet(store_dir / "molecules.parquet")
+        # Every store gets the source's own 60/20/20 split mix.
+        counts = out.groupby("split")["chembl_id"].nunique()
+        assert counts["train"] == 6
+        assert counts["val"] == 2
+        assert counts["test"] == 2
+        key_sets.append(set(out["chembl_id"]))
+
+    assert not (tmp_path / "dest-store").exists()
+    # Drawn without replacement: no molecule appears in two stores.
+    for a in range(3):
+        for b in range(a + 1, 3):
+            assert not key_sets[a] & key_sets[b]
+
+
+def test_subsample_store_n_stores_one_keeps_the_unsuffixed_name(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    summary_text = subsample_store(
+        "source-store",
+        "dest-store",
+        stores_root=tmp_path,
+        n_molecules=20,
+        conformers_per_molecule=1,
+        seed=0,
+        n_stores=1,
+    )
+
+    assert isinstance(summary_text, str)
+    assert (tmp_path / "dest-store" / "molecules.parquet").exists()
+    assert not (tmp_path / "dest-store-1").exists()
+
+
+def test_subsample_store_n_stores_raises_before_writing_when_source_is_too_small(
+    tmp_path,
+):
+    import pytest
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    # 4 stores x round(20*0.6)=12 train molecules = 48 > the 30 train has.
+    with pytest.raises(ValueError, match="train split.*too few for 4 disjoint"):
+        subsample_store(
+            "source-store",
+            "dest-store",
+            stores_root=tmp_path,
+            n_molecules=20,
+            conformers_per_molecule=1,
+            seed=0,
+            n_stores=4,
+        )
+
+    # Nothing at all was written -- not even the stores that would have fit.
+    assert not list(tmp_path.glob("dest-store*"))
+
+
+def test_subsample_store_n_stores_is_reproducible_with_the_same_seed(tmp_path):
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    subsample_store(
+        "source-store",
+        "a",
+        stores_root=tmp_path,
+        n_molecules=10,
+        conformers_per_molecule=1,
+        seed=7,
+        n_stores=2,
+    )
+    subsample_store(
+        "source-store",
+        "b",
+        stores_root=tmp_path,
+        n_molecules=10,
+        conformers_per_molecule=1,
+        seed=7,
+        n_stores=2,
+    )
+
+    import pandas as pd
+
+    for i in (1, 2):
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(tmp_path / f"a-{i}" / "molecules.parquet"),
+            pd.read_parquet(tmp_path / f"b-{i}" / "molecules.parquet"),
+        )
+
+
+def test_subsample_store_rejects_n_stores_below_one(tmp_path):
+    import pytest
+    from charge_experiments.prepare_store import subsample_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    with pytest.raises(ValueError, match="n_stores"):
+        subsample_store("source-store", "dest-store", stores_root=tmp_path, n_stores=0)
 
 
 def _ua_test_mol(smiles, *, add_hs=True, charges=None, isotope_h_idx=None):

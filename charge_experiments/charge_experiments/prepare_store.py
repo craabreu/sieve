@@ -407,9 +407,10 @@ def subsample_store(
     n_molecules: int = 50_000,
     conformers_per_molecule: int = 1,
     seed: int = 0,
-) -> str:
-    """Build a smaller, independent store by subsampling molecules from an
-    already-split ``source_store``, reproducing that source's own real
+    n_stores: int = 1,
+) -> str | list[str]:
+    """Build one or more smaller, independent stores by subsampling molecules
+    from an already-split ``source_store``, reproducing that source's own real
     train/val/test fractions (measured directly from it -- never assumed to
     be 80/10/10) -- the scientifically-sound alternative to ``--limit``'s
     literal row-prefix slice (``runner.load_molecule_set``), which is
@@ -428,6 +429,20 @@ def subsample_store(
     molecules that split actually has -- clamping is logged, not an error,
     since a small source store can't always supply the requested count).
 
+    ``n_stores`` > 1 builds that many stores at once, drawing *without
+    replacement across all of them*: every split is shuffled exactly once
+    and handed out in contiguous blocks, so no molecule ever lands in two
+    of the stores and each store still gets the source's own split mix.
+    They are named ``dest_store-1`` ... ``dest_store-n``, and the return
+    value is the list of their summaries; with the default ``n_stores=1``
+    the single store keeps the bare ``dest_store`` name and one summary
+    string is returned. Since disjoint stores can't be clamped
+    independently, a request that the source can't fill (``n_stores`` times
+    a split's own target exceeding what that split has) raises before any
+    store is written, rather than silently shrinking the later ones -- the
+    single-store case keeps clamping instead, as there is nothing to
+    starve.
+
     ``conformers_per_molecule`` is a *cap*, not a floor: a molecule with
     fewer conformers than requested contributes all of its own (no
     padding/repeats); one with more has exactly that many sampled uniformly
@@ -438,15 +453,17 @@ def subsample_store(
 
     Both molecule selection and conformer selection use
     ``np.random.default_rng(seed)``, so the same ``seed`` reproduces the
-    same subsample. Writes ``dest_store/molecules.parquet`` (with the same
+    same subsample. Writes ``<store>/molecules.parquet`` (with the same
     schema, ``split`` column included) and a ``split_summary.txt`` -- the
     subsample's own *actually achieved* counts/fractions, for transparency
-    against the requested target. Returns that summary text.
+    against the requested target.
     """
     if n_molecules < 1:
         raise ValueError("n_molecules must be >= 1")
     if conformers_per_molecule < 1:
         raise ValueError("conformers_per_molecule must be >= 1")
+    if n_stores < 1:
+        raise ValueError("n_stores must be >= 1")
 
     import pandas as pd
 
@@ -470,13 +487,25 @@ def subsample_store(
         keys_by_split.setdefault(split_col[positions[0]], []).append(str(key))
     total_molecules = len(positions_by_key)
 
-    rng = np.random.default_rng(seed)
-    selected_positions: list[np.ndarray] = []
+    # Every split's own per-store molecule count, resolved up front so that
+    # an unfillable multi-store request fails before anything is written.
+    picks_per_split: dict[str, int] = {}
     for split_name in ("train", "val", "test"):
         keys = keys_by_split.get(split_name, [])
         if not keys:
             continue
         target = round(n_molecules * len(keys) / total_molecules)
+        if n_stores > 1:
+            if n_stores * target > len(keys):
+                raise ValueError(
+                    f"{split_name} split of {source_store!r} has only "
+                    f"{len(keys)} molecule(s), too few for {n_stores} "
+                    f"disjoint store(s) of {target} molecule(s) each "
+                    f"({n_stores * target} needed); lower --n-stores or "
+                    f"--n-molecules"
+                )
+            picks_per_split[split_name] = target
+            continue
         n_pick = min(target, len(keys))
         if n_pick < target:
             logger.warning(
@@ -487,15 +516,51 @@ def subsample_store(
                 len(keys),
                 target,
             )
-        picked = rng.choice(len(keys), size=n_pick, replace=False)
-        for i in picked:
-            positions = positions_by_key[keys[i]]
-            if len(positions) > conformers_per_molecule:
-                positions = rng.choice(
-                    positions, size=conformers_per_molecule, replace=False
-                )
-            selected_positions.append(positions)
+        picks_per_split[split_name] = n_pick
 
+    rng = np.random.default_rng(seed)
+    # One store's worth of selected row positions per entry.
+    selected_positions: list[list[np.ndarray]] = [[] for _ in range(n_stores)]
+    for split_name, n_pick in picks_per_split.items():
+        keys = keys_by_split[split_name]
+        # A single shuffle handed out in contiguous blocks *is* the
+        # draw-without-replacement across stores -- no store can be dealt a
+        # molecule another one already holds.
+        order = rng.permutation(len(keys))
+        for store_index in range(n_stores):
+            block = order[store_index * n_pick : (store_index + 1) * n_pick]
+            for i in block:
+                positions = positions_by_key[keys[i]]
+                if len(positions) > conformers_per_molecule:
+                    positions = rng.choice(
+                        positions, size=conformers_per_molecule, replace=False
+                    )
+                selected_positions[store_index].append(positions)
+
+    summaries = [
+        _write_subsample(
+            df,
+            positions,
+            source_store=source_store,
+            dest_dir=stores_root
+            / (dest_store if n_stores == 1 else f"{dest_store}-{store_index + 1}"),
+        )
+        for store_index, positions in enumerate(selected_positions)
+    ]
+    return summaries[0] if n_stores == 1 else summaries
+
+
+def _write_subsample(
+    df: Any,
+    selected_positions: list[np.ndarray],
+    *,
+    source_store: str,
+    dest_dir: Path,
+) -> str:
+    """Write the rows at ``selected_positions`` (one array per selected
+    molecule) out as ``dest_dir``'s own store, plus its ``split_summary.txt``
+    -- the subsample's *actually achieved* counts/fractions. Returns that
+    summary text."""
     all_positions = (
         np.sort(np.concatenate(selected_positions))
         if selected_positions
@@ -503,7 +568,6 @@ def subsample_store(
     )
     out_df = df.iloc[all_positions].reset_index(drop=True)
 
-    dest_dir = stores_root / dest_store
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / "molecules.parquet"
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
@@ -526,7 +590,7 @@ def subsample_store(
     logger.info(
         "subsampled %r -> %r: %d molecule(s), %d conformer(s)\n%s",
         source_store,
-        dest_store,
+        dest_dir.name,
         out_mol_key.nunique(),
         len(out_df),
         summary_text,
