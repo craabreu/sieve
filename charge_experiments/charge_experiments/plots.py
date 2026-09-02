@@ -151,3 +151,69 @@ def parity_panel(
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
+
+
+def curve_panel(
+    table: Any,
+    out_path: str | Path,
+    *,
+    suptitle: str,
+    n_cols: int = 3,
+) -> None:
+    """One subplot per metric, one line per series, mean with a min-max band.
+
+    ``table`` is an ``aggregate.CurveTable``. Typed as ``Any`` to keep this
+    module free of a runtime import from ``aggregate`` -- ``plots`` is
+    imported by ``runner`` on every run, and this is the only function that
+    needs it.
+
+    matplotlib is imported lazily, as in ``parity_panel``: a caller without
+    it still gets the CSV.
+    """
+    import matplotlib.pyplot as plt
+
+    metrics = sorted({metric for _, metric in table.series})
+    if not metrics:
+        return
+    n_cols = min(n_cols, len(metrics))
+    n_rows = -(-len(metrics) // n_cols)
+
+    # Tick labels come from the union of every series' x positions, not from
+    # one arbitrary series: series can cover different subsets of x (a run
+    # missing one metric contributes no point for it), and taking the first
+    # would silently drop ticks the other lines actually occupy.
+    ticks = {
+        point.x_pos: point.x_label
+        for points in table.series.values()
+        for point in points
+    }
+    tick_pos = sorted(ticks)
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(4.5 * n_cols, 3.6 * n_rows), squeeze=False
+    )
+    axes_flat = axes.ravel()
+    for ax, metric in zip(axes_flat, metrics, strict=False):
+        for (name, series_metric), points in sorted(table.series.items()):
+            if series_metric != metric or not points:
+                continue
+            xs = [p.x_pos for p in points]
+            ax.plot(xs, [p.mean for p in points], marker="o", ms=4, label=name)
+            if any(p.n_runs > 1 for p in points):
+                ax.fill_between(
+                    xs, [p.lo for p in points], [p.hi for p in points], alpha=0.2
+                )
+        ax.set_xticks(tick_pos)
+        ax.set_xticklabels([ticks[p] for p in tick_pos])
+        ax.set_xlabel(table.x, fontsize=8)
+        ax.set_ylabel(metric, fontsize=8)
+        ax.set_title(metric, fontsize=9)
+        ax.tick_params(labelsize=7)
+        ax.legend(fontsize=6)
+    for ax in axes_flat[len(metrics) :]:
+        ax.set_visible(False)
+
+    fig.suptitle(suptitle)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
