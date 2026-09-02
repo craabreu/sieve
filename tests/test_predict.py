@@ -132,10 +132,13 @@ def test_query_max_degree_above_training_max_degree_still_matches():
 def test_oov_neighbor_does_not_falsely_match_a_lower_degree_class():
     """A neighbor whose own class is OOV to the model must make the query
     node unmatchable at that level, not accidentally collide with the -1 pad
-    sentinel used for a genuinely absent neighbor. With a single bond type
-    (n_edge_types=2) the sole real bond code is n_edge_types-1, so an OOV
-    neighbor's encoded pair (-1 * n_edge_types + bond) lands exactly on -1
-    unless guarded."""
+    sentinel used for a genuinely absent neighbor.
+
+    The hazard only bites when the bond code equals n_edge_types - 1: then an
+    OOV neighbor's encoded pair (-1 * n_edge_types + bond) lands exactly on
+    -1. With one known bond type the alphabet is {SINGLE: 0, unknown: 1}, so
+    n_edge_types == 2 and the query below uses bond code 1 (the reserved
+    unknown, and n_edge_types - 1) deliberately."""
     from sieve.batch import NodeBatch
     from sieve.config import SieveConfig
 
@@ -143,7 +146,7 @@ def test_oov_neighbor_does_not_falsely_match_a_lower_degree_class():
         target_dim=1,
         attribute_levels=(("element",),),
         attribute_codes={"element": {"C": 0, "H": 1}},
-        edge_codes={"SINGLE": 1},
+        edge_codes={"bond_type": {"SINGLE": 0}},
         max_wl_depth=1,
         minimum_support=1,
     )
@@ -158,7 +161,9 @@ def test_oov_neighbor_does_not_falsely_match_a_lower_degree_class():
         y=np.array([[1.0], [2.0]]),
     )
     model = sieve.fit(train, cfg)
-    # Query: C bonded to H. H's own class is OOV; C's is not.
+    # Query: C bonded to H. H's own class is OOV; C's is not. Bond code 1 is
+    # the reserved unknown -- and n_edge_types - 1, the one value for which an
+    # OOV neighbor's encoded pair collides with the -1 pad sentinel.
     query = NodeBatch(
         node_attrs=np.array([[0], [1]], np.int64),
         edge_src=np.array([0, 1], np.int64),

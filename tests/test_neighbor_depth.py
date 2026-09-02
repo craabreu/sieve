@@ -19,7 +19,7 @@ _COARSE_CONFIG = SieveConfig(
     target_dim=1,
     attribute_levels=(("element",), ("degree",)),
     attribute_codes={"element": {"C": 0, "N": 1, "O": 2}, "degree": {"1": 0, "2": 1}},
-    edge_codes={"SINGLE": 1, "DOUBLE": 2},
+    edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
     max_wl_depth=3,
 )
 

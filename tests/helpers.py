@@ -11,7 +11,7 @@ _BASE_CONFIG = SieveConfig(
     target_dim=1,
     attribute_levels=(("element",),),
     attribute_codes={"element": {"C": 0, "H": 1}},
-    edge_codes={"SINGLE": 1, "DOUBLE": 2},
+    edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
     max_wl_depth=2,
 )
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 # Level kinds returned by SieveConfig.level_kinds (design.md 3.6).
 LEVEL_ATTR = "attr"
@@ -25,15 +26,17 @@ class SieveConfig:
     attributes on top of the previous level.
 
     ``attribute_codes`` and ``edge_codes`` are part of what a class *means*, so
-    they enter ``schema_version``: two models built with different encodings
-    cannot be merged even if every other field agrees.
+    they enter ``schema_version``, and so does ``edge_attributes`` -- it fixes
+    which edge column is which: two models built with different encodings or a
+    different column order cannot be merged even if every other field agrees.
     """
 
     target_dim: int
     attribute_levels: tuple[tuple[str, ...], ...]
     attribute_codes: Mapping[str, Mapping[str, int]]
-    edge_codes: Mapping[str, int]
+    edge_codes: Mapping[str, Mapping[str, int]]
     max_wl_depth: int
+    edge_attributes: tuple[str, ...] = ("bond_type",)
     neighbor_depth: int | None = None
     minimum_support: int = 1
     shrinkage_strength: float | None = None
@@ -68,6 +71,16 @@ class SieveConfig:
             # left level_parents indexing off the end of its own list).
             if self.neighbor_depth == a or self.max_wl_depth == 0:
                 object.__setattr__(self, "neighbor_depth", None)
+        # An empty edge schema is legal -- it is the pure-topology control arm
+        # -- so the zero-width rule above deliberately does not extend here.
+        object.__setattr__(self, "edge_attributes", tuple(self.edge_attributes))
+        if len(set(self.edge_attributes)) != len(self.edge_attributes):
+            raise ValueError(f"edge_attributes has a duplicate: {self.edge_attributes}")
+        if set(self.edge_attributes) != set(self.edge_codes):
+            raise ValueError(
+                "edge_attributes and edge_codes must name the same attributes: "
+                f"{sorted(self.edge_attributes)} != {sorted(self.edge_codes)}"
+            )
         self._freeze_mappings()
 
     def _freeze_mappings(self) -> None:
@@ -83,7 +96,13 @@ class SieveConfig:
                 {k: MappingProxyType(dict(v)) for k, v in self.attribute_codes.items()}
             ),
         )
-        object.__setattr__(self, "edge_codes", MappingProxyType(dict(self.edge_codes)))
+        object.__setattr__(
+            self,
+            "edge_codes",
+            MappingProxyType(
+                {k: MappingProxyType(dict(v)) for k, v in self.edge_codes.items()}
+            ),
+        )
 
     def __deepcopy__(self, memo: dict) -> SieveConfig:
         """Immutable, so a deep copy is never observably different from self.
@@ -108,7 +127,7 @@ class SieveConfig:
         """
         state = self.__dict__.copy()
         state["attribute_codes"] = {k: dict(v) for k, v in self.attribute_codes.items()}
-        state["edge_codes"] = dict(self.edge_codes)
+        state["edge_codes"] = {k: dict(v) for k, v in self.edge_codes.items()}
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -188,9 +207,22 @@ class SieveConfig:
         return tuple(range(a)) + tuple(range(first_h, first_h + depth))
 
     @property
+    def edge_radices(self) -> tuple[int, ...]:
+        """Alphabet size per edge attribute, in ``edge_attributes`` order,
+        including the code reserved for an unseen value."""
+        return tuple(len(self.edge_codes[n]) + 1 for n in self.edge_attributes)
+
+    @property
     def n_edge_types(self) -> int:
-        """Edge-code alphabet size, including the 0 slot reserved for padding."""
-        return max(self.edge_codes.values()) + 1
+        """Size of the collapsed edge alphabet -- the modulus ``refine``,
+        ``merge`` and ``predict`` encode a (neighbor label, edge) pair with.
+
+        A product over ``edge_radices`` because the columns collapse mixed
+        radix. The empty product is 1, which is exactly right for an empty
+        edge schema: every edge collapses to code 0 and the pair encoding
+        degenerates to the neighbor label alone.
+        """
+        return math.prod(self.edge_radices)
 
     @property
     def schema_version(self) -> str:
@@ -207,7 +239,10 @@ class SieveConfig:
                 k: dict(sorted(v.items()))
                 for k, v in sorted(self.attribute_codes.items())
             },
-            "edge_codes": dict(sorted(self.edge_codes.items())),
+            "edge_attributes": list(self.edge_attributes),
+            "edge_codes": {
+                k: dict(sorted(v.items())) for k, v in sorted(self.edge_codes.items())
+            },
             "max_wl_depth": self.max_wl_depth,
             "neighbor_depth": self.neighbor_depth,
         }
@@ -224,6 +259,6 @@ def check_mergeable(a: SieveConfig, b: SieveConfig) -> None:
     if a.schema_version != b.schema_version:
         raise ValueError(
             f"cannot merge: schema_version differs ({a.schema_version[:12]} != "
-            f"{b.schema_version[:12]}); attribute levels, codes, edge codes and "
-            "max_wl_depth must all match"
+            f"{b.schema_version[:12]}); attribute levels, codes, edge attributes, "
+            "edge codes and max_wl_depth must all match"
         )

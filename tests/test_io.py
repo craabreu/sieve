@@ -58,6 +58,24 @@ def test_unknown_format_version_is_refused(tmp_path):
         sieve.SieveModel.load(p)
 
 
+def test_loading_a_format_version_2_model_refuses_rather_than_guessing(tmp_path):
+    """format_version 2 stored edge_codes as a flat {value: code} table. There
+    is no migration (spec: clean break), so a v2 file must be refused outright
+    rather than guessed at (design.md 9.2)."""
+    import json
+
+    m = sieve.fit(chain_batch(6), simple_config())
+    p = tmp_path / "m.npz"
+    m.save(p)
+    data = dict(np.load(p, allow_pickle=False))
+    cfg = json.loads(bytes(data["config"]).decode())
+    cfg["format_version"] = 2
+    data["config"] = np.frombuffer(json.dumps(cfg).encode(), np.uint8)
+    np.savez(p, **data)
+    with pytest.raises(ValueError, match="format_version 2"):
+        sieve.SieveModel.load(p)
+
+
 def test_shrunk_means_are_not_stored(tmp_path):
     m = sieve.fit(chain_batch(10), simple_config(shrinkage_strength=2.0))
     p = tmp_path / "m.npz"

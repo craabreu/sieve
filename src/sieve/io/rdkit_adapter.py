@@ -149,6 +149,11 @@ _ATTRS = {
 }
 
 
+# Provisional single-entry table; Task 4 promotes this to the real
+# _BOND_ATTRS registry alongside _MOL_BOND_ATTRS.
+_BOND_ATTRS_PROVISIONAL = {"bond_type": lambda b: str(b.GetBondType())}
+
+
 def _min_ring_size(mol) -> list[str]:
     """Size of the smallest SSSR ring each atom belongs to, ``"none"`` when
     the atom is acyclic (the same sentinel ``group``/``chirality`` use).
@@ -372,7 +377,14 @@ def build_codes(mols, attributes, *, n_jobs: int | None = None):
         name: {v: i for i, v in enumerate(sorted(seen_by_attr[name]))}
         for name in attributes
     }
-    edge_codes = {"SINGLE": 1, "DOUBLE": 2, "TRIPLE": 3, "AROMATIC": 4}
+    # Provisional: Task 4 replaces this with corpus discovery through
+    # _BOND_ATTRS. Codes follow the node convention -- 0..k-1 over the sorted
+    # observed values, k reserved for unseen.
+    edge_codes = {
+        "bond_type": {
+            v: i for i, v in enumerate(["AROMATIC", "DOUBLE", "SINGLE", "TRIPLE"])
+        }
+    }
     return codes, edge_codes
 
 
@@ -406,7 +418,12 @@ def _from_rdkit_sequential(
     # slower than a dict's.
     tables = [dict(config.attribute_codes[name]) for name in flat]
     unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
-    edge_codes = dict(config.edge_codes)
+    # Provisional: Task 4 splits this into per-bond and molecule-level bond
+    # columns through the real _BOND_ATTRS / _MOL_BOND_ATTRS registries. For
+    # now every configured edge attribute is a per-bond callable.
+    edge_tables = [dict(config.edge_codes[name]) for name in config.edge_attributes]
+    edge_unknowns = [len(t) for t in edge_tables]
+    edge_getters = [_BOND_ATTRS_PROVISIONAL[name] for name in config.edge_attributes]
     # Resolve each flat attribute through exactly one registry, up front. Split
     # into per-atom and molecule-level columns so the per-atom loop below has no
     # None checks or `_MOL_ATTRS in?` lookups -- it runs once per atom *per
@@ -449,16 +466,23 @@ def _from_rdkit_sequential(
         for b in mol.GetBonds():
             u = off + int(inv[b.GetBeginAtomIdx()])
             v = off + int(inv[b.GetEndAtomIdx()])
-            c = edge_codes.get(str(b.GetBondType()), 0)
+            row = [
+                t.get(f(b), unk)
+                for t, unk, f in zip(
+                    edge_tables, edge_unknowns, edge_getters, strict=True
+                )
+            ]
             src += [u, v]
             dst += [v, u]
-            attr += [c, c]
+            attr += [row, row]
         off += mol.GetNumAtoms()
     return NodeBatch(
         node_attrs=node_attrs,
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attrs=np.array(attr, np.int64).reshape(-1, 1),
+        edge_attrs=np.array(attr, np.int64).reshape(
+            len(attr), len(config.edge_attributes)
+        ),
         graph_id=graph_id,
         y=y if y is not None else y_out,
         elements=elements,
