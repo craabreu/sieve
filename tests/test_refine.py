@@ -120,6 +120,109 @@ def test_edge_attr_outside_the_bond_alphabet_is_rejected():
         refine(bad, cfg())
 
 
+def two_bond_config(**kw):
+    return replace(
+        _BASE_CONFIG,
+        edge_attributes=("bond_type", "conjugated"),
+        edge_codes={
+            "bond_type": {"SINGLE": 0, "DOUBLE": 1},
+            "conjugated": {"False": 0, "True": 1},
+        },
+        max_wl_depth=1,
+        **kw,
+    )
+
+
+def two_paths(conj_a, conj_b):
+    """Two disjoint 3-node paths. Both bonds are SINGLE (code 0) in each; the
+    first path's bonds carry conjugated=`conj_a`, the second's `conj_b`."""
+    src = np.array([0, 1, 1, 2, 3, 4, 4, 5], np.int64)
+    dst = np.array([1, 0, 2, 1, 4, 3, 5, 4], np.int64)
+    cols = np.array([conj_a] * 4 + [conj_b] * 4, np.int64)
+    return NodeBatch(
+        node_attrs=np.zeros((6, 1), np.int64),
+        edge_src=src,
+        edge_dst=dst,
+        edge_attrs=np.stack([np.zeros(8, np.int64), cols], axis=1),
+        graph_id=np.array([0, 0, 0, 1, 1, 1], np.int64),
+        y=np.zeros((6, 1)),
+    )
+
+
+def test_a_second_edge_attribute_refines_the_partition():
+    """Two path centers identical in every way except their bonds'
+    `conjugated` value must land in different classes -- which only happens if
+    the second column actually reaches the pair encoding."""
+    b = two_paths(conj_a=0, conj_b=1)
+    labels = refine(b, two_bond_config())[-1].labels
+    assert labels[1] != labels[4]  # the two path centers
+
+
+def test_a_column_the_config_does_not_declare_is_ignored_consistently():
+    """With only bond_type declared, the conjugated column is not part of the
+    schema and the same two centers must collapse into one class."""
+    b = two_paths(conj_a=0, conj_b=1)
+    one_col = replace(
+        _BASE_CONFIG,
+        edge_attributes=("bond_type",),
+        edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
+        max_wl_depth=1,
+    )
+    trimmed = NodeBatch(**{**b.__dict__, "edge_attrs": b.edge_attrs[:, :1]})
+    labels = refine(trimmed, one_col)[-1].labels
+    assert labels[1] == labels[4]
+
+
+def test_column_count_must_match_the_declared_schema():
+    """A batch whose column count disagrees with edge_attributes means the
+    batch and config were built against different schemas. Raise -- silently
+    reading a prefix would conflate distinct classes."""
+    import pytest
+
+    b = two_paths(conj_a=0, conj_b=0)
+    with pytest.raises(ValueError, match="edge attribute column"):
+        refine(b, cfg())  # cfg() declares one attribute; b has two columns
+
+
+def test_empty_edge_schema_refines_on_topology_alone():
+    """edge_attributes == () collapses every edge to code 0 and n_edge_types
+    to 1, so `pair = base[dst] * 1 + 0` is just the neighbor label. The two
+    path centers, differing only in bond attributes, must merge."""
+    b = two_paths(conj_a=0, conj_b=1)
+    empty = replace(_BASE_CONFIG, edge_attributes=(), edge_codes={}, max_wl_depth=1)
+    stripped = NodeBatch(**{**b.__dict__, "edge_attrs": b.edge_attrs[:, :0]})
+    labels = refine(stripped, empty)[-1].labels
+    assert labels[1] == labels[4]
+    assert labels[0] == labels[3]  # endpoints too
+
+
+def test_edge_alphabet_is_config_determined_not_batch_determined():
+    """The collapse must be a pure function of the config. Deriving it from
+    the values present in the batch (dense_rows over edge_attrs, say) would
+    renumber the alphabet whenever a batch is missing a bond type, and every
+    class id would silently change meaning between fit and predict.
+
+    Fit on a corpus containing both bond types, then predict on the subset
+    that contains only one. Under a batch-determined collapse the subset's
+    codes shift and the nodes stop matching at the deepest level.
+    """
+    import sieve
+
+    cfg2 = two_bond_config()
+    # Graph 0: SINGLE bonds. Graph 1: DOUBLE bonds. Same topology.
+    b = two_paths(conj_a=0, conj_b=0)
+    attrs = b.edge_attrs.copy()
+    attrs[4:, 0] = 1  # graph 1's bonds become DOUBLE
+    full = NodeBatch(
+        **{**b.__dict__, "edge_attrs": attrs, "y": np.arange(6.0).reshape(-1, 1)}
+    )
+    model = sieve.fit(full, cfg2)
+
+    only_double = full[np.array([3, 4, 5])]
+    p = sieve.predict_detailed(model, only_double)
+    assert np.all(p.matched_level == cfg2.n_levels - 1)
+
+
 def test_node_attrs_width_mismatch_is_rejected():
     """A node_attrs narrower than config.attribute_levels declares silently
     slices past its own end instead of raising -- the tail attribute groups
