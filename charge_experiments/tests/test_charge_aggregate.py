@@ -71,3 +71,18 @@ def test_nan_metrics_are_dropped_not_read_as_values(tmp_path):
     row = read_runs_from_dirs(tmp_path)[0]
     assert row.metrics["mae"] == 0.1
     assert "r2" not in row.metrics
+
+
+def test_mlflow_metric_names_normalize_to_the_run_dir_spelling():
+    """_log_mlflow_run prefixes EVERY metric with "test/", so run-dir `mae`
+    is MLflow `test/mae` and run-dir `train/mae` is MLflow `test/train/mae`.
+    Exactly one leading `test/` is stripped -- stripping greedily would turn
+    a hypothetical `test/test/x` into `x`, and stripping none would make the
+    two sources disagree about what a curve means."""
+    from charge_experiments.aggregate import normalize_mlflow_metric_name as norm
+
+    assert norm("test/mae") == "mae"
+    assert norm("test/train/mae") == "train/mae"
+    assert norm("test/train_loo/r2") == "train_loo/r2"
+    assert norm("test/charge_conservation/mae") == "charge_conservation/mae"
+    assert norm("mae") == "mae"  # already normalized: left alone

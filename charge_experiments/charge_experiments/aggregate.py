@@ -57,6 +57,63 @@ def _finite_metrics(raw: Mapping[str, Any]) -> dict[str, float]:
     return out
 
 
+_MLFLOW_METRIC_PREFIX = "test/"
+
+
+def normalize_mlflow_metric_name(name: str) -> str:
+    """MLflow's spelling -> metrics.json's spelling.
+
+    ``runner._log_mlflow_run`` logs every metric as ``f"test/{key}"``,
+    including the ones already prefixed with their own split -- so run-dir
+    ``mae`` is MLflow ``test/mae`` and run-dir ``train/mae`` is MLflow
+    ``test/train/mae``. Exactly one prefix is removed. That quirk is worked
+    around here rather than fixed at the source, since changing it would
+    break comparison with every run already logged.
+    """
+    if name.startswith(_MLFLOW_METRIC_PREFIX):
+        return name[len(_MLFLOW_METRIC_PREFIX) :]
+    return name
+
+
+def read_runs_from_mlflow(tracking_uri: str, experiment: str) -> list[RunRow]:
+    """Read runs from an MLflow tracking backend, normalized to the same
+    ``RunRow`` shape ``read_runs_from_dirs`` returns.
+
+    Uses ``MlflowClient.search_runs`` (a typed ``list[Run]``) rather than
+    the top-level ``mlflow.search_runs`` (which returns a pandas DataFrame
+    by default).
+    """
+    from mlflow.tracking import MlflowClient
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    found = client.get_experiment_by_name(experiment)
+    if found is None:
+        return []
+
+    rows: list[RunRow] = []
+    for run in client.search_runs([found.experiment_id]):
+        params = dict(run.data.params)
+        raw_metrics = {
+            normalize_mlflow_metric_name(key): value
+            for key, value in run.data.metrics.items()
+        }
+        tags = run.data.tags
+        rows.append(
+            RunRow(
+                run_dir=str(tags.get("run_dir", "")),
+                params=params,
+                metrics=_finite_metrics(raw_metrics),
+                meta={
+                    "run_name": str(tags.get("mlflow.runName", "")),
+                    "split_column": str(params.get("data.split_column", "")),
+                    "seed": str(params.get("run.seed", "")),
+                    "git_commit": "",
+                },
+            )
+        )
+    return rows
+
+
 def read_runs_from_dirs(runs_root: Path, experiment: str | None = None) -> list[RunRow]:
     """Walk ``runs_root/<experiment>/<run>/`` for manifest+metrics pairs.
 
