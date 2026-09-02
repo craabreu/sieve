@@ -73,11 +73,12 @@ class ExperimentCfg:
     """Path to an earlier run's own ``tree_stats.npz`` (any predictor whose
     ``fit()`` is expensive to redo saves one automatically -- see
     ``runner._execute_inner``). When set, ``fit()`` is skipped in favor of
-    ``predictor.load_model_state(tree_stats_load_path)``; this run then
-    re-saves its own copy into its own directory regardless, so every run
-    stays self-contained rather than pointing back at another run's files.
-    Raises if the predictor has no ``load_model_state``. ``None`` (the
-    default) is today's behavior: always ``fit()``."""
+    ``predictor.load_model_state(tree_stats_load_path)``, and this run does
+    *not* write its own ``tree_stats.npz`` -- that would only be a
+    byte-identical duplicate of the file already at this path (real DASH
+    trees are O(100MB)); ``tree_stats_load_path`` itself is the provenance
+    record. Raises if the predictor has no ``load_model_state``. ``None``
+    (the default) is today's behavior: always ``fit()``, always saved."""
 
 
 def _check_keys(d: Mapping[str, Any], allowed: set[str], where: str) -> None:

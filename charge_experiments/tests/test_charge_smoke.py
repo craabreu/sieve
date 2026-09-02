@@ -251,7 +251,8 @@ def test_tree_stats_not_written_for_predictors_without_save_model_state(tmp_path
 def test_tree_stats_load_path_skips_fit_and_predicts_identically(tmp_path):
     """A second run pointed at a first run's own tree_stats.npz skips
     fit() (via load_model_state) and produces the same predictions as the
-    first run -- and still writes its own tree_stats.npz copy."""
+    first run -- and does not write its own redundant copy: the loaded
+    path is already the provenance record."""
     import pytest
 
     pytest.importorskip("rdkit")
@@ -282,7 +283,7 @@ def test_tree_stats_load_path_skips_fit_and_predicts_identically(tmp_path):
         tracking=None,
     )
     assert second.manifest["tree_stats_source"] == "loaded"
-    assert (second.run_dir / "tree_stats.npz").exists()
+    assert not (second.run_dir / "tree_stats.npz").exists()
     assert second.metrics["mae"] == first.metrics["mae"]
 
 

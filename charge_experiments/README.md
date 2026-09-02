@@ -80,8 +80,8 @@ set the top-level `normalization` key to `std_weighted` or `equal_weighted`:
 A predictor whose `fit()` is expensive to redo (has `save_model_state`,
 e.g. `dash`, `sieve`) has its fitted state written to that run's own
 `tree_stats.npz` automatically -- no config flag needed. A later run can
-skip `fit()` entirely and load it back via `tree_stats_load_path` (also
-writing its own copy, so every run stays self-contained):
+skip `fit()` entirely and load it back via `tree_stats_load_path` (no
+re-save of its own -- the loaded path is already the provenance record):
 
     uv run python -m charge_experiments run --config configs/dash-charge-example.yaml --set tree_stats_load_path=charge_experiments/runs/dash-charges/<earlier-run-dir>/tree_stats.npz
 
