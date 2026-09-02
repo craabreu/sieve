@@ -577,7 +577,7 @@ def test_from_rdkit_n_jobs_is_deterministic(n_jobs):
     np.testing.assert_array_equal(got.node_attrs, baseline.node_attrs)
     np.testing.assert_array_equal(got.edge_src, baseline.edge_src)
     np.testing.assert_array_equal(got.edge_dst, baseline.edge_dst)
-    np.testing.assert_array_equal(got.edge_attr, baseline.edge_attr)
+    np.testing.assert_array_equal(got.edge_attrs, baseline.edge_attrs)
     np.testing.assert_array_equal(got.graph_id, baseline.graph_id)
     assert got.elements is not None and baseline.elements is not None
     np.testing.assert_array_equal(got.elements, baseline.elements)
@@ -648,3 +648,161 @@ def test_from_rdkit_n_jobs_slices_array_y_by_atom_count_not_molecule_count():
     assert seq.y is not None and par.y is not None
     np.testing.assert_array_equal(seq.y, par.y)
     np.testing.assert_array_equal(seq.node_attrs, par.node_attrs)
+
+
+def test_edge_vocabularies_are_discovered_from_the_corpus():
+    """Bond codes used to be a hardcoded four-entry table; anything else (a
+    dative bond, say) collapsed onto code 0 with no signal. They are now
+    discovered like node attributes: sorted observed values get 0..k-1, and k
+    is reserved for the unseen."""
+    mols = [Chem.MolFromSmiles(s) for s in ["CCO", "C=C", "C#N"]]
+    _, edge_codes = build_codes(mols, ["element"], edge_attributes=("bond_type",))
+    assert set(edge_codes) == {"bond_type"}
+    assert set(edge_codes["bond_type"]) == {"SINGLE", "DOUBLE", "TRIPLE"}
+    assert sorted(edge_codes["bond_type"].values()) == [0, 1, 2]
+
+
+def test_conjugated_is_an_edge_attribute():
+    mols = [Chem.MolFromSmiles(s) for s in ["C=CC=C", "CCCC"]]
+    _, edge_codes = build_codes(
+        mols, ["element"], edge_attributes=("bond_type", "conjugated")
+    )
+    assert set(edge_codes["conjugated"]) == {"True", "False"}
+
+
+def test_two_edge_attributes_reach_the_batch_as_separate_columns():
+    smis = ["C=CC=C"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    codes, edge_codes = build_codes(
+        mols, ["element"], edge_attributes=("bond_type", "conjugated")
+    )
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=("bond_type", "conjugated"),
+        max_wl_depth=2,
+    )
+    b = from_smiles(smis, config=cfg)
+    assert b.edge_attrs.shape == (b.n_edges, 2)
+    # butadiene: every bond is conjugated, bond orders are not all equal
+    conj_col = b.edge_attrs[:, 1]
+    assert len(set(conj_col.tolist())) == 1
+    assert len(set(b.edge_attrs[:, 0].tolist())) == 2
+
+
+def test_an_unseen_bond_type_gets_the_reserved_code():
+    """A bond type absent from the fitting corpus must take the reserved code
+    above the observed maximum, so it fails to match and backs off rather than
+    colliding with a seen type."""
+    codes, edge_codes = build_codes(
+        [Chem.MolFromSmiles("CCO")], ["element"], edge_attributes=("bond_type",)
+    )
+    assert set(edge_codes["bond_type"]) == {"SINGLE"}
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=("bond_type",),
+        max_wl_depth=1,
+    )
+    b = from_smiles(["C=C"], config=cfg)  # DOUBLE was never seen
+    reserved = len(edge_codes["bond_type"])
+    assert (b.edge_attrs[:, 0] == reserved).all()
+
+
+@pytest.mark.parametrize("n_jobs", [None, 1, 2, 4])
+def test_edge_vocabulary_discovery_is_deterministic_under_n_jobs(n_jobs):
+    """Discovery is a set union -- commutative and associative -- and codes are
+    assigned from the sorted union, so chunk count cannot affect numbering."""
+    mols = [Chem.MolFromSmiles(s) for s in ["CCO", "C=C", "C#N", "c1ccccc1"]]
+    _, baseline = build_codes(mols, ["element"], edge_attributes=("bond_type",))
+    _, got = build_codes(
+        mols, ["element"], edge_attributes=("bond_type",), n_jobs=n_jobs
+    )
+    assert got == baseline
+
+
+def test_empty_edge_schema_end_to_end_refines_on_topology_alone():
+    """edge_attributes=() is the pure-topology control arm. The adapter must
+    emit an (n_edges, 0) array, and fit/predict must run without touching a
+    bond attribute anywhere. Butadiene and butane have identical topology, so
+    with no edge attributes their atoms must fall into the same classes --
+    and differ once bond_type is declared."""
+    smis = ["C=CC=C", "CCCC"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    codes, edge_codes = build_codes(mols, ["element"], edge_attributes=())
+    assert edge_codes == {}
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=(),
+        max_wl_depth=2,
+    )
+    b = from_smiles(smis, config=cfg)
+    assert b.edge_attrs.shape == (b.n_edges, 0)
+
+    labels = refine(b, cfg)[-1].labels
+    # atom i of butadiene and atom i of butane are topologically identical
+    assert labels[0] == labels[4]
+    assert labels[1] == labels[5]
+
+
+def test_bond_ring_attributes():
+    """The three edge-side ring attributes, on indane (fused cyclopentane +
+    benzene): the fusion bond sits in two rings and reports the smaller one,
+    an acyclic bond reports the sentinels. Sentinels follow the atom-side
+    convention -- "none" for a ring *size* that does not exist, "0" for a
+    count, which is a meaningful number."""
+    # Indane with a methyl, which supplies the acyclic bond. Putting the methyl
+    # on a fusion carbon instead ("C1CCc2ccccc21C") makes it 5-valent and
+    # RDKit returns None.
+    smis = ["CC1CCc2ccccc21"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    attrs = ("bond_in_ring", "bond_min_ring_size", "bond_num_ring_memberships")
+    codes, edge_codes = build_codes(mols, ["element"], edge_attributes=attrs)
+
+    assert set(edge_codes["bond_in_ring"]) == {"True", "False"}
+    assert "none" in edge_codes["bond_min_ring_size"]
+    assert {"5", "6"} <= set(edge_codes["bond_min_ring_size"])
+    assert {"0", "1", "2"} <= set(edge_codes["bond_num_ring_memberships"])
+
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=attrs,
+        max_wl_depth=1,
+    )
+    b = from_smiles(smis, config=cfg)
+    mol = mols[0]
+
+    def bond_row(pred):
+        """First batch row for a bond satisfying `pred`. The adapter emits two
+        rows per bond (both directions), in bond-index order."""
+        for bi, bond in enumerate(mol.GetBonds()):
+            if pred(bond):
+                return b.edge_attrs[2 * bi]
+        raise AssertionError("no bond matched")
+
+    value_of = [{v: k for k, v in edge_codes[name].items()} for name in attrs]
+
+    # Membership in both ring sizes identifies the fusion bond uniquely. A
+    # degree-based predicate does not: the methyl-bearing ring carbon also has
+    # degree 3, so its bond to the fusion carbon would match too -- and that
+    # bond is in one ring, not two.
+    fusion = bond_row(lambda bd: bd.IsInRingSize(5) and bd.IsInRingSize(6))
+    assert value_of[0][fusion[0]] == "True"
+    assert value_of[1][fusion[1]] == "5"
+    assert value_of[2][fusion[2]] == "2"
+
+    acyclic = bond_row(lambda bd: not bd.IsInRing())
+    assert value_of[0][acyclic[0]] == "False"
+    assert value_of[1][acyclic[1]] == "none"
+    assert value_of[2][acyclic[2]] == "0"

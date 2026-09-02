@@ -82,27 +82,45 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     # configured (design.md 3.6) -------------------------------------------
     csr = batch.csr()
     n_edge_types = config.n_edge_types
+    radices = config.edge_radices
+    if csr.attr.shape[1] != len(radices):
+        raise ValueError(
+            f"batch has {csr.attr.shape[1]} edge attribute columns, but config "
+            f"declares {len(radices)}: {list(config.edge_attributes)}"
+        )
     kinds = config.level_kinds[len(levels) :]
     parents = config.level_parents[len(levels) :]
     neighbor_src = config.neighbor_source[len(levels) :]
-    if kinds and csr.attr.size:
-        # `pair = base[dst] * n_edge_types + attr` assumes 0 <= attr <
-        # n_edge_types. A code outside that range collides with a *different*
-        # (label, bond) pair instead of raising, silently conflating two
-        # distinct classes.
-        bad = (csr.attr < 0) | (csr.attr >= n_edge_types)
-        if bad.any():
-            raise ValueError(
-                f"edge_attr contains code {int(csr.attr[bad][0])}, outside "
-                f"[0, {n_edge_types}) implied by config.edge_codes"
-            )
+    if kinds and csr.attr.shape[0]:
+        # Each column must stay inside its own radix. A code outside it makes
+        # the mixed-radix fold below collide with a *different* combination
+        # instead of raising, silently conflating two distinct classes.
+        for j, (name, radix) in enumerate(
+            zip(config.edge_attributes, radices, strict=True)
+        ):
+            col = csr.attr[:, j]
+            bad = (col < 0) | (col >= radix)
+            if bad.any():
+                raise ValueError(
+                    f"edge_attrs column {j} ({name!r}) contains code "
+                    f"{int(col[bad][0])}, outside [0, {radix}) implied by "
+                    f"config.edge_codes[{name!r}]"
+                )
+    # Collapse the per-attribute columns into one integer per edge, mixed
+    # radix. Derived from the *config*, never from the values present in this
+    # batch: dense_rows here would renumber the alphabet whenever a batch is
+    # missing a value, so a model's class ids would mean one thing at fit time
+    # and another at predict time (spec 2026-09-02, section 3).
+    edge_code = np.zeros(csr.attr.shape[0], np.int64)
+    for j, radix in enumerate(radices):
+        edge_code = edge_code * radix + csr.attr[:, j]
 
     for offset, kind in enumerate(kinds):
         base = levels[parents[offset]].labels
         if kind == LEVEL_WL:
             # Encode (neighbor label, bond) as one integer so a row of
             # neighbors is a plain integer vector.
-            pair = base[csr.dst] * n_edge_types + csr.attr
+            pair = base[csr.dst] * n_edge_types + edge_code
             pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
             pad[csr.src, csr.slot] = pair
             # Sorting canonicalizes the multiset; -1 pads sort first, and

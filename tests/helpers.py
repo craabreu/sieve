@@ -11,7 +11,7 @@ _BASE_CONFIG = SieveConfig(
     target_dim=1,
     attribute_levels=(("element",),),
     attribute_codes={"element": {"C": 0, "H": 1}},
-    edge_codes={"SINGLE": 1, "DOUBLE": 2},
+    edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
     max_wl_depth=2,
 )
 
@@ -36,7 +36,7 @@ def chain_batch(n, d=1, seed=0, graphs=1):
         node_attrs=(np.arange(total) % 2).reshape(-1, 1).astype(np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attr=np.ones(len(src), np.int64),
+        edge_attrs=np.ones(len(src), np.int64).reshape(-1, 1),
         graph_id=np.array(gid, np.int64),
         y=rng.normal(size=(total, d)),
     )
@@ -63,7 +63,7 @@ def star_batch(n_leaves, d=1, seed=0, graphs=1):
         node_attrs=np.zeros((total, 1), np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attr=np.ones(len(src), np.int64),
+        edge_attrs=np.ones(len(src), np.int64).reshape(-1, 1),
         graph_id=np.array(gid, np.int64),
         y=rng.normal(size=(total, d)),
     )

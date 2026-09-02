@@ -149,6 +149,67 @@ _ATTRS = {
 }
 
 
+# Per-bond attribute providers: ``f(bond) -> str``. The edge-side counterpart
+# of ``_ATTRS``, reached through ``SieveConfig.edge_attributes``. A separate
+# namespace from the atom registries -- which is why the ring attributes in
+# ``_MOL_BOND_ATTRS`` carry a ``bond_`` prefix.
+_BOND_ATTRS = {
+    "bond_type": lambda b: str(b.GetBondType()),
+    "conjugated": lambda b: str(b.GetIsConjugated()),
+}
+
+
+def _bond_ring_info(mol):
+    """``RingInfo`` after SSSR perception. RDKit caches the result on the
+    ``Mol``, so the three providers below and the atom-side ring attributes
+    share one perception per molecule."""
+    from rdkit import Chem
+
+    Chem.GetSymmSSSR(mol)
+    return mol.GetRingInfo()
+
+
+def _bond_in_ring(mol) -> list[str]:
+    """Whether each bond lies in any SSSR ring. Exactly derivable from either
+    provider below -- kept because it is the cheapest of the three, but a
+    config should declare one ring attribute, not several: they multiply the
+    edge alphabet without adding information."""
+    ri = _bond_ring_info(mol)
+    return [str(bool(ri.NumBondRings(i))) for i in range(mol.GetNumBonds())]
+
+
+def _bond_min_ring_size(mol) -> list[str]:
+    """Size of the smallest SSSR ring each bond belongs to, ``"none"`` when
+    the bond is acyclic -- a ring size of zero is meaningless, so this takes
+    the sentinel rather than "0" (the atom-side ``min_ring_size`` convention).
+    """
+    ri = _bond_ring_info(mol)
+    return [
+        str(ri.MinBondRingSize(i)) if ri.NumBondRings(i) else "none"
+        for i in range(mol.GetNumBonds())
+    ]
+
+
+def _bond_num_ring_memberships(mol) -> list[str]:
+    """Number of SSSR rings each bond belongs to -- ``"2"`` or more marks a
+    ring-fusion bond. Acyclic bonds get ``"0"``: a count of zero is meaningful,
+    unlike a ring size of zero (the atom-side ``num_ring_memberships``
+    convention)."""
+    ri = _bond_ring_info(mol)
+    return [str(ri.NumBondRings(i)) for i in range(mol.GetNumBonds())]
+
+
+# Molecule-level bond attribute providers: ``f(mol) -> Sequence[str]``, one
+# value per bond in RDKit *bond*-index order (the atom-side ``_MOL_ATTRS`` uses
+# atom-index order). Same rationale: whole-molecule precomputation runs once
+# per ``Mol``. A name lives in exactly one of the two edge registries.
+_MOL_BOND_ATTRS = {
+    "bond_in_ring": _bond_in_ring,
+    "bond_min_ring_size": _bond_min_ring_size,
+    "bond_num_ring_memberships": _bond_num_ring_memberships,
+}
+
+
 def _min_ring_size(mol) -> list[str]:
     """Size of the smallest SSSR ring each atom belongs to, ``"none"`` when
     the atom is acyclic (the same sentinel ``group``/``chirality`` use).
@@ -227,6 +288,16 @@ def _observed_values(name: str, mols) -> set[str]:
         return {v for m in mols for v in f(m)}
     f = _ATTRS[name]
     return {f(a) for m in mols for a in m.GetAtoms()}
+
+
+def _observed_edge_values(name: str, mols) -> set[str]:
+    """The set of raw string values edge attribute ``name`` takes across
+    ``mols`` -- the edge-side twin of ``_observed_values``."""
+    if name in _MOL_BOND_ATTRS:
+        f = _MOL_BOND_ATTRS[name]
+        return {v for m in mols for v in f(m)}
+    f = _BOND_ATTRS[name]
+    return {f(b) for m in mols for b in m.GetBonds()}
 
 
 def _serialize_mol(mol) -> bytes:
@@ -322,10 +393,13 @@ def _ensure_cip_labels(mol) -> None:
     mol.SetBoolProp(CIP_LABELED_PROP, True)
 
 
-def _discover_codes_chunk(blobs: list[bytes], attributes) -> dict[str, set[str]]:
+def _discover_codes_chunk(
+    blobs: list[bytes], attributes, edge_attributes
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Worker body for ``build_codes``: the per-attribute *set* of observed
-    values for one chunk of molecules (molecule-level attributes run their
-    own precompute -- CIP labeling, ring perception -- on the worker's copy).
+    values for one chunk of molecules, node attributes and edge attributes
+    separately (molecule-level providers run their own precompute -- CIP
+    labeling, ring perception -- on the worker's copy).
 
     Returns raw sets, not code tables -- assigning dense integer codes needs
     the union across every chunk first, so numbering happens once in the
@@ -333,15 +407,30 @@ def _discover_codes_chunk(blobs: list[bytes], attributes) -> dict[str, set[str]]
     chunks there are or which finishes first).
     """
     mols = [_deserialize_mol(b) for b in blobs]
-    return {name: _observed_values(name, mols) for name in attributes}
+    return (
+        {name: _observed_values(name, mols) for name in attributes},
+        {name: _observed_edge_values(name, mols) for name in edge_attributes},
+    )
 
 
-def build_codes(mols, attributes, *, n_jobs: int | None = None):
+def build_codes(
+    mols,
+    attributes,
+    *,
+    edge_attributes=("bond_type",),
+    n_jobs: int | None = None,
+):
     """Learn dense code tables from a corpus.
 
     Every attribute reserves one code above its observed maximum for unseen
     categories: an unknown value must fail to match at level 0 and back off,
     never silently collide with a seen one.
+
+    ``edge_attributes`` names the bond attributes to discover, resolved through
+    ``_BOND_ATTRS``/``_MOL_BOND_ATTRS``. It may be empty, which yields an empty
+    ``edge_codes`` and a pure-topology refinement. Edge vocabularies were
+    hardcoded before 2026-09; discovering them means an unusual bond type gets
+    the reserved unknown code instead of silently colliding on 0.
 
     ``n_jobs`` parallelizes the per-attribute value-discovery pass, which is
     a set union -- commutative and associative, so chunking and merging sets
@@ -355,24 +444,36 @@ def build_codes(mols, attributes, *, n_jobs: int | None = None):
     the worker's own copy, which is enough since only the discovered value
     set flows back.
     """
+    edge_attributes = tuple(edge_attributes)
     if n_jobs is None or n_jobs == 1 or len(mols) < 2:
         seen_by_attr = {name: _observed_values(name, mols) for name in attributes}
+        seen_by_edge = {
+            name: _observed_edge_values(name, mols) for name in edge_attributes
+        }
     else:
         n_chunks = 4 * effective_n_jobs(n_jobs)
         bounds = _chunk_boundaries_by_atom_count(mols, n_chunks)
         blob_chunks = [[_serialize_mol(m) for m in mols[s:e]] for s, e in bounds]
         results = Parallel(n_jobs=n_jobs)(
-            delayed(_discover_codes_chunk)(blobs, attributes) for blobs in blob_chunks
+            delayed(_discover_codes_chunk)(blobs, attributes, edge_attributes)
+            for blobs in blob_chunks
         )
         seen_by_attr = {
-            name: set().union(*(r[name] for r in results)) for name in attributes
+            name: set().union(*(r[0][name] for r in results)) for name in attributes
+        }
+        seen_by_edge = {
+            name: set().union(*(r[1][name] for r in results))
+            for name in edge_attributes
         }
 
     codes = {
         name: {v: i for i, v in enumerate(sorted(seen_by_attr[name]))}
         for name in attributes
     }
-    edge_codes = {"SINGLE": 1, "DOUBLE": 2, "TRIPLE": 3, "AROMATIC": 4}
+    edge_codes = {
+        name: {v: i for i, v in enumerate(sorted(seen_by_edge[name]))}
+        for name in edge_attributes
+    }
     return codes, edge_codes
 
 
@@ -406,7 +507,6 @@ def _from_rdkit_sequential(
     # slower than a dict's.
     tables = [dict(config.attribute_codes[name]) for name in flat]
     unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
-    edge_codes = dict(config.edge_codes)
     # Resolve each flat attribute through exactly one registry, up front. Split
     # into per-atom and molecule-level columns so the per-atom loop below has no
     # None checks or `_MOL_ATTRS in?` lookups -- it runs once per atom *per
@@ -422,12 +522,28 @@ def _from_rdkit_sequential(
             atom_cols.append((j, atom_f))
         else:
             raise ValueError(f"unknown attribute {name!r}")
+    # Same split for the edge attributes: per-bond callables vs molecule-level
+    # bond providers (ring membership etc.), each column resolved to one path.
+    edge_tables = [dict(config.edge_codes[name]) for name in config.edge_attributes]
+    edge_unknowns = [len(t) for t in edge_tables]
+    bond_getters = []  # (column index, f(bond) -> str)
+    mol_bond_cols = []  # (column index, f(mol) -> Sequence[str])
+    for k, name in enumerate(config.edge_attributes):
+        mol_f = _MOL_BOND_ATTRS.get(name)
+        bond_f = _BOND_ATTRS.get(name)
+        if mol_f is not None:
+            mol_bond_cols.append((k, mol_f))
+        elif bond_f is not None:
+            bond_getters.append((k, bond_f))
+        else:
+            raise ValueError(f"unknown edge attribute {name!r}")
     for gi, mol in enumerate(mols):
         # Molecule-level attributes (ring perception, CIP labeling, ...) do
         # their whole-molecule precompute here, once, rather than once per
         # atom below. Indexed by raw RDKit atom index, so a permuted `order`
         # still lands each atom's value on its own row.
         mol_vals = {j: f(mol) for j, f in mol_cols}
+        mol_bond_vals = {k: f(mol) for k, f in mol_bond_cols}
         order = (
             list(range(mol.GetNumAtoms()))
             if node_order is None
@@ -449,16 +565,23 @@ def _from_rdkit_sequential(
         for b in mol.GetBonds():
             u = off + int(inv[b.GetBeginAtomIdx()])
             v = off + int(inv[b.GetEndAtomIdx()])
-            c = edge_codes.get(str(b.GetBondType()), 0)
+            bi = b.GetIdx()  # raw bond index -- what _MOL_BOND_ATTRS keys on
+            row = [0] * len(config.edge_attributes)
+            for k, bond_f in bond_getters:
+                row[k] = edge_tables[k].get(bond_f(b), edge_unknowns[k])
+            for k, vals in mol_bond_vals.items():
+                row[k] = edge_tables[k].get(vals[bi], edge_unknowns[k])
             src += [u, v]
             dst += [v, u]
-            attr += [c, c]
+            attr += [row, row]
         off += mol.GetNumAtoms()
     return NodeBatch(
         node_attrs=node_attrs,
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attr=np.array(attr, np.int64),
+        edge_attrs=np.array(attr, np.int64).reshape(
+            len(attr), len(config.edge_attributes)
+        ),
         graph_id=graph_id,
         y=y if y is not None else y_out,
         elements=elements,
