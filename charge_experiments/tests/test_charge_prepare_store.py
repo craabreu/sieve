@@ -536,7 +536,7 @@ def test_subsample_store_n_stores_raises_before_writing_when_source_is_too_small
     _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
 
     # 4 stores x round(20*0.6)=12 train molecules = 48 > the 30 train has.
-    with pytest.raises(ValueError, match="train split.*too few for 4 disjoint"):
+    with pytest.raises(ValueError, match=r"train split.*too few for 4 disjoint"):
         subsample_store(
             "source-store",
             "dest-store",

@@ -1,3 +1,14 @@
+> **Superseded (2026-09-02).** The nested-run machinery this spec describes
+> (`nested_runner.py`/`nested_config.py`, the `run-nested` CLI command) has
+> been deleted in favor of a single top-level `normalization` config key on
+> the flat `run` command -- the only thing the nesting bought (comparing
+> normalization schemes without re-fitting) needs no second run level, since
+> a flat run's own `predict_raw` already computes the raw walk once. The
+> tree-stats persistence problem this spec also solved
+> (`save_model_state`/`load_model_state`, `tree_artifact.py`) was dropped
+> along with it and not replaced -- see `charge_experiments/README.md`'s
+> Usage section for the current mechanism. Kept below for history.
+
 # Nested MLflow runs: persisted tree stats + raw/normalized DASH predictions
 
 ## Context

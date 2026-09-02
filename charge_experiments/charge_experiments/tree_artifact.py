@@ -3,9 +3,8 @@
 a train split (a mean and std of ``MBIScharge`` at every ``(branch_idx,
 node_id)`` its own atoms matched), separated out so it can be saved once and
 reloaded without re-running the expensive ``match_new_atom`` walk that
-produces it -- see nested_runner.py, where a "raw predict" parent run saves
-this and later children reload it. See docs/superpowers/specs/
-2026-08-27-dash-charges-nested-runs-design.md.
+produces it -- see ``DASHChargePredictor.save_model_state``/
+``load_model_state``.
 """
 
 from __future__ import annotations

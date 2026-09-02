@@ -5,6 +5,7 @@ no mlflow required (tracking=None)."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import numpy as np
 from charge_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
@@ -218,3 +219,63 @@ def test_report_loo_is_ignored_by_predictors_without_it(tmp_path):
         _tiny_cfg(), mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )
     assert not any(k.startswith("train_loo/") for k in result.metrics)
+
+
+def test_normalization_conserves_charge_on_every_split(tmp_path):
+    """With normalization set, predict_raw's output is renormalized before
+    scoring -- test/train/val/LOO should all come out charge-conserving
+    (charge_conservation/mae ~ 0), which plain predict() does not
+    guarantee (see sieve_predictor.py's own docstring)."""
+    import pytest
+
+    pytest.importorskip("rdkit")
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_sieve_cfg(report_loo=True), normalization="equal_weighted")
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert result.metrics["charge_conservation/mae"] < 1e-8
+    assert result.metrics["train/charge_conservation/mae"] < 1e-8
+    assert result.metrics["val/charge_conservation/mae"] < 1e-8
+    assert result.metrics["train_loo/charge_conservation/mae"] < 1e-8
+
+
+def test_normalization_none_matches_plain_predict(tmp_path):
+    """The default (no normalization key) is byte-for-byte today's
+    behavior: predict()'s own output, unnormalized."""
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+
+    plain = execute(
+        _tiny_cfg(),
+        mset,
+        masks,
+        runs_root=tmp_path / "a",
+        allow_dirty=True,
+        tracking=None,
+    )
+    explicit_none = execute(
+        replace(_tiny_cfg(), normalization=None),
+        mset,
+        masks,
+        runs_root=tmp_path / "b",
+        allow_dirty=True,
+        tracking=None,
+    )
+    assert plain.metrics["mae"] == explicit_none.metrics["mae"]
+
+
+def test_normalization_rejects_a_predictor_without_predict_raw(tmp_path):
+    """global_mean has no predict_raw -- there is nothing to normalize, so
+    this must raise rather than silently ignore the setting."""
+    import pytest
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_tiny_cfg(), normalization="std_weighted")
+
+    with pytest.raises(AttributeError, match="predict_raw"):
+        execute(cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None)

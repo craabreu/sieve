@@ -1,8 +1,10 @@
 """Run configuration: YAML in, frozen dataclasses out. Mirrors
-cosmo_experiments/sieve_experiments/config.py's shape; this series drops the
-`scheme` field (no sigma-averaging-scheme concept here) and has exactly one
-valid split column (`split` -- this series builds no size-biased second
-split, per the design spec's "Out of scope" list)."""
+cosmo_experiments/sieve_experiments/config.py's shape, with one series-
+specific addition: an optional top-level `normalization` key (a name from
+``normalize.NORMALIZERS``) applied to a predictor's raw output -- see
+``ExperimentCfg.normalization``'s own docstring and runner.py's `_predict`.
+There is exactly one valid split column (`split` -- this series builds no
+size-biased second split, per the design spec's "Out of scope" list)."""
 
 from __future__ import annotations
 
@@ -14,12 +16,14 @@ from typing import Any
 
 import yaml
 
+from charge_experiments.normalize import NORMALIZERS
+
 VALID_SPLIT_COLUMNS = ("split",)
 
 _RUN_KEYS = {"experiment", "seed", "tags"}
 _DATA_KEYS = {"store", "split_column", "train_split", "val_split", "eval_split"}
 _PREDICTOR_KEYS = {"name", "params"}
-_TOP_KEYS = {"run", "data", "predictor"}
+_TOP_KEYS = {"run", "data", "predictor", "normalization"}
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,12 @@ class ExperimentCfg:
     run: RunCfg
     data: DataCfg
     predictor: PredictorCfg
+    normalization: str | None = None
+    """A key into ``normalize.NORMALIZERS`` -- when set, the run predicts via
+    the predictor's own ``predict_raw`` and applies this scheme to every
+    split (test/train/val/LOO) instead of calling ``predict()`` directly.
+    ``None`` (the default) is today's behavior: each predictor's own
+    internal handling, unchanged."""
 
 
 def _check_keys(d: Mapping[str, Any], allowed: set[str], where: str) -> None:
@@ -126,7 +136,16 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
         name=predictor_raw["name"], params=dict(predictor_raw.get("params", {}))
     )
 
-    return ExperimentCfg(run=run, data=data, predictor=predictor)
+    normalization = raw.get("normalization")
+    if normalization is not None and normalization not in NORMALIZERS:
+        raise ValueError(
+            f"normalization must be one of {sorted(NORMALIZERS)} or omitted, "
+            f"got {normalization!r}"
+        )
+
+    return ExperimentCfg(
+        run=run, data=data, predictor=predictor, normalization=normalization
+    )
 
 
 def load_config(path: str | Path, overrides: Sequence[str] = ()) -> ExperimentCfg:
@@ -162,6 +181,7 @@ def to_dict(cfg: ExperimentCfg) -> dict[str, Any]:
             "eval_split": cfg.data.eval_split,
         },
         "predictor": {"name": cfg.predictor.name, "params": dict(cfg.predictor.params)},
+        "normalization": cfg.normalization,
     }
 
 
@@ -184,4 +204,5 @@ def to_flat_params(cfg: ExperimentCfg) -> dict[str, str]:
     )
     _flatten("predictor.name", cfg.predictor.name, out)
     _flatten("predictor.params", dict(cfg.predictor.params), out)
+    _flatten("normalization", cfg.normalization, out)
     return out

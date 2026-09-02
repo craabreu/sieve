@@ -1,7 +1,7 @@
 """Normalization schemes applied to a DASH-tree predictor's raw, unnormalized
-per-atom charge walk -- kept independent of any predictor so a nested run can
-apply several to the same already-computed raw predictions without
-re-matching or re-fitting anything (see nested_runner.py).
+per-atom charge walk -- kept independent of any predictor so a run can apply
+one to an already-computed raw prediction without re-matching or re-fitting
+anything (see ``config.ExperimentCfg.normalization`` and ``runner._predict``).
 
 Every entry in ``NORMALIZERS`` shares one signature, ``(raw_charge, raw_std,
 net_charge, mol_id, n_conformers) -> atom_charge``, even though

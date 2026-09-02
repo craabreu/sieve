@@ -35,6 +35,7 @@ from charge_experiments import metrics as metrics_mod
 from charge_experiments import plots
 from charge_experiments.config import ExperimentCfg, to_dict, to_flat_params
 from charge_experiments.data import REPO_ROOT, MoleculeSet, molecule_sum
+from charge_experiments.normalize import NORMALIZERS
 from charge_experiments.predictors import build
 from charge_experiments.predictors.base import Prediction
 
@@ -184,20 +185,55 @@ def execute(
         file_handler.close()
 
 
+def _normalize(raw: Any, mset: MoleculeSet, *, normalization: str) -> Prediction:
+    """Apply ``normalize.NORMALIZERS[normalization]`` to a predictor's raw
+    walk output (``predictors.base.RawPrediction``, from ``predict_raw``/
+    ``predict_loo_raw``) -- the same call shape the old nested_runner.py
+    used, now reachable from a flat run's ``normalization`` config key."""
+    atom_charge = NORMALIZERS[normalization](
+        raw.atom_charge,
+        raw.atom_std,
+        mset.net_charge,
+        mset.atom_mol_id,
+        mset.n_conformers,
+    )
+    return Prediction(atom_charge=atom_charge)
+
+
+def _predict(predictor: Any, mset: MoleculeSet, *, cfg: ExperimentCfg) -> Prediction:
+    """``predictor.predict(mset)``, unless ``cfg.normalization`` is set, in
+    which case the predictor's own raw output is fetched via
+    ``predict_raw`` and that scheme applied instead. Raises if a
+    normalization is requested from a predictor that has no ``predict_raw``
+    (e.g. ``global_mean``) -- there is no raw output to normalize."""
+    if cfg.normalization is None:
+        return predictor.predict(mset)
+    if not hasattr(predictor, "predict_raw"):
+        raise AttributeError(
+            f"predictor {cfg.predictor.name!r} has no predict_raw method; "
+            f"normalization={cfg.normalization!r} is not usable with it"
+        )
+    return _normalize(
+        predictor.predict_raw(mset), mset, normalization=cfg.normalization
+    )
+
+
 def _score_extra_split(
-    predictor: Any, mset: MoleculeSet, *, split: str
+    predictor: Any, mset: MoleculeSet, *, split: str, cfg: ExperimentCfg
 ) -> dict[str, float]:
     """Predict + score train/val the same way test is scored, mirroring
     cosmo_experiments' own train/val-alongside-test convention. Empty split
     -> no keys, not a crash."""
     if mset.n_conformers == 0:
         return {}
-    pred = predictor.predict(mset)
+    pred = _predict(predictor, mset, cfg=cfg)
     score = _score(mset, pred)
     return {f"{split}/{k}": v for k, v in score.items()}
 
 
-def _score_loo(predictor: Any, train: MoleculeSet) -> dict[str, float]:
+def _score_loo(
+    predictor: Any, train: MoleculeSet, *, cfg: ExperimentCfg
+) -> dict[str, float]:
     """Leave-one-out scoring of the *training* split, when the predictor
     opts in via ``report_loo``. Train-only by construction: LOO subtracts a
     node's own contribution from its class mean, which for a val or test
@@ -209,7 +245,12 @@ def _score_loo(predictor: Any, train: MoleculeSet) -> dict[str, float]:
     if train.n_conformers == 0:
         return {}
     raw = predictor.predict_loo_raw(train)
-    score = _score(train, Prediction(atom_charge=raw.atom_charge))
+    pred = (
+        _normalize(raw, train, normalization=cfg.normalization)
+        if cfg.normalization is not None
+        else Prediction(atom_charge=raw.atom_charge)
+    )
+    score = _score(train, pred)
     return {f"train_loo/{k}": v for k, v in score.items()}
 
 
@@ -328,19 +369,19 @@ def _execute_inner(
     fit_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    train_metrics = _score_extra_split(predictor, train, split="train")
+    train_metrics = _score_extra_split(predictor, train, split="train", cfg=cfg)
     train_predict_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    val_metrics = _score_extra_split(predictor, val, split="val")
+    val_metrics = _score_extra_split(predictor, val, split="val", cfg=cfg)
     val_predict_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    loo_metrics = _score_loo(predictor, train)
+    loo_metrics = _score_loo(predictor, train, cfg=cfg)
     loo_predict_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    pred = predictor.predict(test)
+    pred = _predict(predictor, test, cfg=cfg)
     predict_s = time.perf_counter() - t0
 
     run_metrics = _score(test, pred)
@@ -436,9 +477,9 @@ def _log_mlflow_run(
     run_dir: Path,
 ) -> None:
     """Log tags/params/metrics/artifacts onto whatever MLflow run is
-    currently open (inside ``mlflow.start_run``'s own context) -- shared by
-    the flat run path (``_log_mlflow``, below) and nested_runner.py's own
-    parent/child ``mlflow.start_run(nested=True)`` contexts."""
+    currently open (inside ``mlflow.start_run``'s own context) -- split out
+    of ``_log_mlflow`` (below) so the actual logging calls have one place to
+    live regardless of what opened the run."""
     import mlflow
 
     mlflow.set_tags(tags)

@@ -54,16 +54,13 @@ class NormalizableChargePredictor(Predictor, Protocol):
     output separately -- ``predictors/dash.py``'s ``DASHChargePredictor``,
     ``predictors/dash_pretrained.py``'s ``DASHPretrainedChargePredictor``,
     and ``predictors/sieve_predictor.py``'s ``SievePredictor`` all implement
-    this; ``nested_runner.py`` requires it.
+    this; ``runner._predict`` requires it whenever a run sets
+    ``config.ExperimentCfg.normalization``.
 
     A predictor whose ``fit()`` is expensive to redo may additionally
     implement ``save_model_state(path)``/``load_model_state(path)`` -- not
     part of this Protocol (their argument/return shape has no reason to be
     uniform: ``DASHChargePredictor``'s is a small per-node stats table,
-    ``SievePredictor``'s is its own ``sieve.SieveModel.save``/``.load``).
-    ``nested_runner.execute_nested`` checks for them via ``hasattr``, not an
-    ``isinstance`` check, and treats their absence (e.g.
-    ``DASHPretrainedChargePredictor``, whose ``fit()`` is already a genuine
-    no-op) as "nothing to persist," not an error."""
+    ``SievePredictor``'s is its own ``sieve.SieveModel.save``/``.load``)."""
 
     def predict_raw(self, test: MoleculeSet) -> RawPrediction: ...

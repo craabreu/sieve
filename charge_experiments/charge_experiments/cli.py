@@ -10,7 +10,6 @@ from pathlib import Path
 
 from charge_experiments.config import load_config
 from charge_experiments.data import DEFAULT_STORES_ROOT
-from charge_experiments.nested_config import load_nested_config
 from charge_experiments.runner import DEFAULT_RUNS_ROOT, DEFAULT_TRACKING_URI, run
 
 SUMMARY_COLUMNS = [
@@ -54,30 +53,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_run_nested(args: argparse.Namespace) -> int:
-    from charge_experiments.nested_runner import (
-        DEFAULT_RUNS_ROOT as NESTED_RUNS_ROOT,
-    )
-    from charge_experiments.nested_runner import (
-        DEFAULT_TRACKING_URI as NESTED_TRACKING_URI,
-    )
-    from charge_experiments.nested_runner import run_nested
-
-    cfg = load_nested_config(args.config, overrides=args.set)
-    tracking = None if args.no_tracking else NESTED_TRACKING_URI
-    result = run_nested(
-        cfg,
-        runs_root=NESTED_RUNS_ROOT,
-        allow_dirty=args.allow_dirty,
-        tracking=tracking,
-        limit=args.limit,
-    )
-    print(f"parent run written to {result.parent.run_dir}")
-    for name, child in result.children.items():
-        print(f"child run ({name}) written to {child.run_dir}")
-    return 0
-
-
 def _cmd_prepare_store(args: argparse.Namespace) -> int:
     from charge_experiments.prepare_store import prepare_store
 
@@ -102,7 +77,7 @@ def _cmd_subsample_store(args: argparse.Namespace) -> int:
     else:
         names = [f"{args.dest}-{i + 1}" for i in range(args.n_stores)]
         summaries = result
-    for name, summary_text in zip(names, summaries):
+    for name, summary_text in zip(names, summaries, strict=True):
         print(f"wrote {name!r} (subsampled from {args.source!r}):\n{summary_text}")
     return 0
 
@@ -231,30 +206,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-tracking", action="store_true", help="skip MLflow logging for this run"
     )
     p_run.set_defaults(func=_cmd_run)
-
-    p_run_nested = sub.add_parser(
-        "run-nested",
-        help="run one predictor's fit()+save+raw-predict, plus a nested "
-        "child run per normalization scheme",
-    )
-    p_run_nested.add_argument("--config", required=True, type=Path)
-    p_run_nested.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="key.path=value",
-        help="override a config value; may be passed multiple times",
-    )
-    p_run_nested.add_argument(
-        "--limit", type=int, default=None, help="use only the first N conformers"
-    )
-    p_run_nested.add_argument(
-        "--allow-dirty", action="store_true", help="run with an uncommitted git tree"
-    )
-    p_run_nested.add_argument(
-        "--no-tracking", action="store_true", help="skip MLflow logging for this run"
-    )
-    p_run_nested.set_defaults(func=_cmd_run_nested)
 
     p_prepare = sub.add_parser(
         "prepare-store", help="download, parse, and split the DASH molecules SDF"

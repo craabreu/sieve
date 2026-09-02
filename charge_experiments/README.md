@@ -8,12 +8,16 @@ Fully independent of `cosmo_experiments` (sigma-profile prediction) at the
 harness level -- no shared package, only the core `sieve` dependency in
 common. See
 `docs/superpowers/specs/2026-08-26-dash-charges-experiment-series-design.md`
-for the full design, `docs/superpowers/specs/2026-08-27-dash-charges-nested-runs-design.md`
-for the nested-run (raw + per-normalization-scheme) orchestration, and
-`docs/dash_molecules_sdf.md` for findings from actually running
-`prepare-store` against the real published SDF (a download gotcha, a
-property-serialization bug, and the discovery that the file holds two
-distinct record schemas).
+for the full design and `docs/dash_molecules_sdf.md` for findings from
+actually running `prepare-store` against the real published SDF (a download
+gotcha, a property-serialization bug, and the discovery that the file holds
+two distinct record schemas).
+
+`docs/superpowers/specs/2026-08-27-dash-charges-nested-runs-design.md`
+describes an earlier nested-run orchestration (a parent run doing
+`fit()`+raw-predict, one MLflow child run per normalization scheme) that has
+since been replaced by the flat run's own `normalization` config key --
+superseded, kept for history.
 
 ## Usage
 
@@ -62,17 +66,18 @@ smaller store instead of the full one.
 
 ### Running an experiment
 
-A flat, single-predictor run:
+A single-predictor run:
 
     uv run python -m charge_experiments run --config configs/dash-charge-example.yaml
 
-A nested run -- one predictor's `fit()`+save+raw-predict as an MLflow
-parent, plus one child run per normalization scheme (`std_weighted`/
-`equal_weighted`), reusing the same raw predictions with no re-fit:
+By default a run's own metrics come straight from `predictor.predict()`. To
+instead apply one of DASH's own post-hoc charge-conservation schemes to a
+normalizable predictor's raw walk output (`predict_raw`, no re-fit needed),
+set the top-level `normalization` key to `std_weighted` or `equal_weighted`:
 
-    uv run python -m charge_experiments run-nested --config configs/dash-nested-charge-example.yaml
+    uv run python -m charge_experiments run --config configs/dash-charge-example.yaml --set normalization=std_weighted
 
-Point either at a different store with `--set data.store=dash-molecules-50k`,
+Point a run at a different store with `--set data.store=dash-molecules-50k`,
 or use `--limit N` for a quick sanity check against whatever store is
 configured.
 
