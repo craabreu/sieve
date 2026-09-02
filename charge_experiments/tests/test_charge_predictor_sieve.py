@@ -104,6 +104,62 @@ def test_build_config_accepts_graded_attribute_levels_and_neighbor_depth():
     assert set(config.attribute_codes) == {"element", "degree", "aromatic"}
 
 
+def test_build_config_defaults_edge_attributes_to_bond_type():
+    from charge_experiments.predictors.sieve_predictor import _build_config
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    config = _build_config(
+        mset.mols,
+        attributes=("element",),
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    assert set(config.edge_codes) == {"bond_type"}
+
+
+def test_build_config_accepts_no_edge_attributes():
+    """edge_attributes=() -- a pure-topology refinement, no bond attribute
+    at all (build_codes's own documented behavior for an empty tuple)."""
+    from charge_experiments.predictors.sieve_predictor import _build_config
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    config = _build_config(
+        mset.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=0,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    assert config.edge_codes == {}
+    assert config.attribute_codes.keys() == {"element"}
+
+
+def test_sieve_charge_predictor_accepts_edge_attributes_end_to_end():
+    """SievePredictor.__init__ -> fit() actually threads edge_attributes
+    through to _build_config, not just the private helper directly."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=8, seed=0)
+    predictor = SievePredictor(
+        attributes=("element",), edge_attributes=(), max_wl_depth=0
+    )
+    predictor.fit(train, train, rng=np.random.default_rng(0))
+    assert predictor._config.edge_codes == {}
+    assert predictor._config.attribute_codes.keys() == {"element"}
+    pred = predictor.predict(train)
+    assert pred.atom_charge.shape == (train.n_atoms,)
+
+
 def test_sieve_charge_predictor_n_jobs_matches_sequential():
     """n_jobs is an execution-strategy choice, never a change in meaning --
     fit+predict under n_jobs=4 must reproduce n_jobs=None exactly."""

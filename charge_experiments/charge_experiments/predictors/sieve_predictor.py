@@ -52,6 +52,7 @@ def _build_config(
     *,
     attributes: tuple[str, ...],
     attribute_levels: tuple[tuple[str, ...], ...] | None = None,
+    edge_attributes: tuple[str, ...] = ("bond_type",),
     neighbor_depth: int | None = None,
     target_dim: int,
     max_wl_depth: int,
@@ -71,6 +72,10 @@ def _build_config(
     ``attribute_levels`` need not keep the two in sync -- the flat name list
     ``build_codes`` needs is derived from ``attribute_levels`` directly.
 
+    ``edge_attributes`` defaults to ``build_codes``'s own default,
+    ``("bond_type",)``; passing ``()`` yields an empty ``edge_codes`` and a
+    pure-topology refinement (see ``build_codes``'s own docstring).
+
     ``n_jobs`` parallelizes ``build_codes``'s own vocabulary-discovery pass
     -- profiling showed this and ``from_rdkit`` (``_batch_for``, below) are
     ~96% of a real fit, against ~4% for ``sieve.fit`` itself.
@@ -80,12 +85,15 @@ def _build_config(
 
     levels = attribute_levels if attribute_levels is not None else (attributes,)
     flat = [name for group in levels for name in group]
-    codes, edge_codes = build_codes(train_mols, flat, n_jobs=n_jobs)
+    codes, edge_codes = build_codes(
+        train_mols, flat, edge_attributes=edge_attributes, n_jobs=n_jobs
+    )
     return SieveConfig(
         target_dim=target_dim,
         attribute_levels=levels,
         attribute_codes=codes,
         edge_codes=edge_codes,
+        edge_attributes=edge_attributes,
         max_wl_depth=max_wl_depth,
         neighbor_depth=neighbor_depth,
         minimum_support=minimum_support,
@@ -119,6 +127,9 @@ class SievePredictor:
     ``attribute_levels`` is what makes ``neighbor_depth`` usable at all
     (design.md 3.6): a single level admits no valid coarsening depth.
 
+    ``edge_attributes`` defaults to ``("bond_type",)``; ``()`` yields a
+    pure-topology refinement -- see ``_build_config``'s own docstring.
+
     ``n_jobs`` parallelizes featurization (``build_codes``/``from_rdkit``),
     which profiling showed is ~96% of a real fit -- ``sieve.fit`` itself is
     ~4%, so this is deliberately not where ``n_jobs`` is spent. ``None``
@@ -138,6 +149,7 @@ class SievePredictor:
         *,
         attributes: tuple[str, ...] = DEFAULT_ATTRIBUTES,
         attribute_levels: tuple[tuple[str, ...], ...] | None = None,
+        edge_attributes: tuple[str, ...] = ("bond_type",),
         neighbor_depth: int | None = None,
         max_wl_depth: int = 3,
         minimum_support: int = 1,
@@ -149,6 +161,7 @@ class SievePredictor:
         self.attribute_levels = (
             None if attribute_levels is None else tuple(attribute_levels)
         )
+        self.edge_attributes = tuple(edge_attributes)
         self.neighbor_depth = neighbor_depth
         self.max_wl_depth = max_wl_depth
         self.minimum_support = minimum_support
@@ -182,6 +195,7 @@ class SievePredictor:
             train.mols,
             attributes=self.attributes,
             attribute_levels=self.attribute_levels,
+            edge_attributes=self.edge_attributes,
             neighbor_depth=self.neighbor_depth,
             target_dim=1,
             max_wl_depth=self.max_wl_depth,
