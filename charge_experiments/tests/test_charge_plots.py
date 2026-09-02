@@ -181,3 +181,41 @@ def test_parity_panel_no_panels_writes_nothing(tmp_path):
     out_path = tmp_path / "parity_panel.png"
     plots.parity_panel([], out_path, suptitle="test")
     assert not out_path.exists()
+
+
+def test_curve_panel_writes_one_subplot_per_metric(tmp_path):
+    """One subplot per metric, one line per series, with a min-max band."""
+    pytest.importorskip("matplotlib")
+
+    from charge_experiments.aggregate import CurvePoint, CurveTable
+    from charge_experiments.plots import curve_panel
+
+    table = CurveTable(
+        x="predictor.params.max_wl_depth",
+        series={
+            ("test", "mae"): [
+                CurvePoint("1", 1.0, 0.20, 0.18, 0.22, 2),
+                CurvePoint("2", 2.0, 0.10, 0.09, 0.11, 2),
+            ],
+            ("train", "mae"): [
+                CurvePoint("1", 1.0, 0.15, 0.15, 0.15, 1),
+                CurvePoint("2", 2.0, 0.05, 0.05, 0.05, 1),
+            ],
+            ("test", "r2"): [CurvePoint("1", 1.0, 0.9, 0.9, 0.9, 1)],
+        },
+        raw_rows=[],
+    )
+    out = tmp_path / "curve.png"
+    curve_panel(table, out, suptitle="sieve")
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_curve_panel_on_an_empty_table_writes_nothing(tmp_path):
+    pytest.importorskip("matplotlib")
+
+    from charge_experiments.aggregate import CurveTable
+    from charge_experiments.plots import curve_panel
+
+    out = tmp_path / "curve.png"
+    curve_panel(CurveTable(x="d", series={}, raw_rows=[]), out, suptitle="none")
+    assert not out.exists()

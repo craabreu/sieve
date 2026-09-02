@@ -163,3 +163,58 @@ def test_smoke_metrics_json_matches_returned_metrics(tmp_path):
             assert np.isnan(result.metrics[key])
         else:
             assert on_disk[key] == result.metrics[key]
+
+
+def _sieve_cfg(**params):
+    cfg = _tiny_cfg()
+    return cfg.__class__(
+        run=cfg.run,
+        data=cfg.data,
+        predictor=PredictorCfg(name="sieve", params={"max_wl_depth": 2, **params}),
+    )
+
+
+def test_report_loo_adds_train_loo_metrics(tmp_path):
+    """train_loo/* appears only when the predictor opts in. Off is the
+    default precisely so an existing run's key set does not shift under
+    anyone, so the negative case is asserted too."""
+    import pytest
+
+    pytest.importorskip("rdkit")
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+
+    on = execute(
+        _sieve_cfg(report_loo=True),
+        mset,
+        masks,
+        runs_root=tmp_path / "on",
+        allow_dirty=True,
+        tracking=None,
+    )
+    assert "train_loo/mae" in on.metrics
+    assert "train_loo/r2" in on.metrics
+    assert "time/train_loo_predict_s" in on.metrics
+
+    off = execute(
+        _sieve_cfg(),
+        mset,
+        masks,
+        runs_root=tmp_path / "off",
+        allow_dirty=True,
+        tracking=None,
+    )
+    assert not any(k.startswith("train_loo/") for k in off.metrics)
+    assert "time/train_loo_predict_s" not in off.metrics
+
+
+def test_report_loo_is_ignored_by_predictors_without_it(tmp_path):
+    """runner reads report_loo/predict_loo_raw via getattr/hasattr, so a
+    predictor that has neither is unaffected rather than erroring."""
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    result = execute(
+        _tiny_cfg(), mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert not any(k.startswith("train_loo/") for k in result.metrics)

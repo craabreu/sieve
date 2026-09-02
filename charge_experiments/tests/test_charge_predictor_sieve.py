@@ -257,3 +257,42 @@ def test_sieve_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch
     loaded.load_model_state(model_path)  # must not raise
     pred = loaded.predict(test)
     assert pred.atom_charge.shape == (test.n_atoms,)
+
+
+def test_predict_loo_raw_backs_off_instead_of_recalling_the_node():
+    """Leave-one-out removes a node's own contribution from its class mean
+    before the support check, so at minimum_support=1 a singleton class has
+    eff_n == 0 and fails it -- the node backs off to its parent instead of
+    recalling itself. In-sample prediction has no such guard, so its error
+    is optimistically low. The gap is the memorization signal."""
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=8, seed=0)
+    p = SievePredictor(max_wl_depth=3, minimum_support=1, report_loo=True)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+
+    in_sample = p.predict_raw(mset).atom_charge
+    loo = p.predict_loo_raw(mset).atom_charge
+
+    in_sample_mae = float(np.nanmean(np.abs(in_sample - mset.atom_charge)))
+    loo_mae = float(np.nanmean(np.abs(loo - mset.atom_charge)))
+    assert loo_mae > in_sample_mae
+
+
+def test_predict_loo_raw_requires_a_fitted_model():
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    p = SievePredictor()
+    with pytest.raises(RuntimeError, match="fit"):
+        p.predict_loo_raw(synthetic_molecule_set(n_mol=2))
+
+
+def test_report_loo_defaults_off_and_is_recorded_on_the_predictor():
+    from charge_experiments.predictors.sieve_predictor import SievePredictor
+
+    assert SievePredictor().report_loo is False
+    assert SievePredictor(report_loo=True).report_loo is True
