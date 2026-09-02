@@ -171,6 +171,23 @@ def _min_ring_size(mol) -> list[str]:
     ]
 
 
+def _num_ring_memberships(mol) -> list[str]:
+    """Number of SSSR rings each atom belongs to -- ``"0"`` when acyclic,
+    ``"2"`` or more for a ring-fusion or spiro atom. Unlike ``min_ring_size``
+    a count of zero is meaningful, so acyclic atoms get ``"0"`` rather than
+    the ``"none"`` sentinel.
+
+    Ring perception is whole-molecule work, so this is a ``_MOL_ATTRS``
+    provider; RDKit caches the ring info, making the ``GetSymmSSSR`` call cheap
+    on repeat. One value per atom in RDKit atom-index order.
+    """
+    from rdkit import Chem
+
+    Chem.GetSymmSSSR(mol)
+    ri = mol.GetRingInfo()
+    return [str(ri.NumAtomRings(i)) for i in range(mol.GetNumAtoms())]
+
+
 def _chirality(mol) -> list[str]:
     """Canonical CIP descriptor (R/S, or r/s for pseudo-asymmetric centers)
     per atom, ``"none"`` where undefined.
@@ -197,6 +214,7 @@ def _chirality(mol) -> list[str]:
 # per atom. A name lives in exactly one of the two registries.
 _MOL_ATTRS = {
     "min_ring_size": _min_ring_size,
+    "num_ring_memberships": _num_ring_memberships,
     "chirality": _chirality,
 }
 

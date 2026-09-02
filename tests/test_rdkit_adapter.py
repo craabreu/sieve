@@ -163,6 +163,33 @@ def _global_atom_idx(mols, predicate):
     raise AssertionError("no atom matched the predicate")
 
 
+def test_num_ring_memberships_counts_sssr_rings_per_atom():
+    """num_ring_memberships is a molecule-level attribute: each atom gets the
+    count of SSSR rings it sits in -- "2" for a ring-fusion atom, "1" for a
+    plain ring atom, "0" when acyclic -- distinguishing fusion/spiro centers
+    that min_ring_size cannot see."""
+    smi = "c1ccc2ccccc2c1C"  # naphthalene + a methyl
+    cfg = cfg_for([smi], attrs=(("element",), ("num_ring_memberships",)))
+    assert set(cfg.attribute_codes["num_ring_memberships"]) == {"0", "1", "2"}
+
+    b = from_smiles([smi], config=cfg)
+    mol = Chem.MolFromSmiles(smi)
+    col = len(cfg.attribute_levels[0])
+    codes = cfg.attribute_codes["num_ring_memberships"]
+
+    fusion_c = _global_atom_idx(
+        [mol], lambda a: a.GetIsAromatic() and a.GetDegree() == 3
+    )
+    plain_ring_c = _global_atom_idx(
+        [mol], lambda a: a.GetIsAromatic() and a.GetDegree() == 2
+    )
+    methyl_c = _global_atom_idx([mol], lambda a: not a.GetIsAromatic())
+
+    assert b.node_attrs[fusion_c, col] == codes["2"]
+    assert b.node_attrs[plain_ring_c, col] == codes["1"]
+    assert b.node_attrs[methyl_c, col] == codes["0"]
+
+
 def test_min_ring_size_discovers_smallest_ring_per_atom():
     """min_ring_size is a molecule-level attribute (needs whole-molecule ring
     perception): each atom gets the size of the smallest SSSR ring it sits in,
