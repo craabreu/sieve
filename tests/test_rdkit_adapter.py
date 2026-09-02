@@ -648,3 +648,78 @@ def test_from_rdkit_n_jobs_slices_array_y_by_atom_count_not_molecule_count():
     assert seq.y is not None and par.y is not None
     np.testing.assert_array_equal(seq.y, par.y)
     np.testing.assert_array_equal(seq.node_attrs, par.node_attrs)
+
+
+def test_edge_vocabularies_are_discovered_from_the_corpus():
+    """Bond codes used to be a hardcoded four-entry table; anything else (a
+    dative bond, say) collapsed onto code 0 with no signal. They are now
+    discovered like node attributes: sorted observed values get 0..k-1, and k
+    is reserved for the unseen."""
+    mols = [Chem.MolFromSmiles(s) for s in ["CCO", "C=C", "C#N"]]
+    _, edge_codes = build_codes(mols, ["element"], edge_attributes=("bond_type",))
+    assert set(edge_codes) == {"bond_type"}
+    assert set(edge_codes["bond_type"]) == {"SINGLE", "DOUBLE", "TRIPLE"}
+    assert sorted(edge_codes["bond_type"].values()) == [0, 1, 2]
+
+
+def test_conjugated_is_an_edge_attribute():
+    mols = [Chem.MolFromSmiles(s) for s in ["C=CC=C", "CCCC"]]
+    _, edge_codes = build_codes(
+        mols, ["element"], edge_attributes=("bond_type", "conjugated")
+    )
+    assert set(edge_codes["conjugated"]) == {"True", "False"}
+
+
+def test_two_edge_attributes_reach_the_batch_as_separate_columns():
+    smis = ["C=CC=C"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    codes, edge_codes = build_codes(
+        mols, ["element"], edge_attributes=("bond_type", "conjugated")
+    )
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=("bond_type", "conjugated"),
+        max_wl_depth=2,
+    )
+    b = from_smiles(smis, config=cfg)
+    assert b.edge_attrs.shape == (b.n_edges, 2)
+    # butadiene: every bond is conjugated, bond orders are not all equal
+    conj_col = b.edge_attrs[:, 1]
+    assert len(set(conj_col.tolist())) == 1
+    assert len(set(b.edge_attrs[:, 0].tolist())) == 2
+
+
+def test_an_unseen_bond_type_gets_the_reserved_code():
+    """A bond type absent from the fitting corpus must take the reserved code
+    above the observed maximum, so it fails to match and backs off rather than
+    colliding with a seen type."""
+    codes, edge_codes = build_codes(
+        [Chem.MolFromSmiles("CCO")], ["element"], edge_attributes=("bond_type",)
+    )
+    assert set(edge_codes["bond_type"]) == {"SINGLE"}
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=("bond_type",),
+        max_wl_depth=1,
+    )
+    b = from_smiles(["C=C"], config=cfg)  # DOUBLE was never seen
+    reserved = len(edge_codes["bond_type"])
+    assert (b.edge_attrs[:, 0] == reserved).all()
+
+
+@pytest.mark.parametrize("n_jobs", [None, 1, 2, 4])
+def test_edge_vocabulary_discovery_is_deterministic_under_n_jobs(n_jobs):
+    """Discovery is a set union -- commutative and associative -- and codes are
+    assigned from the sorted union, so chunk count cannot affect numbering."""
+    mols = [Chem.MolFromSmiles(s) for s in ["CCO", "C=C", "C#N", "c1ccccc1"]]
+    _, baseline = build_codes(mols, ["element"], edge_attributes=("bond_type",))
+    _, got = build_codes(
+        mols, ["element"], edge_attributes=("bond_type",), n_jobs=n_jobs
+    )
+    assert got == baseline
