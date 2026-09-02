@@ -129,6 +129,8 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
 
 def _cmd_sweep(args: argparse.Namespace) -> int:
     from charge_experiments.aggregate import (
+        AGGREGATE_FIELDNAMES,
+        aggregate_rows,
         build_curve,
         read_runs_from_dirs,
         read_runs_from_mlflow,
@@ -170,6 +172,14 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         writer.writeheader()
         writer.writerows(table.raw_rows)
     print(f"wrote {len(table.raw_rows)} row(s) to {csv_path}")
+
+    agg_rows = aggregate_rows(table)
+    agg_path = out_dir / "aggregate.csv"
+    with agg_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=AGGREGATE_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(agg_rows)
+    print(f"wrote {len(agg_rows)} row(s) to {agg_path}")
 
     try:
         from charge_experiments.plots import curve_panel

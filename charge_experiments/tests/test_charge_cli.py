@@ -149,6 +149,28 @@ def test_sweep_writes_a_curve_csv_from_run_dirs(tmp_path, monkeypatch):
     assert rows[0]["mae"] and rows[0]["train/mae"]
 
 
+def test_sweep_also_writes_an_aggregate_csv(tmp_path, monkeypatch):
+    """The pooled mean/min/max/n_runs band -- computed by build_curve but
+    absent from curve.csv's raw per-run rows -- is persisted separately."""
+    import csv
+
+    from charge_experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", _sweep_tree(tmp_path))
+    rc = cli.main(["sweep", "--x", "predictor.params.max_wl_depth", "--metric", "mae"])
+    assert rc == 0
+
+    out = tmp_path / "results" / "max_wl_depth" / "aggregate.csv"
+    assert out.exists()
+    rows = list(csv.DictReader(out.open()))
+    # One point per (series, metric, x value) -- 3 depths x 2 splits
+    # (test/train are the sweep default).
+    assert len(rows) == 6
+    depth1_test = next(r for r in rows if r["x_label"] == "1" and r["series"] == "test")
+    assert depth1_test["n_runs"] == "1"
+    assert depth1_test["mean"] == depth1_test["lo"] == depth1_test["hi"]
+
+
 def test_sweep_out_name_defaults_to_the_x_paths_last_segment(tmp_path, monkeypatch):
     """Repeated sweeps over one parameter overwrite one directory rather
     than accumulating timestamped ones."""

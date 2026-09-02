@@ -182,3 +182,49 @@ def test_raw_rows_hold_every_run_not_the_aggregate():
     )
     assert len(table.raw_rows) == 2
     assert {r["mae"] for r in table.raw_rows} == {"0.1", "0.2"}
+
+
+def test_aggregate_rows_persists_the_mean_min_max_n_runs_band():
+    """The pooled stat build_curve computes but raw_rows never carries --
+    persisted separately, not instead of raw_rows (see the test above)."""
+    from charge_experiments.aggregate import aggregate_rows, build_curve
+
+    table = build_curve(
+        _rows([(1, 0.10, 0.05), (1, 0.20, 0.05), (2, 0.05, 0.01)]),
+        x="predictor.params.max_wl_depth",
+        metrics=["mae"],
+        splits=["test"],
+    )
+    rows = aggregate_rows(table)
+    assert len(rows) == 2
+
+    depth_1 = next(r for r in rows if r["x_label"] == "1")
+    assert depth_1["series"] == "test"
+    assert depth_1["metric"] == "mae"
+    assert depth_1["x"] == "predictor.params.max_wl_depth"
+    assert depth_1["mean"] == "0.15"
+    assert depth_1["lo"] == "0.1"
+    assert depth_1["hi"] == "0.2"
+    assert depth_1["n_runs"] == "2"
+
+    depth_2 = next(r for r in rows if r["x_label"] == "2")
+    assert depth_2["n_runs"] == "1"
+    assert depth_2["mean"] == depth_2["lo"] == depth_2["hi"] == "0.05"
+
+
+def test_aggregate_rows_pools_every_run_sharing_one_x_value():
+    """Five runs of the same predictor across five different stores (no
+    per-store distinction on the x axis) pool into a single point with
+    n_runs=5 -- the exact "pool the 5 store runs" use case."""
+    from charge_experiments.aggregate import RunRow, aggregate_rows, build_curve
+
+    rows = [
+        RunRow(f"r{i}", {"predictor.name": "dash"}, {"mae": m}, {})
+        for i, m in enumerate([0.0188, 0.0191, 0.0192, 0.0189, 0.0188])
+    ]
+    table = build_curve(rows, x="predictor.name", metrics=["mae"], splits=["test"])
+    agg = aggregate_rows(table)
+    assert len(agg) == 1
+    assert agg[0]["n_runs"] == "5"
+    assert agg[0]["lo"] == "0.0188"
+    assert agg[0]["hi"] == "0.0192"
