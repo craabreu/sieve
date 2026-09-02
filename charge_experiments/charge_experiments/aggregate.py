@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -148,3 +149,100 @@ def read_runs_from_dirs(runs_root: Path, experiment: str | None = None) -> list[
             )
         )
     return rows
+
+
+# metrics.json spells test metrics with NO prefix ("mae"); every other split
+# carries its own ("train/mae"). Series selection has to know that.
+SPLIT_PREFIX = {
+    "test": "",
+    "train": "train/",
+    "val": "val/",
+    "train_loo": "train_loo/",
+}
+
+
+@dataclass(frozen=True)
+class CurvePoint:
+    x_label: str
+    x_pos: float
+    mean: float
+    lo: float
+    hi: float
+    n_runs: int
+
+
+@dataclass(frozen=True)
+class CurveTable:
+    x: str
+    series: dict[tuple[str, str], list[CurvePoint]]
+    raw_rows: list[dict[str, str]]
+
+
+def _x_positions(labels: list[str]) -> dict[str, float]:
+    """Numeric x sorts numerically (2 before 10, not "10" before "2"); a
+    non-numeric x falls back to sorted-unique categorical positions."""
+    try:
+        return {label: float(label) for label in labels}
+    except ValueError:
+        return {label: float(i) for i, label in enumerate(sorted(labels))}
+
+
+def build_curve(
+    rows: list[RunRow],
+    *,
+    x: str,
+    metrics: list[str],
+    splits: list[str],
+    group_by: str | None = None,
+) -> CurveTable:
+    """Aggregate runs into one point per (series, metric, x value).
+
+    Runs sharing an x value -- a sweep repeated over seeds, say -- become a
+    mean with a min-max band. ``raw_rows`` keeps every contributing run, so
+    the band is never the only record of what was measured.
+    """
+    buckets: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    raw_rows: list[dict[str, str]] = []
+    labels: set[str] = set()
+
+    for row in rows:
+        if x not in row.params:
+            continue
+        x_label = row.params[x]
+        labels.add(x_label)
+        raw: dict[str, str] = {"run_dir": row.run_dir, x: x_label}
+        if group_by is not None:
+            raw[group_by] = row.params.get(group_by, "")
+        for split in splits:
+            prefix = SPLIT_PREFIX.get(split, f"{split}/")
+            if group_by is None:
+                name = split
+            else:
+                name = (
+                    f"{split} {group_by.rsplit('.', 1)[-1]}="
+                    f"{row.params.get(group_by, '')}"
+                )
+            for metric in metrics:
+                value = row.metrics.get(f"{prefix}{metric}")
+                if value is None:
+                    continue
+                buckets[(name, metric, x_label)].append(value)
+                raw[f"{prefix}{metric}"] = f"{value:.6g}"
+        raw_rows.append(raw)
+
+    positions = _x_positions(sorted(labels))
+    series: dict[tuple[str, str], list[CurvePoint]] = defaultdict(list)
+    for (name, metric, x_label), values in buckets.items():
+        series[(name, metric)].append(
+            CurvePoint(
+                x_label=x_label,
+                x_pos=positions[x_label],
+                mean=sum(values) / len(values),
+                lo=min(values),
+                hi=max(values),
+                n_runs=len(values),
+            )
+        )
+    for points in series.values():
+        points.sort(key=lambda p: p.x_pos)
+    return CurveTable(x=x, series=dict(series), raw_rows=raw_rows)

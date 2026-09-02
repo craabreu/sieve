@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 def write_run(root: Path, experiment: str, name: str, *, params, metrics) -> Path:
     """A minimal run directory: manifest.json (carrying the resolved config
@@ -86,3 +88,97 @@ def test_mlflow_metric_names_normalize_to_the_run_dir_spelling():
     assert norm("test/train_loo/r2") == "train_loo/r2"
     assert norm("test/charge_conservation/mae") == "charge_conservation/mae"
     assert norm("mae") == "mae"  # already normalized: left alone
+
+
+def _rows(triples):
+    """(max_wl_depth, mae, train_mae) -> RunRows."""
+    from charge_experiments.aggregate import RunRow
+
+    return [
+        RunRow(
+            run_dir=f"r{i}",
+            params={"predictor.params.max_wl_depth": str(d)},
+            metrics={"mae": m, "train/mae": t},
+            meta={},
+        )
+        for i, (d, m, t) in enumerate(triples)
+    ]
+
+
+def test_split_names_map_to_metric_key_prefixes():
+    """Test metrics are UNPREFIXED in metrics.json (`mae`); every other
+    split is prefixed (`train/mae`). Series selection has to know that."""
+    from charge_experiments.aggregate import SPLIT_PREFIX
+
+    assert SPLIT_PREFIX["test"] == ""
+    assert SPLIT_PREFIX["train"] == "train/"
+    assert SPLIT_PREFIX["train_loo"] == "train_loo/"
+
+
+def test_build_curve_aggregates_repeated_x_to_mean_and_min_max():
+    from charge_experiments.aggregate import build_curve
+
+    table = build_curve(
+        _rows([(1, 0.10, 0.05), (1, 0.20, 0.05), (2, 0.05, 0.01)]),
+        x="predictor.params.max_wl_depth",
+        metrics=["mae"],
+        splits=["test"],
+    )
+    points = table.series[("test", "mae")]
+    assert [p.x_label for p in points] == ["1", "2"]
+    assert points[0].mean == pytest.approx(0.15)
+    assert (points[0].lo, points[0].hi) == pytest.approx((0.10, 0.20))
+    assert points[0].n_runs == 2
+    assert points[1].n_runs == 1
+
+
+def test_build_curve_sorts_numeric_x_numerically_not_lexically():
+    """Depths 2 and 10 must not sort as "10" < "2"."""
+    from charge_experiments.aggregate import build_curve
+
+    table = build_curve(
+        _rows([(10, 0.01, 0.0), (2, 0.05, 0.0)]),
+        x="predictor.params.max_wl_depth",
+        metrics=["mae"],
+        splits=["test"],
+    )
+    assert [p.x_label for p in table.series[("test", "mae")]] == ["2", "10"]
+
+
+def test_build_curve_drops_a_run_missing_the_metric():
+    """A run without the requested key contributes no point -- it is never
+    coerced to 0, which would plot as a real and excellent value."""
+    from charge_experiments.aggregate import RunRow, build_curve
+
+    rows = [
+        RunRow("r0", {"d": "1"}, {"mae": 0.1}, {}),
+        RunRow("r1", {"d": "1"}, {}, {}),  # crashed before scoring
+    ]
+    table = build_curve(rows, x="d", metrics=["mae"], splits=["test"])
+    assert table.series[("test", "mae")][0].n_runs == 1
+
+
+def test_build_curve_groups_by_a_second_parameter():
+    from charge_experiments.aggregate import RunRow, build_curve
+
+    rows = [
+        RunRow("r0", {"d": "1", "n": "a"}, {"mae": 0.1}, {}),
+        RunRow("r1", {"d": "1", "n": "b"}, {"mae": 0.2}, {}),
+    ]
+    table = build_curve(rows, x="d", metrics=["mae"], splits=["test"], group_by="n")
+    assert set(table.series) == {("test n=a", "mae"), ("test n=b", "mae")}
+
+
+def test_raw_rows_hold_every_run_not_the_aggregate():
+    """The CSV must record what was measured; the band is never the only
+    record."""
+    from charge_experiments.aggregate import build_curve
+
+    table = build_curve(
+        _rows([(1, 0.10, 0.05), (1, 0.20, 0.05)]),
+        x="predictor.params.max_wl_depth",
+        metrics=["mae"],
+        splits=["test"],
+    )
+    assert len(table.raw_rows) == 2
+    assert {r["mae"] for r in table.raw_rows} == {"0.1", "0.2"}
