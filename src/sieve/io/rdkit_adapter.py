@@ -134,6 +134,17 @@ def _valence_electrons(a) -> str:
     return str(_periodic_table().GetNOuterElecs(z))
 
 
+def _is_atom(a) -> str:
+    """Constant, single-valued attribute -- every atom (real or RDKit's own
+    dummy atom) gets the same code. As ``attribute_levels[0]`` this puts
+    every atom in one class at level 0, mimicking topology-only WL
+    refinement (SieveConfig otherwise always requires >= 1 real attribute
+    at level 0, so there is no other way to start a chain uninformed by any
+    atom attribute)."""
+    del a
+    return "atom"
+
+
 _ATTRS = {
     "element": lambda a: a.GetSymbol(),
     "degree": lambda a: str(a.GetDegree()),
@@ -146,6 +157,7 @@ _ATTRS = {
     "electronegativity": _pauling_electronegativity,
     "block": _periodic_table_block,
     "valence_electrons": _valence_electrons,
+    "is_atom": _is_atom,
 }
 
 

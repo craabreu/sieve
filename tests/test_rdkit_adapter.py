@@ -151,6 +151,22 @@ def test_block_and_valence_electrons_attributes():
     )
 
 
+def test_is_atom_attribute_is_constant_across_every_atom_including_the_dummy():
+    """is_atom exists specifically to mimic topology-only WL refinement:
+    SieveConfig requires >= 1 real attribute at level 0 (attribute_levels
+    can't be empty), so a genuinely constant attribute is the only way to
+    make that level uninformative -- every atom, real or RDKit's own dummy
+    atom, gets the exact same code, so level 0 holds a single class
+    containing the whole corpus and WL refinement from there on is driven
+    purely by topology."""
+    smis = ["CCO", "c1ccccc1", "[*]"]
+    cfg = cfg_for(smis, attrs=(("is_atom",),))
+    b = from_smiles(smis, config=cfg)
+
+    assert set(cfg.attribute_codes["is_atom"]) == {"atom"}
+    assert len(set(b.node_attrs[:, 0].tolist())) == 1
+
+
 def _global_atom_idx(mols, predicate):
     """Row of the first atom (across the concatenated batch) satisfying
     ``predicate(atom)``."""
