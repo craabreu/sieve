@@ -197,6 +197,22 @@ def _score_extra_split(
     return {f"{split}/{k}": v for k, v in score.items()}
 
 
+def _score_loo(predictor: Any, train: MoleculeSet) -> dict[str, float]:
+    """Leave-one-out scoring of the *training* split, when the predictor
+    opts in via ``report_loo``. Train-only by construction: LOO subtracts a
+    node's own contribution from its class mean, which for a val or test
+    node was never there (see SievePredictor.predict_loo_raw)."""
+    if not getattr(predictor, "report_loo", False):
+        return {}
+    if not hasattr(predictor, "predict_loo_raw"):
+        return {}
+    if train.n_conformers == 0:
+        return {}
+    raw = predictor.predict_loo_raw(train)
+    score = _score(train, Prediction(atom_charge=raw.atom_charge))
+    return {f"train_loo/{k}": v for k, v in score.items()}
+
+
 def _finite_pair(
     y_true: NDArray[np.float64], y_pred: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -320,6 +336,10 @@ def _execute_inner(
     val_predict_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    loo_metrics = _score_loo(predictor, train)
+    loo_predict_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     pred = predictor.predict(test)
     predict_s = time.perf_counter() - t0
 
@@ -330,6 +350,9 @@ def _execute_inner(
     run_metrics.update(val_metrics)
     if val_metrics:
         run_metrics["time/val_predict_s"] = val_predict_s
+    run_metrics.update(loo_metrics)
+    if loo_metrics:
+        run_metrics["time/train_loo_predict_s"] = loo_predict_s
     run_metrics["time/fit_s"] = fit_s
     run_metrics["time/predict_s"] = predict_s
     run_metrics["time/data_s"] = data_seconds

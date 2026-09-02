@@ -125,6 +125,12 @@ class SievePredictor:
     which profiling showed is ~96% of a real fit -- ``sieve.fit`` itself is
     ~4%, so this is deliberately not where ``n_jobs`` is spent. ``None``
     (the default) keeps today's sequential behavior exactly.
+
+    ``report_loo`` opts into a leave-one-out pass over the training split
+    (``predict_loo_raw``), which ``runner`` scores as ``train_loo/*``. Off by
+    default: it costs a second featurization of train (~38% on a real run),
+    and a default that changed the shape of metrics.json mid-series would
+    break comparability with runs already recorded.
     """
 
     name: ClassVar[str] = "sieve"
@@ -139,6 +145,7 @@ class SievePredictor:
         minimum_support: int = 1,
         shrinkage_strength: float | None = None,
         n_jobs: int | None = None,
+        report_loo: bool = False,
     ) -> None:
         self.attributes = tuple(attributes)
         self.attribute_levels = (
@@ -149,6 +156,7 @@ class SievePredictor:
         self.minimum_support = minimum_support
         self.shrinkage_strength = shrinkage_strength
         self.n_jobs = n_jobs
+        self.report_loo = report_loo
         self._config: Any = None
         self._model: Any = None
         # Accumulated wall time spent in build_codes/from_rdkit (featurization)
@@ -204,6 +212,43 @@ class SievePredictor:
         )
         self.last_featurize_s += time.perf_counter() - t0
         detailed = sieve.predict_detailed(self._model, batch)
+        atom_charge = np.asarray(detailed.value, dtype=np.float64)[:, 0]
+        atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
+        return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
+
+    def predict_loo_raw(self, train: MoleculeSet) -> RawPrediction:
+        """Leave-one-out prediction for the *training* split (design.md 10.3).
+
+        A training node contributes its own target to its class mean, so any
+        in-sample score is optimistic -- at minimum_support=1 and large depth
+        it approaches perfect recall. ``sieve.predict_loo`` subtracts that
+        contribution before the support check and treats a class with one
+        member as unsupported, so the node backs off to its parent instead of
+        recalling itself.
+
+        **Train-only, and not structurally enforceable.** LOO computes
+        ``(cnt*mean - y_node) / (cnt - 1)``; for a val or test node that
+        subtracts a value which was never in the class mean, so the result is
+        corrupt rather than merely uninformative. Every MoleculeSet in this
+        series carries MBIScharge on its Mols, so a val set would satisfy
+        ``predict_loo``'s only guard (``batch.y is not None``) and return
+        quietly wrong numbers. The parameter is named ``train`` and
+        ``runner`` calls this for the train split only.
+        """
+        if self._model is None or self._config is None:
+            raise RuntimeError(
+                "fit (or load_model_state) must be called before predict_loo_raw"
+            )
+        import time
+
+        import sieve
+
+        t0 = time.perf_counter()
+        batch = _batch_for(
+            train.mols, self._config, with_target=True, n_jobs=self.n_jobs
+        )
+        self.last_featurize_s += time.perf_counter() - t0
+        detailed = sieve.predict_loo(self._model, batch)
         atom_charge = np.asarray(detailed.value, dtype=np.float64)[:, 0]
         atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
         return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
