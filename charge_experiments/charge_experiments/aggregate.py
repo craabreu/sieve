@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -168,6 +169,7 @@ class CurvePoint:
     mean: float
     lo: float
     hi: float
+    std: float
     n_runs: int
 
 
@@ -240,6 +242,10 @@ def build_curve(
                 mean=sum(values) / len(values),
                 lo=min(values),
                 hi=max(values),
+                # Population std (divides by n, not n-1): well-defined at
+                # n_runs=1 (0.0, no special-casing needed), unlike sample
+                # std which statistics.stdev raises on for a single value.
+                std=statistics.pstdev(values),
                 n_runs=len(values),
             )
         )
@@ -256,6 +262,7 @@ AGGREGATE_FIELDNAMES = [
     "mean",
     "lo",
     "hi",
+    "std",
     "n_runs",
 ]
 
@@ -279,6 +286,7 @@ def aggregate_rows(table: CurveTable) -> list[dict[str, str]]:
                     "mean": f"{point.mean:.6g}",
                     "lo": f"{point.lo:.6g}",
                     "hi": f"{point.hi:.6g}",
+                    "std": f"{point.std:.6g}",
                     "n_runs": str(point.n_runs),
                 }
             )

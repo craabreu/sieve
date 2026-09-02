@@ -171,6 +171,25 @@ def test_sweep_also_writes_an_aggregate_csv(tmp_path, monkeypatch):
     assert depth1_test["mean"] == depth1_test["lo"] == depth1_test["hi"]
 
 
+def test_sweep_accepts_a_band_flag(tmp_path, monkeypatch, capsys):
+    """--band defaults to 'fill' and accepts 'none'/'errorbar' too, routed
+    through to curve_panel without error."""
+    from charge_experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", _sweep_tree(tmp_path))
+    for band in ("none", "errorbar", "fill"):
+        rc = cli.main(["sweep", "--x", "predictor.params.max_wl_depth", "--band", band])
+        assert rc == 0, capsys.readouterr()
+
+
+def test_build_parser_sweep_band_defaults_to_fill():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["sweep", "--x", "predictor.params.max_wl_depth"])
+    assert args.band == "fill"
+
+
 def test_sweep_out_name_defaults_to_the_x_paths_last_segment(tmp_path, monkeypatch):
     """Repeated sweeps over one parameter overwrite one directory rather
     than accumulating timestamped ones."""

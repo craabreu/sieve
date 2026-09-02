@@ -184,7 +184,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     try:
         from charge_experiments.plots import curve_panel
 
-        curve_panel(table, out_dir / "curve.png", suptitle=args.x)
+        curve_panel(table, out_dir / "curve.png", suptitle=args.x, band=args.band)
         print(f"wrote {out_dir / 'curve.png'}")
     except ImportError:
         logging.getLogger("charge_experiments").warning(
@@ -307,6 +307,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeatable; default: test, train",
     )
     p_sweep.add_argument("--group-by", dest="group_by", default=None)
+    p_sweep.add_argument(
+        "--band",
+        choices=("none", "errorbar", "fill"),
+        default="fill",
+        help="how to render each point's std dev on the plot (default: fill)",
+    )
     p_sweep.add_argument("--out", default=None, help="results/<NAME>/")
     p_sweep.set_defaults(func=_cmd_sweep)
 

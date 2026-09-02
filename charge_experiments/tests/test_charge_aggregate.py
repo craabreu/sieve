@@ -128,8 +128,10 @@ def test_build_curve_aggregates_repeated_x_to_mean_and_min_max():
     assert [p.x_label for p in points] == ["1", "2"]
     assert points[0].mean == pytest.approx(0.15)
     assert (points[0].lo, points[0].hi) == pytest.approx((0.10, 0.20))
+    assert points[0].std == pytest.approx(0.05)  # population std of [0.10, 0.20]
     assert points[0].n_runs == 2
     assert points[1].n_runs == 1
+    assert points[1].std == 0.0  # a single value has no dispersion
 
 
 def test_build_curve_sorts_numeric_x_numerically_not_lexically():
@@ -205,6 +207,7 @@ def test_aggregate_rows_persists_the_mean_min_max_n_runs_band():
     assert depth_1["mean"] == "0.15"
     assert depth_1["lo"] == "0.1"
     assert depth_1["hi"] == "0.2"
+    assert depth_1["std"] == "0.05"
     assert depth_1["n_runs"] == "2"
 
     depth_2 = next(r for r in rows if r["x_label"] == "2")
