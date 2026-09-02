@@ -89,6 +89,8 @@ allowed-unresolved-imports = [
     "cosmolayer.**",
     "mlflow",
     "mlflow.**",
+    "sqlalchemy",
+    "sqlalchemy.**",
     "pandas",
     "pandas.**",
     "pyarrow",

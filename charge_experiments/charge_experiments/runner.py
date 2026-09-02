@@ -475,6 +475,9 @@ def _execute_inner(
     return RunResult(run_dir=run_dir, metrics=run_metrics, manifest=manifest)
 
 
+_ENSURE_EXPERIMENT_RETRIES = 5
+
+
 def _ensure_experiment(
     experiment_name: str, *, artifact_root: Path = DEFAULT_ARTIFACT_ROOT
 ) -> None:
@@ -483,14 +486,40 @@ def _ensure_experiment(
     backend, that's an unignored ``./mlruns/`` relative to the process's
     CWD, not anything tied to ``DEFAULT_TRACKING_URI``. Create the
     experiment explicitly first, with an artifact location under this
-    series' own tree, so ``set_experiment`` only ever has to look it up."""
-    import mlflow
+    series' own tree, so ``set_experiment`` only ever has to look it up.
 
-    if mlflow.get_experiment_by_name(experiment_name) is None:
-        artifact_root.mkdir(parents=True, exist_ok=True)
-        artifact_location = (artifact_root / experiment_name).as_uri()
-        mlflow.create_experiment(experiment_name, artifact_location=artifact_location)
-    mlflow.set_experiment(experiment_name)
+    Retried against ``sqlalchemy.exc.OperationalError``: the sqlite
+    backend's very first connection against a not-yet-existing (or
+    not-yet-migrated) ``mlflow_runs.db`` runs Alembic's one-time schema
+    migration. Several run processes launched in parallel against a fresh
+    db (e.g. right after deleting it) all race to be that first connection
+    -- one wins, the rest hit a genuine ``OperationalError`` (observed:
+    ``table _alembic_tmp_experiments already exists``), not a real data
+    problem. A short retry loop rides that out: once the winner finishes
+    the migration, every loser's retry proceeds normally."""
+    import time
+
+    import mlflow
+    from sqlalchemy.exc import OperationalError
+
+    last_error: OperationalError | None = None
+    for attempt in range(_ENSURE_EXPERIMENT_RETRIES):
+        try:
+            if mlflow.get_experiment_by_name(experiment_name) is None:
+                artifact_root.mkdir(parents=True, exist_ok=True)
+                artifact_location = (artifact_root / experiment_name).as_uri()
+                mlflow.create_experiment(
+                    experiment_name, artifact_location=artifact_location
+                )
+            mlflow.set_experiment(experiment_name)
+            return
+        except OperationalError as exc:
+            last_error = exc
+            time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError(
+        f"could not initialize MLflow experiment {experiment_name!r} after "
+        f"{_ENSURE_EXPERIMENT_RETRIES} attempts (sqlite migration race?)"
+    ) from last_error
 
 
 def _log_mlflow_run(
