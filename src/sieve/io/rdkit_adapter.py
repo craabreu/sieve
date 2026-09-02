@@ -19,7 +19,7 @@ def _periodic_table():
     return Chem.GetPeriodicTable()
 
 
-def _period(a) -> str:
+def _periodic_table_period(a) -> str:
     return str(_periodic_table().GetRow(a.GetAtomicNum()))
 
 
@@ -31,7 +31,7 @@ _PERIOD_LENGTHS = (2, 8, 8, 18, 18, 32, 32)
 _PERIOD_STARTS = tuple(itertools.accumulate((1, *_PERIOD_LENGTHS[:-1])))
 
 
-def _group(a) -> str:
+def _periodic_table_group(a) -> str:
     """IUPAC group (1-18) from atomic number and period, computed rather than
     tabulated: within a period, position and group coincide once every block
     present in that period's row is accounted for.
@@ -61,6 +61,43 @@ def _group(a) -> str:
     return str(p if p <= 2 else p + (18 - length))
 
 
+# Step to which Pauling electronegativity is rounded before it becomes a
+# categorical bucket. 0.5 spreads Z=1-92 across ~7 buckets ("1.0".."4.0");
+# shrink it for finer resolution.
+_ELECTRONEGATIVITY_ROUNDING = 0.5
+
+
+@functools.lru_cache(maxsize=1)
+def _pauling_electronegativity_table() -> dict[int, float]:
+    """``{atomic number: Pauling electronegativity}`` from the ``atomic_data``
+    table RDKit bundles in ``RDData.sqlt`` (covers Z=1-92). Noble gases are
+    stored as ``0.0`` there; they stay out of this dict so they read as the
+    "none" sentinel alongside untabulated elements and the dummy atom."""
+    import os
+    import sqlite3
+
+    from rdkit import RDConfig
+
+    db = os.path.join(RDConfig.RDDataDir, "RDData.sqlt")
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT num, pauling_electroneg FROM atomic_data"
+        ).fetchall()
+    return {int(z): float(en) for z, en in rows if en}
+
+
+def _pauling_electronegativity(a) -> str:
+    """Pauling electronegativity rounded to ``_ELECTRONEGATIVITY_ROUNDING``,
+    ``"none"`` when the atom has no tabulated value (Z outside 1-92, noble
+    gases, RDKit's dummy atom) -- the same sentinel ``group``/``chirality`` use.
+    """
+    en = _pauling_electronegativity_table().get(a.GetAtomicNum())
+    if en is None:
+        return "none"
+    step = _ELECTRONEGATIVITY_ROUNDING
+    return f"{round(en / step) * step:.1f}"
+
+
 _ATTRS = {
     "element": lambda a: a.GetSymbol(),
     "degree": lambda a: str(a.GetDegree()),
@@ -68,8 +105,9 @@ _ATTRS = {
     "aromatic": lambda a: str(a.GetIsAromatic()),
     "formal_charge": lambda a: str(a.GetFormalCharge()),
     "num_h": lambda a: str(a.GetTotalNumHs()),
-    "period": _period,
-    "group": _group,
+    "period": _periodic_table_period,
+    "group": _periodic_table_group,
+    "electronegativity": _pauling_electronegativity,
 }
 
 

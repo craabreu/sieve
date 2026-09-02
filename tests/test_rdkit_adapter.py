@@ -87,6 +87,36 @@ def test_period_and_group_attributes():
     assert b.node_attrs[nd_idx, group_col] == none_code
 
 
+def test_electronegativity_attribute_buckets_by_rounded_pauling_scale():
+    """electronegativity is the atom's Pauling electronegativity (from RDKit's
+    bundled atomic_data table) rounded to the nearest _ELECTRONEGATIVITY_ROUNDING
+    step: C (2.55) and S (2.58) land in the same 2.5 bucket, O (3.44) rounds up
+    to 3.5, and atoms with no tabulated value (noble gases, the dummy atom) fall
+    back to the shared "none" sentinel."""
+    from sieve.io.rdkit_adapter import _ELECTRONEGATIVITY_ROUNDING
+
+    assert _ELECTRONEGATIVITY_ROUNDING == 0.5
+
+    smis = ["CCO", "CS(=O)(=O)C", "[He]", "[*]"]
+    cfg = cfg_for(smis, attrs=(("element",), ("electronegativity",)))
+    b = from_smiles(smis, config=cfg)
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    en_col = len(cfg.attribute_levels[0])
+    value_of = {v: k for k, v in cfg.attribute_codes["electronegativity"].items()}
+
+    def row(symbol):
+        return _global_atom_idx(mols, lambda a: a.GetSymbol() == symbol)
+
+    assert value_of[b.node_attrs[row("C"), en_col]] == "2.5"
+    assert value_of[b.node_attrs[row("S"), en_col]] == "2.5"
+    assert value_of[b.node_attrs[row("O"), en_col]] == "3.5"
+
+    none_code = cfg.attribute_codes["electronegativity"]["none"]
+    assert b.node_attrs[row("He"), en_col] == none_code
+    assert b.node_attrs[row("*"), en_col] == none_code
+
+
 def _global_atom_idx(mols, predicate):
     """Row of the first atom (across the concatenated batch) satisfying
     ``predicate(atom)``."""
