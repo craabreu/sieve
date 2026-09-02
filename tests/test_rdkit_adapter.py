@@ -751,3 +751,58 @@ def test_empty_edge_schema_end_to_end_refines_on_topology_alone():
     # atom i of butadiene and atom i of butane are topologically identical
     assert labels[0] == labels[4]
     assert labels[1] == labels[5]
+
+
+def test_bond_ring_attributes():
+    """The three edge-side ring attributes, on indane (fused cyclopentane +
+    benzene): the fusion bond sits in two rings and reports the smaller one,
+    an acyclic bond reports the sentinels. Sentinels follow the atom-side
+    convention -- "none" for a ring *size* that does not exist, "0" for a
+    count, which is a meaningful number."""
+    # Indane with a methyl, which supplies the acyclic bond. Putting the methyl
+    # on a fusion carbon instead ("C1CCc2ccccc21C") makes it 5-valent and
+    # RDKit returns None.
+    smis = ["CC1CCc2ccccc21"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    attrs = ("bond_in_ring", "bond_min_ring_size", "bond_num_ring_memberships")
+    codes, edge_codes = build_codes(mols, ["element"], edge_attributes=attrs)
+
+    assert set(edge_codes["bond_in_ring"]) == {"True", "False"}
+    assert "none" in edge_codes["bond_min_ring_size"]
+    assert {"5", "6"} <= set(edge_codes["bond_min_ring_size"])
+    assert {"0", "1", "2"} <= set(edge_codes["bond_num_ring_memberships"])
+
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=attrs,
+        max_wl_depth=1,
+    )
+    b = from_smiles(smis, config=cfg)
+    mol = mols[0]
+
+    def bond_row(pred):
+        """First batch row for a bond satisfying `pred`. The adapter emits two
+        rows per bond (both directions), in bond-index order."""
+        for bi, bond in enumerate(mol.GetBonds()):
+            if pred(bond):
+                return b.edge_attrs[2 * bi]
+        raise AssertionError("no bond matched")
+
+    value_of = [{v: k for k, v in edge_codes[name].items()} for name in attrs]
+
+    # Membership in both ring sizes identifies the fusion bond uniquely. A
+    # degree-based predicate does not: the methyl-bearing ring carbon also has
+    # degree 3, so its bond to the fusion carbon would match too -- and that
+    # bond is in one ring, not two.
+    fusion = bond_row(lambda bd: bd.IsInRingSize(5) and bd.IsInRingSize(6))
+    assert value_of[0][fusion[0]] == "True"
+    assert value_of[1][fusion[1]] == "5"
+    assert value_of[2][fusion[2]] == "2"
+
+    acyclic = bond_row(lambda bd: not bd.IsInRing())
+    assert value_of[0][acyclic[0]] == "False"
+    assert value_of[1][acyclic[1]] == "none"
+    assert value_of[2][acyclic[2]] == "0"

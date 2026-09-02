@@ -159,11 +159,55 @@ _BOND_ATTRS = {
 }
 
 
+def _bond_ring_info(mol):
+    """``RingInfo`` after SSSR perception. RDKit caches the result on the
+    ``Mol``, so the three providers below and the atom-side ring attributes
+    share one perception per molecule."""
+    from rdkit import Chem
+
+    Chem.GetSymmSSSR(mol)
+    return mol.GetRingInfo()
+
+
+def _bond_in_ring(mol) -> list[str]:
+    """Whether each bond lies in any SSSR ring. Exactly derivable from either
+    provider below -- kept because it is the cheapest of the three, but a
+    config should declare one ring attribute, not several: they multiply the
+    edge alphabet without adding information."""
+    ri = _bond_ring_info(mol)
+    return [str(bool(ri.NumBondRings(i))) for i in range(mol.GetNumBonds())]
+
+
+def _bond_min_ring_size(mol) -> list[str]:
+    """Size of the smallest SSSR ring each bond belongs to, ``"none"`` when
+    the bond is acyclic -- a ring size of zero is meaningless, so this takes
+    the sentinel rather than "0" (the atom-side ``min_ring_size`` convention).
+    """
+    ri = _bond_ring_info(mol)
+    return [
+        str(ri.MinBondRingSize(i)) if ri.NumBondRings(i) else "none"
+        for i in range(mol.GetNumBonds())
+    ]
+
+
+def _bond_num_ring_memberships(mol) -> list[str]:
+    """Number of SSSR rings each bond belongs to -- ``"2"`` or more marks a
+    ring-fusion bond. Acyclic bonds get ``"0"``: a count of zero is meaningful,
+    unlike a ring size of zero (the atom-side ``num_ring_memberships``
+    convention)."""
+    ri = _bond_ring_info(mol)
+    return [str(ri.NumBondRings(i)) for i in range(mol.GetNumBonds())]
+
+
 # Molecule-level bond attribute providers: ``f(mol) -> Sequence[str]``, one
 # value per bond in RDKit *bond*-index order (the atom-side ``_MOL_ATTRS`` uses
 # atom-index order). Same rationale: whole-molecule precomputation runs once
 # per ``Mol``. A name lives in exactly one of the two edge registries.
-_MOL_BOND_ATTRS = {}
+_MOL_BOND_ATTRS = {
+    "bond_in_ring": _bond_in_ring,
+    "bond_min_ring_size": _bond_min_ring_size,
+    "bond_num_ring_memberships": _bond_num_ring_memberships,
+}
 
 
 def _min_ring_size(mol) -> list[str]:
