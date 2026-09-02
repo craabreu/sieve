@@ -458,7 +458,7 @@ def _from_rdkit_sequential(
         node_attrs=node_attrs,
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attr=np.array(attr, np.int64),
+        edge_attrs=np.array(attr, np.int64).reshape(-1, 1),
         graph_id=graph_id,
         y=y if y is not None else y_out,
         elements=elements,

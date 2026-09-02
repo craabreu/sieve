@@ -577,7 +577,7 @@ def test_from_rdkit_n_jobs_is_deterministic(n_jobs):
     np.testing.assert_array_equal(got.node_attrs, baseline.node_attrs)
     np.testing.assert_array_equal(got.edge_src, baseline.edge_src)
     np.testing.assert_array_equal(got.edge_dst, baseline.edge_dst)
-    np.testing.assert_array_equal(got.edge_attr, baseline.edge_attr)
+    np.testing.assert_array_equal(got.edge_attrs, baseline.edge_attrs)
     np.testing.assert_array_equal(got.graph_id, baseline.graph_id)
     assert got.elements is not None and baseline.elements is not None
     np.testing.assert_array_equal(got.elements, baseline.elements)

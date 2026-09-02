@@ -35,7 +35,7 @@ def random_batch(n_graphs=8, min_n=3, max_n=9, seed=0, d=1):
     degree per graph) do not."""
     rng = np.random.default_rng(seed)
     node_attrs, graph_id = [], []
-    edge_src, edge_dst, edge_attr = [], [], []
+    edge_src, edge_dst, edge_attrs = [], [], []
     off = 0
     for gi in range(n_graphs):
         n = int(rng.integers(min_n, max_n + 1))
@@ -56,13 +56,13 @@ def random_batch(n_graphs=8, min_n=3, max_n=9, seed=0, d=1):
             bond = int(rng.integers(1, 3))
             edge_src += [off + a, off + b]
             edge_dst += [off + b, off + a]
-            edge_attr += [bond, bond]
+            edge_attrs += [bond, bond]
         off += n
     return NodeBatch(
         node_attrs=np.concatenate(node_attrs, axis=0).astype(np.int64),
         edge_src=np.array(edge_src, np.int64),
         edge_dst=np.array(edge_dst, np.int64),
-        edge_attr=np.array(edge_attr, np.int64),
+        edge_attrs=np.array(edge_attrs, np.int64).reshape(-1, 1),
         graph_id=np.concatenate(graph_id).astype(np.int64),
         y=rng.normal(size=(off, d)),
     )
@@ -125,7 +125,7 @@ def _naive_coarse_wl(batch: NodeBatch, config: SieveConfig) -> list[np.ndarray]:
     h_prev = fine_base
     naive_h = []
     for _ in range(config.max_wl_depth):
-        pair_g = g_prev[csr.dst] * n_edge_types + csr.attr
+        pair_g = g_prev[csr.dst] * n_edge_types + csr.attr[:, 0]
         pad_g = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
         pad_g[csr.src, csr.slot] = pair_g
         pad_g.sort(axis=1)
@@ -133,7 +133,7 @@ def _naive_coarse_wl(batch: NodeBatch, config: SieveConfig) -> list[np.ndarray]:
 
         # h's neighbor multiset uses the COARSE chain's *previous-round*
         # labels (g_prev, i.e. g at r-1) -- the literal §3.6 recurrence.
-        pair_h = g_prev[csr.dst] * n_edge_types + csr.attr
+        pair_h = g_prev[csr.dst] * n_edge_types + csr.attr[:, 0]
         pad_h = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
         pad_h[csr.src, csr.slot] = pair_h
         pad_h.sort(axis=1)

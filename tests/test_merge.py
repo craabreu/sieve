@@ -196,7 +196,7 @@ def test_merge_across_differing_max_degree_shards():
         node_attrs=np.concatenate([star.node_attrs, chain.node_attrs]),
         edge_src=np.concatenate([star.edge_src, chain.edge_src + off]),
         edge_dst=np.concatenate([star.edge_dst, chain.edge_dst + off]),
-        edge_attr=np.concatenate([star.edge_attr, chain.edge_attr]),
+        edge_attrs=np.concatenate([star.edge_attrs, chain.edge_attrs]),
         graph_id=np.concatenate([star.graph_id, chain.graph_id + 2]),
         y=np.concatenate([star.y, chain.y]),
     )

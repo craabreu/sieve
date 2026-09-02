@@ -20,7 +20,7 @@ def _cycles(sizes):
         node_attrs=np.zeros((n_total, 1), np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attr=np.ones(len(src), np.int64),
+        edge_attrs=np.ones(len(src), np.int64).reshape(-1, 1),
         graph_id=np.array(gid, np.int64),
         y=np.zeros((n_total, 1)),
     )

@@ -99,7 +99,7 @@ def _single_edge_batch(seed):
         node_attrs=np.zeros((2, 1), np.int64),
         edge_src=np.array([0, 1], np.int64),
         edge_dst=np.array([1, 0], np.int64),
-        edge_attr=np.ones(2, np.int64),
+        edge_attrs=np.ones(2, np.int64).reshape(-1, 1),
         graph_id=np.zeros(2, np.int64),
         y=rng.normal(size=(2, 1)),
     )
@@ -153,7 +153,7 @@ def test_oov_neighbor_does_not_falsely_match_a_lower_degree_class():
         node_attrs=np.zeros((2, 1), np.int64),
         edge_src=np.array([], np.int64),
         edge_dst=np.array([], np.int64),
-        edge_attr=np.array([], np.int64),
+        edge_attrs=np.array([], np.int64).reshape(-1, 1),
         graph_id=np.array([0, 1], np.int64),
         y=np.array([[1.0], [2.0]]),
     )
@@ -163,7 +163,7 @@ def test_oov_neighbor_does_not_falsely_match_a_lower_degree_class():
         node_attrs=np.array([[0], [1]], np.int64),
         edge_src=np.array([0, 1], np.int64),
         edge_dst=np.array([1, 0], np.int64),
-        edge_attr=np.ones(2, np.int64),
+        edge_attrs=np.ones(2, np.int64).reshape(-1, 1),
         graph_id=np.zeros(2, np.int64),
     )
     p = sieve.predict_detailed(model, query)

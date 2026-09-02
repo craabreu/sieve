@@ -85,15 +85,16 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     kinds = config.level_kinds[len(levels) :]
     parents = config.level_parents[len(levels) :]
     neighbor_src = config.neighbor_source[len(levels) :]
-    if kinds and csr.attr.size:
+    if kinds and csr.attr.shape[0]:
         # `pair = base[dst] * n_edge_types + attr` assumes 0 <= attr <
         # n_edge_types. A code outside that range collides with a *different*
         # (label, bond) pair instead of raising, silently conflating two
-        # distinct classes.
-        bad = (csr.attr < 0) | (csr.attr >= n_edge_types)
+        # distinct classes. Column 0 only for now; the config-driven
+        # mixed-radix collapse over every column lands in the next change.
+        bad = (csr.attr[:, 0] < 0) | (csr.attr[:, 0] >= n_edge_types)
         if bad.any():
             raise ValueError(
-                f"edge_attr contains code {int(csr.attr[bad][0])}, outside "
+                f"edge_attrs contains code {int(csr.attr[:, 0][bad][0])}, outside "
                 f"[0, {n_edge_types}) implied by config.edge_codes"
             )
 
@@ -101,8 +102,10 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
         base = levels[parents[offset]].labels
         if kind == LEVEL_WL:
             # Encode (neighbor label, bond) as one integer so a row of
-            # neighbors is a plain integer vector.
-            pair = base[csr.dst] * n_edge_types + csr.attr
+            # neighbors is a plain integer vector. Column 0 only for now;
+            # the config-driven mixed-radix collapse over every column
+            # lands in the next change.
+            pair = base[csr.dst] * n_edge_types + csr.attr[:, 0]
             pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
             pad[csr.src, csr.slot] = pair
             # Sorting canonicalizes the multiset; -1 pads sort first, and

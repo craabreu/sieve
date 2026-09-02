@@ -28,7 +28,7 @@ def path_graph(n, attrs=None):
         node_attrs=(np.zeros((n, 1), np.int64) if attrs is None else attrs),
         edge_src=src,
         edge_dst=dst,
-        edge_attr=np.ones(2 * (n - 1), np.int64),
+        edge_attrs=np.ones(2 * (n - 1), np.int64).reshape(-1, 1),
         graph_id=np.zeros(n, np.int64),
         y=np.zeros((n, 1)),
     )
@@ -67,7 +67,7 @@ def test_refinement_is_invariant_to_node_ordering():
         node_attrs=b.node_attrs[perm],
         edge_src=inv[b.edge_src],
         edge_dst=inv[b.edge_dst],
-        edge_attr=b.edge_attr,
+        edge_attrs=b.edge_attrs,
         graph_id=b.graph_id[perm],
         y=b.y[perm],
     )
@@ -78,7 +78,8 @@ def test_refinement_is_invariant_to_node_ordering():
 
 def test_bond_type_is_distinguished():
     b = path_graph(3)
-    other = NodeBatch(**{**b.__dict__, "edge_attr": np.array([2, 2, 1, 1], np.int64)})
+    other_attrs = np.array([2, 2, 1, 1], np.int64).reshape(-1, 1)
+    other = NodeBatch(**{**b.__dict__, "edge_attrs": other_attrs})
     assert (
         not _same_partition(
             refine(b, cfg())[-1].labels, refine(other, cfg())[-1].labels
@@ -97,7 +98,7 @@ def test_isolated_nodes_refine_without_error():
         node_attrs=np.zeros((3, 1), np.int64),
         edge_src=np.zeros(0, np.int64),
         edge_dst=np.zeros(0, np.int64),
-        edge_attr=np.zeros(0, np.int64),
+        edge_attrs=np.zeros(0, np.int64).reshape(-1, 1),
         graph_id=np.arange(3),
         y=np.zeros((3, 1)),
     )
@@ -113,8 +114,9 @@ def test_edge_attr_outside_the_bond_alphabet_is_rejected():
     import pytest
 
     b = path_graph(3)  # cfg()'s edge_codes give n_edge_types = 3
-    bad = NodeBatch(**{**b.__dict__, "edge_attr": np.full(4, 7, np.int64)})
-    with pytest.raises(ValueError, match="edge_attr"):
+    bad_attrs = np.full(4, 7, np.int64).reshape(-1, 1)
+    bad = NodeBatch(**{**b.__dict__, "edge_attrs": bad_attrs})
+    with pytest.raises(ValueError, match="edge_attrs"):
         refine(bad, cfg())
 
 

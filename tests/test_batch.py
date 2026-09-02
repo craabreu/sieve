@@ -16,7 +16,7 @@ def ring(n):
         "node_attrs": np.zeros((n, 1), np.int64),
         "edge_src": np.concatenate([fwd, nxt]),
         "edge_dst": np.concatenate([nxt, fwd]),
-        "edge_attr": np.ones(2 * n, np.int64),
+        "edge_attrs": np.ones(2 * n, np.int64).reshape(-1, 1),
         "graph_id": np.zeros(n, np.int64),
         "y": None,
     }
@@ -75,7 +75,7 @@ def tri():
         node_attrs=np.array([[0], [1], [1], [0]], np.int64),
         edge_src=np.array([0, 1, 1, 2, 2, 0], np.int64),
         edge_dst=np.array([1, 0, 2, 1, 0, 2], np.int64),
-        edge_attr=np.array([1, 1, 1, 1, 2, 2], np.int64),
+        edge_attrs=np.array([1, 1, 1, 1, 2, 2], np.int64).reshape(-1, 1),
         graph_id=np.array([0, 0, 0, 1], np.int64),
         y=np.array([[1.0], [2.0], [3.0], [4.0]]),
     )
@@ -87,7 +87,7 @@ def test_shapes_are_validated():
             node_attrs=np.zeros((3, 1), np.int64),
             edge_src=np.zeros(0, np.int64),
             edge_dst=np.zeros(0, np.int64),
-            edge_attr=np.zeros(0, np.int64),
+            edge_attrs=np.zeros(0, np.int64).reshape(-1, 1),
             graph_id=np.zeros(2, np.int64),
             y=None,
         )
@@ -99,7 +99,7 @@ def test_edges_must_be_symmetric():
             node_attrs=np.zeros((2, 1), np.int64),
             edge_src=np.array([0], np.int64),
             edge_dst=np.array([1], np.int64),
-            edge_attr=np.array([1], np.int64),
+            edge_attrs=np.array([1], np.int64).reshape(-1, 1),
             graph_id=np.zeros(2, np.int64),
             y=None,
         )
@@ -114,7 +114,7 @@ def test_edge_indices_must_be_within_the_node_range():
             node_attrs=np.zeros((2, 1), np.int64),
             edge_src=np.array([0, 5], np.int64),
             edge_dst=np.array([5, 0], np.int64),
-            edge_attr=np.array([1, 1], np.int64),
+            edge_attrs=np.array([1, 1], np.int64).reshape(-1, 1),
             graph_id=np.zeros(2, np.int64),
             y=None,
         )
@@ -126,7 +126,7 @@ def test_negative_edge_index_is_rejected():
             node_attrs=np.zeros((2, 1), np.int64),
             edge_src=np.array([0, -1], np.int64),
             edge_dst=np.array([-1, 0], np.int64),
-            edge_attr=np.array([1, 1], np.int64),
+            edge_attrs=np.array([1, 1], np.int64).reshape(-1, 1),
             graph_id=np.zeros(2, np.int64),
             y=None,
         )
@@ -146,7 +146,7 @@ def test_one_way_edges_are_caught_with_narrow_integer_dtypes():
             node_attrs=np.zeros((n, 1), np.int64),
             edge_src=np.array([65536], np.int32),
             edge_dst=np.array([0], np.int32),
-            edge_attr=np.ones(1, np.int64),
+            edge_attrs=np.ones(1, np.int64).reshape(-1, 1),
             graph_id=np.zeros(n, np.int64),
             y=None,
         )
@@ -157,6 +157,36 @@ def test_trusted_constructor_rejects_unknown_fields():
     a stray attribute rather than rejected."""
     with pytest.raises(TypeError, match="unexpected"):
         NodeBatch._with_trusted_edges(**{**ring(4), "elements": None, "bogus": 1})
+
+
+def test_edge_attrs_must_be_two_dimensional():
+    """edge_attrs is (n_edges, n_edge_attr) per design.md 11.1. A 1-D array is
+    the pre-2026-09 shape and must raise rather than broadcast into a single
+    column, which would silently accept a batch built against the old API."""
+    with pytest.raises(ValueError, match="edge_attrs"):
+        NodeBatch(
+            node_attrs=np.zeros((2, 1), np.int64),
+            edge_src=np.array([0, 1], np.int64),
+            edge_dst=np.array([1, 0], np.int64),
+            edge_attrs=np.ones(2, np.int64),  # 1-D: wrong
+            graph_id=np.zeros(2, np.int64),
+        )
+
+
+def test_edge_attrs_supports_a_zero_width_schema():
+    """An empty edge schema is legal (spec: edge_attributes == ()), so an
+    (n_edges, 0) array must construct and slice cleanly rather than tripping
+    a shape check written for the one-column case."""
+    b = NodeBatch(
+        node_attrs=np.zeros((2, 1), np.int64),
+        edge_src=np.array([0, 1], np.int64),
+        edge_dst=np.array([1, 0], np.int64),
+        edge_attrs=np.zeros((2, 0), np.int64),
+        graph_id=np.zeros(2, np.int64),
+    )
+    assert b.edge_attrs.shape == (2, 0)
+    assert b[np.array([0, 1])].edge_attrs.shape == (2, 0)
+    assert b.csr().attr.shape == (2, 0)
 
 
 def test_validation_does_not_build_a_python_set():
@@ -280,7 +310,7 @@ def test_parallel_edges_are_accepted():
         node_attrs=np.zeros((2, 1), np.int64),
         edge_src=np.array([0, 0, 1], np.int64),
         edge_dst=np.array([1, 1, 0], np.int64),
-        edge_attr=np.array([1, 1, 1], np.int64),
+        edge_attrs=np.array([1, 1, 1], np.int64).reshape(-1, 1),
         graph_id=np.zeros(2, np.int64),
         y=None,
     )
@@ -291,7 +321,7 @@ def test_self_loop_is_its_own_reverse():
         node_attrs=np.zeros((1, 1), np.int64),
         edge_src=np.array([0], np.int64),
         edge_dst=np.array([0], np.int64),
-        edge_attr=np.array([1], np.int64),
+        edge_attrs=np.array([1], np.int64).reshape(-1, 1),
         graph_id=np.zeros(1, np.int64),
         y=None,
     )
@@ -302,7 +332,7 @@ def test_a_batch_with_no_edges_is_valid():
         node_attrs=np.zeros((3, 1), np.int64),
         edge_src=np.zeros(0, np.int64),
         edge_dst=np.zeros(0, np.int64),
-        edge_attr=np.zeros(0, np.int64),
+        edge_attrs=np.zeros(0, np.int64).reshape(-1, 1),
         graph_id=np.zeros(3, np.int64),
         y=None,
     )
@@ -368,7 +398,7 @@ def _small_batch(offset_graph_id, n_graphs, seed):
         node_attrs=rng.integers(0, 4, size=(n, 2)).astype(np.int64),
         edge_src=np.array(src, np.int64),
         edge_dst=np.array(dst, np.int64),
-        edge_attr=np.ones(len(src), np.int64),
+        edge_attrs=np.ones(len(src), np.int64).reshape(-1, 1),
         graph_id=np.array(gid, np.int64),
         y=rng.normal(size=(n, 1)),
         elements=rng.integers(1, 20, size=n).astype(np.int64),
@@ -396,7 +426,7 @@ def test_concat_batches_is_the_inverse_of_a_graph_id_split():
         node_attrs=r.node_attrs,
         edge_src=r.edge_src,
         edge_dst=r.edge_dst,
-        edge_attr=r.edge_attr,
+        edge_attrs=r.edge_attrs,
         graph_id=r.graph_id,
         y=r.y,
         elements=r.elements,
@@ -436,7 +466,7 @@ def test_concat_batches_rejects_mixed_y():
         node_attrs=a.node_attrs,
         edge_src=a.edge_src,
         edge_dst=a.edge_dst,
-        edge_attr=a.edge_attr,
+        edge_attrs=a.edge_attrs,
         graph_id=a.graph_id,
         y=None,
         elements=a.elements,
@@ -451,7 +481,7 @@ def test_concat_batches_rejects_mixed_elements():
         node_attrs=a.node_attrs,
         edge_src=a.edge_src,
         edge_dst=a.edge_dst,
-        edge_attr=a.edge_attr,
+        edge_attrs=a.edge_attrs,
         graph_id=a.graph_id,
         y=a.y,
         elements=None,

@@ -35,7 +35,7 @@ class NodeBatch:
     node_attrs: np.ndarray  # (n_nodes, n_attr) int64, encoded categoricals
     edge_src: np.ndarray  # (n_edges,) int64
     edge_dst: np.ndarray  # (n_edges,) int64
-    edge_attr: np.ndarray  # (n_edges,) int64
+    edge_attrs: np.ndarray  # (n_edges, n_edge_attr) int64, encoded categoricals
     graph_id: np.ndarray  # (n_nodes,) int64
     y: np.ndarray | None = None  # (n_nodes, d) float64
     elements: np.ndarray | None = None  # (n_nodes,) int64, for the alignment guard
@@ -51,9 +51,13 @@ class NodeBatch:
                 f"graph_id must have shape ({n},), got {self.graph_id.shape}"
             )
         e = self.edge_src.shape[0]
-        for name in ("edge_dst", "edge_attr"):
-            if getattr(self, name).shape != (e,):
-                raise ValueError(f"{name} must have shape ({e},)")
+        if self.edge_dst.shape != (e,):
+            raise ValueError(f"edge_dst must have shape ({e},)")
+        if self.edge_attrs.ndim != 2 or self.edge_attrs.shape[0] != e:
+            raise ValueError(
+                f"edge_attrs must have shape ({e}, n_edge_attr), got "
+                f"{self.edge_attrs.shape}"
+            )
         if self.y is not None and self.y.shape[0] != n:
             raise ValueError(f"y must have {n} rows, got {self.y.shape[0]}")
 
@@ -170,7 +174,7 @@ class NodeBatch:
             node_attrs=self.node_attrs[sel],
             edge_src=remap[self.edge_src[keep]],
             edge_dst=remap[self.edge_dst[keep]],
-            edge_attr=self.edge_attr[keep],
+            edge_attrs=self.edge_attrs[keep],
             graph_id=self.graph_id[sel],
             y=None if self.y is None else self.y[sel],
             elements=None if self.elements is None else self.elements[sel],
@@ -191,7 +195,7 @@ class NodeBatch:
             slot=slot,
             src=src,
             dst=self.edge_dst[order],
-            attr=self.edge_attr[order],
+            attr=self.edge_attrs[order],
             max_deg=int(np.max(deg)) if n else 0,
         )
 
@@ -244,13 +248,13 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         else None
     )
 
-    edge_src, edge_dst, edge_attr, graph_id = [], [], [], []
+    edge_src, edge_dst, edge_attrs, graph_id = [], [], [], []
     node_off = 0
     graph_off = 0
     for p in parts:
         edge_src.append(p.edge_src + node_off)
         edge_dst.append(p.edge_dst + node_off)
-        edge_attr.append(p.edge_attr)
+        edge_attrs.append(p.edge_attrs)
         _, inv = np.unique(p.graph_id, return_inverse=True)
         dense_gid = np.asarray(inv, dtype=np.int64).ravel()
         graph_id.append(dense_gid + graph_off)
@@ -267,7 +271,7 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         node_attrs=node_attrs,
         edge_src=np.concatenate(edge_src),
         edge_dst=np.concatenate(edge_dst),
-        edge_attr=np.concatenate(edge_attr),
+        edge_attrs=np.concatenate(edge_attrs, axis=0),
         graph_id=np.concatenate(graph_id),
         y=y,
         elements=elements,
