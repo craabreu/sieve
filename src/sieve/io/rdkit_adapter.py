@@ -404,17 +404,30 @@ def _from_rdkit_sequential(
     # plain-dict copy matters too: config.attribute_codes is a nested
     # MappingProxyType (config._freeze_mappings), whose lookup is measurably
     # slower than a dict's.
-    getters = [_ATTRS.get(name) for name in flat]
-    mol_getters = [_MOL_ATTRS.get(name) for name in flat]
     tables = [dict(config.attribute_codes[name]) for name in flat]
     unknowns = [max(t.values()) + 1 if t else 0 for t in tables]
     edge_codes = dict(config.edge_codes)
+    # Resolve each flat attribute through exactly one registry, up front. Split
+    # into per-atom and molecule-level columns so the per-atom loop below has no
+    # None checks or `_MOL_ATTRS in?` lookups -- it runs once per atom *per
+    # attribute* (8.4M times on a 1.69M-atom, 5-attribute corpus).
+    atom_cols = []  # (column index, f(atom) -> str)
+    mol_cols = []  # (column index, f(mol) -> Sequence[str])
+    for j, name in enumerate(flat):
+        atom_f = _ATTRS.get(name)
+        mol_f = _MOL_ATTRS.get(name)
+        if mol_f is not None:
+            mol_cols.append((j, mol_f))
+        elif atom_f is not None:
+            atom_cols.append((j, atom_f))
+        else:
+            raise ValueError(f"unknown attribute {name!r}")
     for gi, mol in enumerate(mols):
         # Molecule-level attributes (ring perception, CIP labeling, ...) do
         # their whole-molecule precompute here, once, rather than once per
         # atom below. Indexed by raw RDKit atom index, so a permuted `order`
         # still lands each atom's value on its own row.
-        mol_vals = [f(mol) if f is not None else None for f in mol_getters]
+        mol_vals = {j: f(mol) for j, f in mol_cols}
         order = (
             list(range(mol.GetNumAtoms()))
             if node_order is None
@@ -425,9 +438,10 @@ def _from_rdkit_sequential(
         for local, idx in enumerate(order):
             a = mol.GetAtomWithIdx(int(idx))
             g = off + local
-            for j in range(len(flat)):
-                raw = mol_vals[j][idx] if mol_vals[j] is not None else getters[j](a)
-                node_attrs[g, j] = tables[j].get(raw, unknowns[j])
+            for j, atom_f in atom_cols:
+                node_attrs[g, j] = tables[j].get(atom_f(a), unknowns[j])
+            for j, vals in mol_vals.items():
+                node_attrs[g, j] = tables[j].get(vals[idx], unknowns[j])
             elements[g] = a.GetAtomicNum()
             graph_id[g] = gi
             if y_out is not None:
