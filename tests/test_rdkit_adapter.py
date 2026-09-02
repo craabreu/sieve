@@ -806,3 +806,98 @@ def test_bond_ring_attributes():
     assert value_of[0][acyclic[0]] == "False"
     assert value_of[1][acyclic[1]] == "none"
     assert value_of[2][acyclic[2]] == "0"
+
+
+def test_bond_stereo_reads_canonical_ez_from_the_bonds_cip_code():
+    """bond_stereo is the canonical E/Z of a double bond, read from that
+    bond's own _CIPCode -- the same rigorous descriptor chirality reads for
+    atoms. "none" for a bond with no stereochemistry (single bonds, and
+    double bonds that are not stereogenic)."""
+    from sieve.io.rdkit_adapter import _BOND_ATTRS, _MOL_BOND_ATTRS
+
+    assert "bond_stereo" in _MOL_BOND_ATTRS
+    assert "bond_stereo" not in _BOND_ATTRS
+
+    smis = ["C/C=C/C(F)Cl", "C/C=C\\C(F)Cl", "CC=C(C)C", "CCCC"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+    codes, edge_codes = build_codes(mols, ["element"], edge_attributes=("bond_stereo",))
+    assert set(edge_codes["bond_stereo"]) == {"E", "Z", "none"}
+
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=("bond_stereo",),
+        max_wl_depth=1,
+    )
+    b = from_smiles(smis, config=cfg)
+    value_of = {v: k for k, v in edge_codes["bond_stereo"].items()}
+
+    def first_double_bond_value(mol_idx):
+        off = sum(2 * m.GetNumBonds() for m in mols[:mol_idx])
+        mol = mols[mol_idx]
+        for bd in mol.GetBonds():
+            if bd.GetBondType() == Chem.BondType.DOUBLE:
+                return value_of[b.edge_attrs[off + 2 * bd.GetIdx(), 0]]
+        raise AssertionError("no double bond")
+
+    assert first_double_bond_value(0) == "E"
+    assert first_double_bond_value(1) == "Z"
+    assert first_double_bond_value(2) == "none"  # C=C(C)C: not stereogenic
+    # every bond of butane is "none"
+    but_off = sum(2 * m.GetNumBonds() for m in mols[:3])
+    assert all(value_of[c] == "none" for c in b.edge_attrs[but_off:, 0].tolist())
+
+
+def test_ensure_cip_labels_gate_fires_on_bond_stereo_without_a_chiral_atom():
+    """The gate bug bond_stereo exists to expose: _ensure_cip_labels used to
+    run the rigorous labeler only when some atom carried a chiral tag. A
+    molecule can have double-bond geometry and no stereocenter at all
+    (C/C=C/C), and for exactly those molecules every bond read "none"."""
+    smi = "C/C=C/C"  # E-but-2-ene: stereo bond, zero chiral atoms
+    mol = Chem.MolFromSmiles(smi)
+    assert not any(
+        a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED for a in mol.GetAtoms()
+    )
+
+    codes, edge_codes = build_codes(
+        [Chem.MolFromSmiles(smi)], ["element"], edge_attributes=("bond_stereo",)
+    )
+    assert "E" in edge_codes["bond_stereo"]  # not {"none"} alone
+
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=("bond_stereo",),
+        max_wl_depth=1,
+    )
+    b = from_smiles([smi], config=cfg)
+    value_of = {v: k for k, v in edge_codes["bond_stereo"].items()}
+    double = next(
+        bd
+        for bd in Chem.MolFromSmiles(smi).GetBonds()
+        if bd.GetBondType() == Chem.BondType.DOUBLE
+    )
+    assert value_of[b.edge_attrs[2 * double.GetIdx(), 0]] == "E"
+
+
+def test_bond_stereo_leaves_chirality_vocabulary_unchanged():
+    """bond_stereo does not touch _chirality: the two attributes coexist, and
+    chirality's discovered vocabulary is exactly what it was without it (no
+    new "unspecified" bucket, so no schema_version churn)."""
+    smis = ["F[C@H](Cl)Br", "C/C=C/C", "CCO"]
+    codes_without, _ = build_codes(
+        [Chem.MolFromSmiles(s) for s in smis],
+        ["chirality"],
+        edge_attributes=("bond_type",),
+    )
+    codes_with, _ = build_codes(
+        [Chem.MolFromSmiles(s) for s in smis],
+        ["chirality"],
+        edge_attributes=("bond_stereo", "bond_type"),
+    )
+    assert codes_without["chirality"] == codes_with["chirality"]
+    assert "unspecified" not in codes_without["chirality"]
