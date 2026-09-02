@@ -723,3 +723,31 @@ def test_edge_vocabulary_discovery_is_deterministic_under_n_jobs(n_jobs):
         mols, ["element"], edge_attributes=("bond_type",), n_jobs=n_jobs
     )
     assert got == baseline
+
+
+def test_empty_edge_schema_end_to_end_refines_on_topology_alone():
+    """edge_attributes=() is the pure-topology control arm. The adapter must
+    emit an (n_edges, 0) array, and fit/predict must run without touching a
+    bond attribute anywhere. Butadiene and butane have identical topology, so
+    with no edge attributes their atoms must fall into the same classes --
+    and differ once bond_type is declared."""
+    smis = ["C=CC=C", "CCCC"]
+    mols = [Chem.MolFromSmiles(s) for s in smis]
+
+    codes, edge_codes = build_codes(mols, ["element"], edge_attributes=())
+    assert edge_codes == {}
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edge_codes,
+        edge_attributes=(),
+        max_wl_depth=2,
+    )
+    b = from_smiles(smis, config=cfg)
+    assert b.edge_attrs.shape == (b.n_edges, 0)
+
+    labels = refine(b, cfg)[-1].labels
+    # atom i of butadiene and atom i of butane are topologically identical
+    assert labels[0] == labels[4]
+    assert labels[1] == labels[5]
