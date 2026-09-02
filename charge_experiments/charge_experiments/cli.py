@@ -145,6 +145,62 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    from charge_experiments.aggregate import (
+        build_curve,
+        read_runs_from_dirs,
+        read_runs_from_mlflow,
+    )
+
+    args.metric = args.metric or ["mae", "rmse", "r2"]
+    args.split = args.split or ["test", "train"]
+
+    if args.source == "mlflow":
+        if not args.experiment:
+            raise SystemExit("--source mlflow requires --experiment")
+        rows = read_runs_from_mlflow(args.tracking, args.experiment)
+    else:
+        rows = read_runs_from_dirs(DEFAULT_RUNS_ROOT, args.experiment)
+
+    table = build_curve(
+        rows,
+        x=args.x,
+        metrics=args.metric,
+        splits=args.split,
+        group_by=args.group_by,
+    )
+    if not table.raw_rows:
+        print(f"no runs matched {args.x!r}; nothing written")
+        return 1
+
+    name = args.out or args.x.rsplit(".", 1)[-1]
+    out_dir = DEFAULT_RUNS_ROOT.parent / "results" / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    fieldnames: list[str] = []
+    for row in table.raw_rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    csv_path = out_dir / "curve.csv"
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
+        writer.writeheader()
+        writer.writerows(table.raw_rows)
+    print(f"wrote {len(table.raw_rows)} row(s) to {csv_path}")
+
+    try:
+        from charge_experiments.plots import curve_panel
+
+        curve_panel(table, out_dir / "curve.png", suptitle=args.x)
+        print(f"wrote {out_dir / 'curve.png'}")
+    except ImportError:
+        logging.getLogger("charge_experiments").warning(
+            "matplotlib not installed; wrote curve.csv only"
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="charge_experiments")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -250,6 +306,34 @@ def build_parser() -> argparse.ArgumentParser:
         "summarize", help="collect runs/**/metrics.json into a CSV"
     )
     p_summary.set_defaults(func=_cmd_summarize)
+
+    p_sweep = sub.add_parser(
+        "sweep",
+        help="plot metrics against a run parameter, gathered across many runs",
+    )
+    p_sweep.add_argument(
+        "--x",
+        required=True,
+        help="dotted config path for the x axis, e.g. predictor.params.max_wl_depth",
+    )
+    p_sweep.add_argument("--experiment", default=None)
+    p_sweep.add_argument("--source", choices=("runs", "mlflow"), default="runs")
+    p_sweep.add_argument("--tracking", default=DEFAULT_TRACKING_URI)
+    p_sweep.add_argument(
+        "--metric",
+        action="append",
+        default=None,
+        help="repeatable; default: mae, rmse, r2",
+    )
+    p_sweep.add_argument(
+        "--split",
+        action="append",
+        default=None,
+        help="repeatable; default: test, train",
+    )
+    p_sweep.add_argument("--group-by", dest="group_by", default=None)
+    p_sweep.add_argument("--out", default=None, help="results/<NAME>/")
+    p_sweep.set_defaults(func=_cmd_sweep)
 
     return parser
 
