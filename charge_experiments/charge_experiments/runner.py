@@ -159,7 +159,6 @@ def execute(
     run_id = uuid.uuid4().hex[:8]
     run_dir = runs_root / cfg.run.experiment / f"{_run_name(cfg)}__{stamp}__{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "plots").mkdir(exist_ok=True)
 
     file_handler = logging.FileHandler(run_dir / "stdout.log")
     file_handler.setFormatter(
@@ -342,7 +341,7 @@ def _write_plots(
         panels = _build_parity_panels(test, pred, run_metrics)
         plots.parity_panel(
             panels,
-            run_dir / "plots" / "parity_panel.png",
+            run_dir / "parity_panel.png",
             suptitle=cfg.predictor.name,
         )
     except ImportError:
