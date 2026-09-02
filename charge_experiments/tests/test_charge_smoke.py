@@ -221,6 +221,84 @@ def test_report_loo_is_ignored_by_predictors_without_it(tmp_path):
     assert not any(k.startswith("train_loo/") for k in result.metrics)
 
 
+def test_tree_stats_saved_when_predictor_supports_it(tmp_path):
+    """A predictor whose fit() is expensive to redo (has save_model_state)
+    gets it saved unconditionally into the run's own directory -- no config
+    flag needed."""
+    import pytest
+
+    pytest.importorskip("rdkit")
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    result = execute(
+        _sieve_cfg(), mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert (result.run_dir / "tree_stats.npz").exists()
+
+
+def test_tree_stats_not_written_for_predictors_without_save_model_state(tmp_path):
+    """global_mean has no save_model_state -- runner reads it via hasattr,
+    so its absence is silently a no-op rather than an error."""
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    result = execute(
+        _tiny_cfg(), mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+    assert not (result.run_dir / "tree_stats.npz").exists()
+
+
+def test_tree_stats_load_path_skips_fit_and_predicts_identically(tmp_path):
+    """A second run pointed at a first run's own tree_stats.npz skips
+    fit() (via load_model_state) and produces the same predictions as the
+    first run -- and still writes its own tree_stats.npz copy."""
+    import pytest
+
+    pytest.importorskip("rdkit")
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+
+    first = execute(
+        _sieve_cfg(),
+        mset,
+        masks,
+        runs_root=tmp_path / "first",
+        allow_dirty=True,
+        tracking=None,
+    )
+    assert first.manifest["tree_stats_source"] == "fit"
+
+    second_cfg = replace(
+        _sieve_cfg(),
+        tree_stats_load_path=str(first.run_dir / "tree_stats.npz"),
+    )
+    second = execute(
+        second_cfg,
+        mset,
+        masks,
+        runs_root=tmp_path / "second",
+        allow_dirty=True,
+        tracking=None,
+    )
+    assert second.manifest["tree_stats_source"] == "loaded"
+    assert (second.run_dir / "tree_stats.npz").exists()
+    assert second.metrics["mae"] == first.metrics["mae"]
+
+
+def test_tree_stats_load_path_rejects_a_predictor_without_load_model_state(tmp_path):
+    """global_mean has no load_model_state -- there is nothing to load, so
+    this must raise rather than silently falling back to fit()."""
+    import pytest
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_tiny_cfg(), tree_stats_load_path="/nonexistent.npz")
+
+    with pytest.raises(AttributeError, match="load_model_state"):
+        execute(cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None)
+
+
 def test_normalization_conserves_charge_on_every_split(tmp_path):
     """With normalization set, predict_raw's output is renormalized before
     scoring -- test/train/val/LOO should all come out charge-conserving

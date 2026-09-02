@@ -1,10 +1,13 @@
 """Run configuration: YAML in, frozen dataclasses out. Mirrors
-cosmo_experiments/sieve_experiments/config.py's shape, with one series-
-specific addition: an optional top-level `normalization` key (a name from
+cosmo_experiments/sieve_experiments/config.py's shape, with two series-
+specific additions: an optional top-level `normalization` key (a name from
 ``normalize.NORMALIZERS``) applied to a predictor's raw output -- see
-``ExperimentCfg.normalization``'s own docstring and runner.py's `_predict`.
-There is exactly one valid split column (`split` -- this series builds no
-size-biased second split, per the design spec's "Out of scope" list)."""
+``ExperimentCfg.normalization``'s own docstring and runner.py's `_predict`
+-- and an optional `tree_stats_load_path` key to skip `fit()` in favor of
+an earlier run's own saved model state -- see
+``ExperimentCfg.tree_stats_load_path``'s own docstring. There is exactly
+one valid split column (`split` -- this series builds no size-biased
+second split, per the design spec's "Out of scope" list)."""
 
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ VALID_SPLIT_COLUMNS = ("split",)
 _RUN_KEYS = {"experiment", "seed", "tags"}
 _DATA_KEYS = {"store", "split_column", "train_split", "val_split", "eval_split"}
 _PREDICTOR_KEYS = {"name", "params"}
-_TOP_KEYS = {"run", "data", "predictor", "normalization"}
+_TOP_KEYS = {"run", "data", "predictor", "normalization", "tree_stats_load_path"}
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,15 @@ class ExperimentCfg:
     split (test/train/val/LOO) instead of calling ``predict()`` directly.
     ``None`` (the default) is today's behavior: each predictor's own
     internal handling, unchanged."""
+    tree_stats_load_path: str | None = None
+    """Path to an earlier run's own ``tree_stats.npz`` (any predictor whose
+    ``fit()`` is expensive to redo saves one automatically -- see
+    ``runner._execute_inner``). When set, ``fit()`` is skipped in favor of
+    ``predictor.load_model_state(tree_stats_load_path)``; this run then
+    re-saves its own copy into its own directory regardless, so every run
+    stays self-contained rather than pointing back at another run's files.
+    Raises if the predictor has no ``load_model_state``. ``None`` (the
+    default) is today's behavior: always ``fit()``."""
 
 
 def _check_keys(d: Mapping[str, Any], allowed: set[str], where: str) -> None:
@@ -143,8 +155,14 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
             f"got {normalization!r}"
         )
 
+    tree_stats_load_path = raw.get("tree_stats_load_path")
+
     return ExperimentCfg(
-        run=run, data=data, predictor=predictor, normalization=normalization
+        run=run,
+        data=data,
+        predictor=predictor,
+        normalization=normalization,
+        tree_stats_load_path=tree_stats_load_path,
     )
 
 
@@ -182,6 +200,7 @@ def to_dict(cfg: ExperimentCfg) -> dict[str, Any]:
         },
         "predictor": {"name": cfg.predictor.name, "params": dict(cfg.predictor.params)},
         "normalization": cfg.normalization,
+        "tree_stats_load_path": cfg.tree_stats_load_path,
     }
 
 
@@ -205,4 +224,5 @@ def to_flat_params(cfg: ExperimentCfg) -> dict[str, str]:
     _flatten("predictor.name", cfg.predictor.name, out)
     _flatten("predictor.params", dict(cfg.predictor.params), out)
     _flatten("normalization", cfg.normalization, out)
+    _flatten("tree_stats_load_path", cfg.tree_stats_load_path, out)
     return out

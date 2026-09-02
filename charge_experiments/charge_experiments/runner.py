@@ -364,8 +364,31 @@ def _execute_inner(
     predictor = build(cfg.predictor.name, cfg.predictor.params)
 
     t0 = time.perf_counter()
-    predictor.fit(train, val, rng=rng)
+    if cfg.tree_stats_load_path is not None:
+        load_model_state = getattr(predictor, "load_model_state", None)
+        if load_model_state is None:
+            raise AttributeError(
+                f"predictor {cfg.predictor.name!r} has no load_model_state "
+                f"method; tree_stats_load_path is not usable with it"
+            )
+        load_model_state(cfg.tree_stats_load_path)
+        tree_stats_source = "loaded"
+    else:
+        predictor.fit(train, val, rng=rng)
+        tree_stats_source = "fit"
     fit_s = time.perf_counter() - t0
+
+    # Automatic, unconditional: a predictor whose fit() is expensive to redo
+    # (e.g. DASHChargePredictor's tree-matching walk) opts in just by having
+    # save_model_state -- no config flag needed. Written straight into this
+    # run's own directory (even when tree_stats_load_path skipped fit() --
+    # a cheap re-save, so every run's own tree_stats.npz is self-contained
+    # rather than a pointer into another run's directory), so
+    # save_model_state(run_dir / "tree_stats.npz") is itself the provenance
+    # record of which run produced it.
+    save_model_state = getattr(predictor, "save_model_state", None)
+    if save_model_state is not None:
+        save_model_state(run_dir / "tree_stats.npz")
 
     t0 = time.perf_counter()
     train_metrics = _score_extra_split(predictor, train, split="train", cfg=cfg)
@@ -412,6 +435,7 @@ def _execute_inner(
         "started_utc": started.isoformat(),
         "finished_utc": datetime.now(UTC).isoformat(),
         "elapsed_s": {"fit": fit_s, "predict": predict_s, "data": data_seconds},
+        "tree_stats_source": tree_stats_source,
         "git": git_info,
         "seed": cfg.run.seed,
         "python": {
