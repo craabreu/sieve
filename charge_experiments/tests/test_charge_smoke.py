@@ -221,10 +221,11 @@ def test_report_loo_is_ignored_by_predictors_without_it(tmp_path):
     assert not any(k.startswith("train_loo/") for k in result.metrics)
 
 
-def test_tree_stats_saved_when_predictor_supports_it(tmp_path):
-    """A predictor whose fit() is expensive to redo (has save_model_state)
-    gets it saved unconditionally into the run's own directory -- no config
-    flag needed."""
+def test_tree_stats_not_saved_by_default(tmp_path):
+    """Saving is opt-in via save_tree_stats. It used to be automatic for
+    any predictor with save_model_state, which wrote 21GB of 57MB files
+    across ~380 sieve runs whose fit() takes ~15s -- a bad trade that only
+    pays for genuinely expensive fits (see save_tree_stats' docstring)."""
     import pytest
 
     pytest.importorskip("rdkit")
@@ -234,16 +235,34 @@ def test_tree_stats_saved_when_predictor_supports_it(tmp_path):
     result = execute(
         _sieve_cfg(), mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )
+    assert not (result.run_dir / "tree_stats.npz").exists()
+
+
+def test_tree_stats_saved_when_explicitly_requested(tmp_path):
+    """save_tree_stats=True on a predictor that supports it writes the
+    fitted state into the run's own directory."""
+    import pytest
+
+    pytest.importorskip("rdkit")
+
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_sieve_cfg(), save_tree_stats=True)
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
     assert (result.run_dir / "tree_stats.npz").exists()
 
 
 def test_tree_stats_not_written_for_predictors_without_save_model_state(tmp_path):
-    """global_mean has no save_model_state -- runner reads it via hasattr,
-    so its absence is silently a no-op rather than an error."""
+    """global_mean has no save_model_state -- runner reads it via getattr,
+    so its absence is silently a no-op rather than an error, even when
+    save_tree_stats is explicitly requested."""
     mset = synthetic_molecule_set(n_mol=20, seed=0)
     masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_tiny_cfg(), save_tree_stats=True)
     result = execute(
-        _tiny_cfg(), mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )
     assert not (result.run_dir / "tree_stats.npz").exists()
 
@@ -261,7 +280,7 @@ def test_tree_stats_load_path_skips_fit_and_predicts_identically(tmp_path):
     masks = _synthetic_masks(20, seed=1)
 
     first = execute(
-        _sieve_cfg(),
+        replace(_sieve_cfg(), save_tree_stats=True),
         mset,
         masks,
         runs_root=tmp_path / "first",
@@ -273,6 +292,7 @@ def test_tree_stats_load_path_skips_fit_and_predicts_identically(tmp_path):
     second_cfg = replace(
         _sieve_cfg(),
         tree_stats_load_path=str(first.run_dir / "tree_stats.npz"),
+        save_tree_stats=True,  # even opted in, a loaded run must not re-save
     )
     second = execute(
         second_cfg,

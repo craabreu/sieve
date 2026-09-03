@@ -378,17 +378,17 @@ def _execute_inner(
         tree_stats_source = "fit"
     fit_s = time.perf_counter() - t0
 
-    # Automatic, unconditional (whenever fit() actually ran): a predictor
-    # whose fit() is expensive to redo (e.g. DASHChargePredictor's
-    # tree-matching walk) opts in just by having save_model_state -- no
-    # config flag needed. Written straight into this run's own directory,
-    # so save_model_state(run_dir / "tree_stats.npz") is itself the
-    # provenance record of which run produced it. Skipped when
-    # tree_stats_load_path loaded state instead -- re-saving would only
-    # write a byte-identical duplicate of that same file (tree_stats.npz
-    # for a real DASH tree is O(100MB); the source path is already this
-    # run's own provenance record).
-    if tree_stats_source == "fit":
+    # Opt-in via cfg.save_tree_stats, and only when fit() actually ran.
+    # This was briefly automatic for any predictor exposing
+    # save_model_state, which wrote ~21GB across ~380 `sieve` runs (57MB
+    # each) to avoid ~15-second refits -- a bad trade that only pays when
+    # fit() is genuinely expensive (as for `dash`). Written straight into
+    # this run's own directory, so save_model_state(run_dir /
+    # "tree_stats.npz") is itself the provenance record of which run
+    # produced it. Still skipped when tree_stats_load_path loaded state
+    # instead: re-saving would only write a byte-identical duplicate of the
+    # file already at that path.
+    if cfg.save_tree_stats and tree_stats_source == "fit":
         save_model_state = getattr(predictor, "save_model_state", None)
         if save_model_state is not None:
             save_model_state(run_dir / "tree_stats.npz")

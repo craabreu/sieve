@@ -26,7 +26,14 @@ VALID_SPLIT_COLUMNS = ("split",)
 _RUN_KEYS = {"experiment", "seed", "tags"}
 _DATA_KEYS = {"store", "split_column", "train_split", "val_split", "eval_split"}
 _PREDICTOR_KEYS = {"name", "params"}
-_TOP_KEYS = {"run", "data", "predictor", "normalization", "tree_stats_load_path"}
+_TOP_KEYS = {
+    "run",
+    "data",
+    "predictor",
+    "normalization",
+    "tree_stats_load_path",
+    "save_tree_stats",
+}
 
 
 @dataclass(frozen=True)
@@ -69,16 +76,26 @@ class ExperimentCfg:
     split (test/train/val/LOO) instead of calling ``predict()`` directly.
     ``None`` (the default) is today's behavior: each predictor's own
     internal handling, unchanged."""
+    save_tree_stats: bool = False
+    """Write the fitted predictor's own state to ``<run_dir>/tree_stats.npz``
+    after ``fit()``, for later reuse via ``tree_stats_load_path``. Opt-in,
+    and deliberately so: this was briefly automatic for any predictor
+    exposing ``save_model_state``, which wrote ~21GB across ~380 `sieve`
+    runs (57MB each) to avoid ~15-second refits -- worth it only when
+    ``fit()`` is genuinely expensive, as it is for ``dash`` (a real
+    tree-matching walk). A predictor without ``save_model_state`` ignores
+    this silently; a run that *loaded* its state never re-saves regardless
+    (see ``runner._execute_inner``)."""
     tree_stats_load_path: str | None = None
-    """Path to an earlier run's own ``tree_stats.npz`` (any predictor whose
-    ``fit()`` is expensive to redo saves one automatically -- see
-    ``runner._execute_inner``). When set, ``fit()`` is skipped in favor of
+    """Path to an earlier run's own ``tree_stats.npz`` (written by a run
+    that set ``save_tree_stats`` -- see its docstring above). When set,
+    ``fit()`` is skipped in favor of
     ``predictor.load_model_state(tree_stats_load_path)``, and this run does
     *not* write its own ``tree_stats.npz`` -- that would only be a
     byte-identical duplicate of the file already at this path (real DASH
     trees are O(100MB)); ``tree_stats_load_path`` itself is the provenance
     record. Raises if the predictor has no ``load_model_state``. ``None``
-    (the default) is today's behavior: always ``fit()``, always saved."""
+    (the default) always calls ``fit()``."""
 
 
 def _check_keys(d: Mapping[str, Any], allowed: set[str], where: str) -> None:
@@ -157,6 +174,7 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
         )
 
     tree_stats_load_path = raw.get("tree_stats_load_path")
+    save_tree_stats = bool(raw.get("save_tree_stats", False))
 
     return ExperimentCfg(
         run=run,
@@ -164,6 +182,7 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
         predictor=predictor,
         normalization=normalization,
         tree_stats_load_path=tree_stats_load_path,
+        save_tree_stats=save_tree_stats,
     )
 
 
@@ -202,6 +221,7 @@ def to_dict(cfg: ExperimentCfg) -> dict[str, Any]:
         "predictor": {"name": cfg.predictor.name, "params": dict(cfg.predictor.params)},
         "normalization": cfg.normalization,
         "tree_stats_load_path": cfg.tree_stats_load_path,
+        "save_tree_stats": cfg.save_tree_stats,
     }
 
 
@@ -226,4 +246,5 @@ def to_flat_params(cfg: ExperimentCfg) -> dict[str, str]:
     _flatten("predictor.params", dict(cfg.predictor.params), out)
     _flatten("normalization", cfg.normalization, out)
     _flatten("tree_stats_load_path", cfg.tree_stats_load_path, out)
+    _flatten("save_tree_stats", cfg.save_tree_stats, out)
     return out
