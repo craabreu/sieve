@@ -223,3 +223,45 @@ def test_promote_run_raises_for_an_incomplete_run(tmp_path):
 
     with pytest.raises(FileNotFoundError, match=r"metrics\.json|config\.resolved"):
         promote_run(run_dir, runs_root=tmp_path / "runs")
+
+
+def test_execute_logs_batch_id_as_an_mlflow_tag(tmp_path):
+    """run.batch_id shows up as its own MLflow tag (independent of the
+    run_name string it also prefixes), for querying a whole sweep at
+    once."""
+    pytest.importorskip("rdkit")
+
+    import mlflow
+    import numpy as np
+    from charge_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
+    from charge_experiments.runner import execute
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    tracking = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    cfg = ExperimentCfg(
+        run=RunCfg(experiment="exp", seed=0, batch_id="10fold-2026"),
+        data=DataCfg(store="synthetic", split_column="split"),
+        predictor=PredictorCfg(name="global_mean", params={}),
+    )
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    rng = np.random.default_rng(1)
+    labels = rng.choice(["train", "val", "test"], size=20, p=[0.6, 0.2, 0.2])
+    masks = {name: labels == name for name in ("train", "val", "test")}
+
+    execute(
+        cfg,
+        mset,
+        masks,
+        runs_root=tmp_path / "runs",
+        allow_dirty=True,
+        tracking=tracking,
+    )
+
+    mlflow.set_tracking_uri(tracking)
+    exp = mlflow.get_experiment_by_name("exp")
+    assert exp is not None
+    runs = mlflow.search_runs(experiment_ids=[exp.experiment_id], output_format="list")
+    assert len(runs) == 1
+    assert runs[0].data.tags["batch_id"] == "10fold-2026"
+    assert runs[0].info.run_name.startswith("10fold-2026__")

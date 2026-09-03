@@ -52,6 +52,40 @@ def test_smoke_pipeline_writes_every_artifact(tmp_path):
     assert (run_dir / "stdout.log").exists()
 
 
+def test_batch_id_prefixes_the_run_directory_name(tmp_path):
+    """Ties several independently-launched runs (e.g. one per
+    partition-store fold) together into one sortable, greppable prefix --
+    without it, run-directory naming is unchanged (see the negative case
+    in test_smoke_pipeline_writes_every_artifact, which uses a batch_id-
+    less cfg and never sees a '__' -prefixed name)."""
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_tiny_cfg(), run=replace(_tiny_cfg().run, batch_id="10fold-2026"))
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    assert result.run_dir.name.startswith("10fold-2026__")
+    manifest = json.loads((result.run_dir / "manifest.json").read_text())
+    assert manifest["run_name"].startswith("10fold-2026__")
+
+
+def test_no_batch_id_leaves_run_directory_naming_unchanged(tmp_path):
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = _tiny_cfg()
+    assert cfg.run.batch_id is None
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    assert result.run_dir.name.startswith(
+        f"{cfg.predictor.name}-{cfg.data.store}-s{cfg.run.seed}__"
+    )
+
+
 def test_smoke_metrics_include_r2_and_charge_conservation(tmp_path):
     mset = synthetic_molecule_set(n_mol=20, seed=0)
     masks = _synthetic_masks(20, seed=1)

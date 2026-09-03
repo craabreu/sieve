@@ -104,6 +104,19 @@ Point a run at a different store with `--set data.store=dash-molecules-50k`,
 or use `--limit N` for a quick sanity check against whatever store is
 configured.
 
+Set `run.batch_id` to tie several independently-launched runs together --
+e.g. one predictor run per `partition-store` fold -- into one shared,
+sortable/greppable run-directory prefix (`<batch_id>__<predictor>-<store>-
+s<seed>__<timestamp>__<uuid>`), and a matching MLflow tag. `experiment`
+stays a broad, reused category (`dash-charges`); `batch_id` identifies one
+specific sweep instance, so re-running the same batch next month is
+visibly distinct from today's:
+
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      uv run python -m charge_experiments run --config configs/dash-charge-example.yaml \
+        --set data.store=dash-molecules-10fold-$i --set run.batch_id=dash-10fold-2026-09-03
+    done
+
 ### Collecting results
 
 Gather every run's `metrics.json` under `runs/` into one CSV:

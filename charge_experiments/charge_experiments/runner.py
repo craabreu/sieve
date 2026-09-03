@@ -104,7 +104,16 @@ def _package_versions() -> dict[str, str]:
 
 def _run_name(cfg: ExperimentCfg) -> str:
     d = cfg.data
-    return f"{cfg.predictor.name}-{d.store}-s{cfg.run.seed}"
+    name = f"{cfg.predictor.name}-{d.store}-s{cfg.run.seed}"
+    if cfg.run.batch_id is not None:
+        # Prefixed, not appended: every run in a batch then shares one
+        # sorts-and-greps-together prefix regardless of what predictor/
+        # store/seed varies between them (e.g. one predictor run per fold
+        # of a partition-store split) -- feeds the run directory name,
+        # MLflow's own run_name, and manifest.json's "run_name" all at
+        # once, since all three call this function.
+        name = f"{cfg.run.batch_id}__{name}"
+    return name
 
 
 def _savez_run(path: Path, test: MoleculeSet, pred: Prediction, /) -> None:
@@ -564,6 +573,7 @@ def _log_mlflow(
         "store": cfg.data.store,
         "seed": str(cfg.run.seed),
         "run_dir": str(run_dir),
+        **({"batch_id": cfg.run.batch_id} if cfg.run.batch_id is not None else {}),
         **{f"tag.{k}": v for k, v in cfg.run.tags.items()},
     }
     with mlflow.start_run(run_name=_run_name(cfg)):
