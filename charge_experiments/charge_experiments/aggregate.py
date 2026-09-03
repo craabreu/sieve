@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -168,6 +169,7 @@ class CurvePoint:
     mean: float
     lo: float
     hi: float
+    std: float
     n_runs: int
 
 
@@ -240,9 +242,53 @@ def build_curve(
                 mean=sum(values) / len(values),
                 lo=min(values),
                 hi=max(values),
+                # Population std (divides by n, not n-1): well-defined at
+                # n_runs=1 (0.0, no special-casing needed), unlike sample
+                # std which statistics.stdev raises on for a single value.
+                std=statistics.pstdev(values),
                 n_runs=len(values),
             )
         )
     for points in series.values():
         points.sort(key=lambda p: p.x_pos)
     return CurveTable(x=x, series=dict(series), raw_rows=raw_rows)
+
+
+AGGREGATE_FIELDNAMES = [
+    "series",
+    "metric",
+    "x",
+    "x_label",
+    "mean",
+    "lo",
+    "hi",
+    "std",
+    "n_runs",
+]
+
+
+def aggregate_rows(table: CurveTable) -> list[dict[str, str]]:
+    """``table.series`` (the per-point mean/min-max/n_runs that
+    ``build_curve`` already computes but ``raw_rows`` never carries) as
+    flat, CSV-writable rows -- one per (series, metric, x value). This is
+    the pooled/aggregated view; ``raw_rows`` remains the per-run one (see
+    ``test_raw_rows_hold_every_run_not_the_aggregate`` -- the two are
+    deliberately both persisted, neither replaces the other)."""
+    rows: list[dict[str, str]] = []
+    for (name, metric), points in table.series.items():
+        for point in points:
+            rows.append(
+                {
+                    "series": name,
+                    "metric": metric,
+                    "x": table.x,
+                    "x_label": point.x_label,
+                    "mean": f"{point.mean:.6g}",
+                    "lo": f"{point.lo:.6g}",
+                    "hi": f"{point.hi:.6g}",
+                    "std": f"{point.std:.6g}",
+                    "n_runs": str(point.n_runs),
+                }
+            )
+    rows.sort(key=lambda r: (r["series"], r["metric"], r["x_label"]))
+    return rows

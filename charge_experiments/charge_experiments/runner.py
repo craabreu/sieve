@@ -18,11 +18,12 @@ import json
 import logging
 import platform
 import random
+import shutil
 import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -364,8 +365,34 @@ def _execute_inner(
     predictor = build(cfg.predictor.name, cfg.predictor.params)
 
     t0 = time.perf_counter()
-    predictor.fit(train, val, rng=rng)
+    if cfg.tree_stats_load_path is not None:
+        load_model_state = getattr(predictor, "load_model_state", None)
+        if load_model_state is None:
+            raise AttributeError(
+                f"predictor {cfg.predictor.name!r} has no load_model_state "
+                f"method; tree_stats_load_path is not usable with it"
+            )
+        load_model_state(cfg.tree_stats_load_path)
+        tree_stats_source = "loaded"
+    else:
+        predictor.fit(train, val, rng=rng)
+        tree_stats_source = "fit"
     fit_s = time.perf_counter() - t0
+
+    # Opt-in via cfg.save_tree_stats, and only when fit() actually ran.
+    # This was briefly automatic for any predictor exposing
+    # save_model_state, which wrote ~21GB across ~380 `sieve` runs (57MB
+    # each) to avoid ~15-second refits -- a bad trade that only pays when
+    # fit() is genuinely expensive (as for `dash`). Written straight into
+    # this run's own directory, so save_model_state(run_dir /
+    # "tree_stats.npz") is itself the provenance record of which run
+    # produced it. Still skipped when tree_stats_load_path loaded state
+    # instead: re-saving would only write a byte-identical duplicate of the
+    # file already at that path.
+    if cfg.save_tree_stats and tree_stats_source == "fit":
+        save_model_state = getattr(predictor, "save_model_state", None)
+        if save_model_state is not None:
+            save_model_state(run_dir / "tree_stats.npz")
 
     t0 = time.perf_counter()
     train_metrics = _score_extra_split(predictor, train, split="train", cfg=cfg)
@@ -412,6 +439,7 @@ def _execute_inner(
         "started_utc": started.isoformat(),
         "finished_utc": datetime.now(UTC).isoformat(),
         "elapsed_s": {"fit": fit_s, "predict": predict_s, "data": data_seconds},
+        "tree_stats_source": tree_stats_source,
         "git": git_info,
         "seed": cfg.run.seed,
         "python": {
@@ -451,6 +479,9 @@ def _execute_inner(
     return RunResult(run_dir=run_dir, metrics=run_metrics, manifest=manifest)
 
 
+_ENSURE_EXPERIMENT_RETRIES = 5
+
+
 def _ensure_experiment(
     experiment_name: str, *, artifact_root: Path = DEFAULT_ARTIFACT_ROOT
 ) -> None:
@@ -459,14 +490,40 @@ def _ensure_experiment(
     backend, that's an unignored ``./mlruns/`` relative to the process's
     CWD, not anything tied to ``DEFAULT_TRACKING_URI``. Create the
     experiment explicitly first, with an artifact location under this
-    series' own tree, so ``set_experiment`` only ever has to look it up."""
-    import mlflow
+    series' own tree, so ``set_experiment`` only ever has to look it up.
 
-    if mlflow.get_experiment_by_name(experiment_name) is None:
-        artifact_root.mkdir(parents=True, exist_ok=True)
-        artifact_location = (artifact_root / experiment_name).as_uri()
-        mlflow.create_experiment(experiment_name, artifact_location=artifact_location)
-    mlflow.set_experiment(experiment_name)
+    Retried against ``sqlalchemy.exc.OperationalError``: the sqlite
+    backend's very first connection against a not-yet-existing (or
+    not-yet-migrated) ``mlflow_runs.db`` runs Alembic's one-time schema
+    migration. Several run processes launched in parallel against a fresh
+    db (e.g. right after deleting it) all race to be that first connection
+    -- one wins, the rest hit a genuine ``OperationalError`` (observed:
+    ``table _alembic_tmp_experiments already exists``), not a real data
+    problem. A short retry loop rides that out: once the winner finishes
+    the migration, every loser's retry proceeds normally."""
+    import time
+
+    import mlflow
+    from sqlalchemy.exc import OperationalError
+
+    last_error: OperationalError | None = None
+    for attempt in range(_ENSURE_EXPERIMENT_RETRIES):
+        try:
+            if mlflow.get_experiment_by_name(experiment_name) is None:
+                artifact_root.mkdir(parents=True, exist_ok=True)
+                artifact_location = (artifact_root / experiment_name).as_uri()
+                mlflow.create_experiment(
+                    experiment_name, artifact_location=artifact_location
+                )
+            mlflow.set_experiment(experiment_name)
+            return
+        except OperationalError as exc:
+            last_error = exc
+            time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError(
+        f"could not initialize MLflow experiment {experiment_name!r} after "
+        f"{_ENSURE_EXPERIMENT_RETRIES} attempts (sqlite migration race?)"
+    ) from last_error
 
 
 def _log_mlflow_run(
@@ -511,6 +568,101 @@ def _log_mlflow(
     }
     with mlflow.start_run(run_name=_run_name(cfg)):
         _log_mlflow_run(tags, to_flat_params(cfg), run_metrics, run_dir)
+
+
+@dataclass(frozen=True)
+class PromoteResult:
+    run_dir: Path
+    experiment: str
+    moved: bool
+    logged: bool
+    """False when an MLflow run already carried this run_dir's own tag --
+    nothing was re-logged (and, if ``target_experiment`` was given but the
+    run_dir already lived there, nothing was re-moved either)."""
+
+
+def promote_run(
+    run_dir: str | Path,
+    *,
+    target_experiment: str | None = None,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    tracking: str = DEFAULT_TRACKING_URI,
+    artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
+) -> PromoteResult:
+    """Give an already-completed run an MLflow record, without re-running
+    fit()/predict() -- reads exactly the ``config.resolved.yaml`` and
+    ``metrics.json`` bytes a real run already wrote.
+
+    Two situations this covers, both real:
+
+    - ``target_experiment=None`` (the back-fill case): a run executed with
+      ``--no-tracking``, or one whose own MLflow logging step crashed
+      *after* local artifacts were already written -- e.g. the
+      sqlite-migration race ``_ensure_experiment`` now retries against.
+      Logs under the run's own ``config.run.experiment``, in place.
+    - ``target_experiment`` set (the exploration -> baseline case): moves
+      ``run_dir`` from ``runs_root/<old>/<name>`` to
+      ``runs_root/<target_experiment>/<name>`` first, then logs there
+      instead -- picking one result out of an exploratory sweep (its own
+      ``run.experiment``, per the "experiments stay untracked" convention)
+      to become part of the tracked baseline.
+
+    Idempotent either way: an MLflow run already carrying this run_dir's
+    own final path as its ``"run_dir"`` tag (the same tag ``_log_mlflow``
+    always sets) is left alone -- ``PromoteResult.logged`` is ``False``,
+    nothing is re-logged or moved again.
+    """
+    run_dir = Path(run_dir)
+    config_path = run_dir / "config.resolved.yaml"
+    metrics_path = run_dir / "metrics.json"
+    if not config_path.exists() or not metrics_path.exists():
+        raise FileNotFoundError(
+            f"{run_dir} has no config.resolved.yaml/metrics.json -- only a "
+            "completed run (one _execute_inner finished) can be promoted"
+        )
+
+    from charge_experiments.config import _build
+
+    raw = yaml.safe_load(config_path.read_text())
+    cfg = _build(raw)
+    run_metrics = json.loads(metrics_path.read_text())
+
+    moved = False
+    if target_experiment is not None and target_experiment != cfg.run.experiment:
+        new_dir = runs_root / target_experiment / run_dir.name
+        new_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(run_dir), str(new_dir))
+        run_dir = new_dir
+        cfg = replace(cfg, run=replace(cfg.run, experiment=target_experiment))
+        moved = True
+
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "mlflow is not installed; promote_run has nothing to log to"
+        ) from exc
+
+    mlflow.set_tracking_uri(tracking)
+    _ensure_experiment(cfg.run.experiment, artifact_root=artifact_root)
+    client = MlflowClient(tracking_uri=tracking)
+    experiment = client.get_experiment_by_name(cfg.run.experiment)
+    assert experiment is not None  # _ensure_experiment just created/found it
+    existing = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.run_dir = '{run_dir}'",
+        max_results=1,
+    )
+    if existing:
+        return PromoteResult(
+            run_dir=run_dir, experiment=cfg.run.experiment, moved=moved, logged=False
+        )
+
+    _log_mlflow(cfg, run_metrics, run_dir, tracking)
+    return PromoteResult(
+        run_dir=run_dir, experiment=cfg.run.experiment, moved=moved, logged=True
+    )
 
 
 def load_molecule_set(

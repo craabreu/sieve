@@ -10,7 +10,12 @@ from pathlib import Path
 
 from charge_experiments.config import load_config
 from charge_experiments.data import DEFAULT_STORES_ROOT
-from charge_experiments.runner import DEFAULT_RUNS_ROOT, DEFAULT_TRACKING_URI, run
+from charge_experiments.runner import (
+    DEFAULT_ARTIFACT_ROOT,
+    DEFAULT_RUNS_ROOT,
+    DEFAULT_TRACKING_URI,
+    run,
+)
 
 SUMMARY_COLUMNS = [
     "run_name",
@@ -51,6 +56,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for key in sorted(result.metrics):
         print(f"  {key}: {result.metrics[key]}")
     return 0
+
+
+def _cmd_promote_run(args: argparse.Namespace) -> int:
+    from charge_experiments.runner import promote_run
+
+    rc = 0
+    for run_dir in args.run_dir:
+        try:
+            result = promote_run(
+                run_dir,
+                target_experiment=args.to,
+                runs_root=DEFAULT_RUNS_ROOT,
+                tracking=DEFAULT_TRACKING_URI,
+                artifact_root=DEFAULT_ARTIFACT_ROOT,
+            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            print(f"skipped {run_dir!r}: {exc}")
+            rc = 1
+            continue
+        if not result.logged:
+            print(f"{run_dir!r} already tracked as {result.run_dir} -- skipped")
+            continue
+        moved_note = f" (moved to {result.run_dir})" if result.moved else ""
+        print(f"promoted {run_dir!r} -> experiment {result.experiment!r}{moved_note}")
+    return rc
 
 
 def _cmd_prepare_store(args: argparse.Namespace) -> int:
@@ -129,6 +159,8 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
 
 def _cmd_sweep(args: argparse.Namespace) -> int:
     from charge_experiments.aggregate import (
+        AGGREGATE_FIELDNAMES,
+        aggregate_rows,
         build_curve,
         read_runs_from_dirs,
         read_runs_from_mlflow,
@@ -171,10 +203,18 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         writer.writerows(table.raw_rows)
     print(f"wrote {len(table.raw_rows)} row(s) to {csv_path}")
 
+    agg_rows = aggregate_rows(table)
+    agg_path = out_dir / "aggregate.csv"
+    with agg_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=AGGREGATE_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(agg_rows)
+    print(f"wrote {len(agg_rows)} row(s) to {agg_path}")
+
     try:
         from charge_experiments.plots import curve_panel
 
-        curve_panel(table, out_dir / "curve.png", suptitle=args.x)
+        curve_panel(table, out_dir / "curve.png", suptitle=args.x, band=args.band)
         print(f"wrote {out_dir / 'curve.png'}")
     except ImportError:
         logging.getLogger("charge_experiments").warning(
@@ -206,6 +246,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-tracking", action="store_true", help="skip MLflow logging for this run"
     )
     p_run.set_defaults(func=_cmd_run)
+
+    p_promote = sub.add_parser(
+        "promote-run",
+        help="give an already-completed run directory an MLflow record, "
+        "optionally moving it to a different experiment",
+    )
+    p_promote.add_argument(
+        "run_dir", nargs="+", help="path(s) to a completed run directory"
+    )
+    p_promote.add_argument(
+        "--to",
+        dest="to",
+        default=None,
+        metavar="EXPERIMENT",
+        help="re-log (and move runs/<EXPERIMENT>/<name>) under this "
+        "experiment instead of the run's own config.run.experiment",
+    )
+    p_promote.set_defaults(func=_cmd_promote_run)
 
     p_prepare = sub.add_parser(
         "prepare-store", help="download, parse, and split the DASH molecules SDF"
@@ -297,6 +355,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeatable; default: test, train",
     )
     p_sweep.add_argument("--group-by", dest="group_by", default=None)
+    p_sweep.add_argument(
+        "--band",
+        choices=("none", "errorbar", "fill"),
+        default="fill",
+        help="how to render each point's std dev on the plot (default: fill)",
+    )
     p_sweep.add_argument("--out", default=None, help="results/<NAME>/")
     p_sweep.set_defaults(func=_cmd_sweep)
 

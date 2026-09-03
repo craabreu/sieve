@@ -17,6 +17,81 @@ def test_build_parser_rejects_the_removed_run_nested_command():
         parser.parse_args(["run-nested", "--config", "some-config.yaml"])
 
 
+def test_build_parser_promote_run_defaults():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["promote-run", "runs/exp/r1"])
+    assert args.run_dir == ["runs/exp/r1"]
+    assert args.to is None
+
+
+def test_build_parser_promote_run_accepts_multiple_dirs_and_to():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["promote-run", "runs/exp/r1", "runs/exp/r2", "--to", "dash-charges"]
+    )
+    assert args.run_dir == ["runs/exp/r1", "runs/exp/r2"]
+    assert args.to == "dash-charges"
+
+
+def test_promote_run_cli_backfills_and_reports(tmp_path, monkeypatch, capsys):
+    import json
+
+    import pytest
+    import yaml
+
+    pytest.importorskip("mlflow")
+
+    from charge_experiments import cli
+
+    run_dir = tmp_path / "runs" / "exp" / "r1"
+    run_dir.mkdir(parents=True)
+    raw = {
+        "run": {"experiment": "exp", "seed": 0, "tags": {}},
+        "data": {
+            "store": "synthetic",
+            "split_column": "split",
+            "train_split": "train",
+            "val_split": "val",
+            "eval_split": "test",
+        },
+        "predictor": {"name": "global_mean", "params": {}},
+        "normalization": None,
+        "tree_stats_load_path": None,
+        "save_tree_stats": False,
+    }
+    (run_dir / "config.resolved.yaml").write_text(yaml.safe_dump(raw))
+    (run_dir / "metrics.json").write_text(json.dumps({"mae": 0.1}))
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        cli, "DEFAULT_TRACKING_URI", f"sqlite:///{tmp_path / 'mlflow.db'}"
+    )
+    monkeypatch.setattr(cli, "DEFAULT_ARTIFACT_ROOT", tmp_path / "art")
+
+    assert cli.main(["promote-run", str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "promoted" in out
+
+    # a second call is a no-op, not a duplicate record
+    assert cli.main(["promote-run", str(run_dir)]) == 0
+    assert "already tracked" in capsys.readouterr().out
+
+
+def test_promote_run_cli_reports_a_missing_run_as_skipped(
+    tmp_path, monkeypatch, capsys
+):
+    from charge_experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", tmp_path / "runs")
+    rc = cli.main(["promote-run", str(tmp_path / "no-such-run")])
+    assert rc == 1
+    assert "skipped" in capsys.readouterr().out
+
+
 def test_build_parser_subsample_store_defaults():
     from charge_experiments.cli import build_parser
 
@@ -147,6 +222,47 @@ def test_sweep_writes_a_curve_csv_from_run_dirs(tmp_path, monkeypatch):
     assert len(rows) == 3
     assert {r["predictor.params.max_wl_depth"] for r in rows} == {"1", "2", "3"}
     assert rows[0]["mae"] and rows[0]["train/mae"]
+
+
+def test_sweep_also_writes_an_aggregate_csv(tmp_path, monkeypatch):
+    """The pooled mean/min/max/n_runs band -- computed by build_curve but
+    absent from curve.csv's raw per-run rows -- is persisted separately."""
+    import csv
+
+    from charge_experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", _sweep_tree(tmp_path))
+    rc = cli.main(["sweep", "--x", "predictor.params.max_wl_depth", "--metric", "mae"])
+    assert rc == 0
+
+    out = tmp_path / "results" / "max_wl_depth" / "aggregate.csv"
+    assert out.exists()
+    rows = list(csv.DictReader(out.open()))
+    # One point per (series, metric, x value) -- 3 depths x 2 splits
+    # (test/train are the sweep default).
+    assert len(rows) == 6
+    depth1_test = next(r for r in rows if r["x_label"] == "1" and r["series"] == "test")
+    assert depth1_test["n_runs"] == "1"
+    assert depth1_test["mean"] == depth1_test["lo"] == depth1_test["hi"]
+
+
+def test_sweep_accepts_a_band_flag(tmp_path, monkeypatch, capsys):
+    """--band defaults to 'fill' and accepts 'none'/'errorbar' too, routed
+    through to curve_panel without error."""
+    from charge_experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", _sweep_tree(tmp_path))
+    for band in ("none", "errorbar", "fill"):
+        rc = cli.main(["sweep", "--x", "predictor.params.max_wl_depth", "--band", band])
+        assert rc == 0, capsys.readouterr()
+
+
+def test_build_parser_sweep_band_defaults_to_fill():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["sweep", "--x", "predictor.params.max_wl_depth"])
+    assert args.band == "fill"
 
 
 def test_sweep_out_name_defaults_to_the_x_paths_last_segment(tmp_path, monkeypatch):

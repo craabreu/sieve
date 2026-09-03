@@ -183,31 +183,59 @@ def test_parity_panel_no_panels_writes_nothing(tmp_path):
     assert not out_path.exists()
 
 
-def test_curve_panel_writes_one_subplot_per_metric(tmp_path):
-    """One subplot per metric, one line per series, with a min-max band."""
-    pytest.importorskip("matplotlib")
-
+def _wl_depth_table():
     from charge_experiments.aggregate import CurvePoint, CurveTable
-    from charge_experiments.plots import curve_panel
 
-    table = CurveTable(
+    return CurveTable(
         x="predictor.params.max_wl_depth",
         series={
             ("test", "mae"): [
-                CurvePoint("1", 1.0, 0.20, 0.18, 0.22, 2),
-                CurvePoint("2", 2.0, 0.10, 0.09, 0.11, 2),
+                CurvePoint("1", 1.0, 0.20, 0.18, 0.22, 0.02, 2),
+                CurvePoint("2", 2.0, 0.10, 0.09, 0.11, 0.01, 2),
             ],
             ("train", "mae"): [
-                CurvePoint("1", 1.0, 0.15, 0.15, 0.15, 1),
-                CurvePoint("2", 2.0, 0.05, 0.05, 0.05, 1),
+                CurvePoint("1", 1.0, 0.15, 0.15, 0.15, 0.0, 1),
+                CurvePoint("2", 2.0, 0.05, 0.05, 0.05, 0.0, 1),
             ],
-            ("test", "r2"): [CurvePoint("1", 1.0, 0.9, 0.9, 0.9, 1)],
+            ("test", "r2"): [CurvePoint("1", 1.0, 0.9, 0.9, 0.9, 0.0, 1)],
         },
         raw_rows=[],
     )
+
+
+def test_curve_panel_writes_one_subplot_per_metric(tmp_path):
+    """One subplot per metric, one line per series, with a std-dev band."""
+    pytest.importorskip("matplotlib")
+
+    from charge_experiments.plots import curve_panel
+
     out = tmp_path / "curve.png"
-    curve_panel(table, out, suptitle="sieve")
+    curve_panel(_wl_depth_table(), out, suptitle="sieve")
     assert out.exists() and out.stat().st_size > 0
+
+
+@pytest.mark.parametrize("band", ["none", "errorbar", "fill"])
+def test_curve_panel_accepts_every_band_mode(tmp_path, band):
+    pytest.importorskip("matplotlib")
+
+    from charge_experiments.plots import curve_panel
+
+    out = tmp_path / "curve.png"
+    curve_panel(_wl_depth_table(), out, suptitle="sieve", band=band)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_curve_panel_rejects_an_unknown_band():
+    from charge_experiments.aggregate import CurveTable
+    from charge_experiments.plots import curve_panel
+
+    with pytest.raises(ValueError, match="band"):
+        curve_panel(
+            CurveTable(x="d", series={}, raw_rows=[]),
+            "unused.png",
+            suptitle="none",
+            band="bogus",
+        )
 
 
 def test_curve_panel_on_an_empty_table_writes_nothing(tmp_path):

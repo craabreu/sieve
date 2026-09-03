@@ -1,0 +1,13 @@
+run:
+  experiment: dash-charges
+  seed: 0
+data:
+  store: dash-molecules
+  split_column: split
+predictor:
+  name: sieve
+  params:
+    attributes: [element]
+    edge_attributes: []
+    max_wl_depth: 0
+    minimum_support: 1

@@ -159,8 +159,16 @@ def curve_panel(
     *,
     suptitle: str,
     n_cols: int = 3,
+    band: str = "fill",
 ) -> None:
-    """One subplot per metric, one line per series, mean with a min-max band.
+    """One subplot per metric, one line per series, mean plus a dispersion
+    band (``point.std``, pooled across the runs sharing one x value).
+
+    ``band`` picks how that dispersion renders: ``"fill"`` (default) shades
+    mean +/- std; ``"errorbar"`` draws it as error bars instead of a line +
+    shading; ``"none"`` draws the mean line alone. Any of the three still
+    leaves ``point.lo``/``point.hi`` (min/max) and ``point.std`` in
+    ``aggregate.csv`` regardless -- this only changes what the PNG shows.
 
     ``table`` is an ``aggregate.CurveTable``. Typed as ``Any`` to keep this
     module free of a runtime import from ``aggregate`` -- ``plots`` is
@@ -170,6 +178,9 @@ def curve_panel(
     matplotlib is imported lazily, as in ``parity_panel``: a caller without
     it still gets the CSV.
     """
+    if band not in ("none", "errorbar", "fill"):
+        raise ValueError(f"band must be 'none', 'errorbar', or 'fill', got {band!r}")
+
     import matplotlib.pyplot as plt
 
     metrics = sorted({metric for _, metric in table.series})
@@ -198,11 +209,18 @@ def curve_panel(
             if series_metric != metric or not points:
                 continue
             xs = [p.x_pos for p in points]
-            ax.plot(xs, [p.mean for p in points], marker="o", ms=4, label=name)
-            if any(p.n_runs > 1 for p in points):
-                ax.fill_between(
-                    xs, [p.lo for p in points], [p.hi for p in points], alpha=0.2
+            means = [p.mean for p in points]
+            stds = [p.std for p in points]
+            if band == "errorbar":
+                ax.errorbar(
+                    xs, means, yerr=stds, marker="o", ms=4, capsize=3, label=name
                 )
+            else:
+                ax.plot(xs, means, marker="o", ms=4, label=name)
+                if band == "fill" and any(s > 0 for s in stds):
+                    lo = [m - s for m, s in zip(means, stds, strict=True)]
+                    hi = [m + s for m, s in zip(means, stds, strict=True)]
+                    ax.fill_between(xs, lo, hi, alpha=0.2)
         ax.set_xticks(tick_pos)
         ax.set_xticklabels([ticks[p] for p in tick_pos])
         ax.set_xlabel(table.x, fontsize=8)
