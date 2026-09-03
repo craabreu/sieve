@@ -10,7 +10,12 @@ from pathlib import Path
 
 from charge_experiments.config import load_config
 from charge_experiments.data import DEFAULT_STORES_ROOT
-from charge_experiments.runner import DEFAULT_RUNS_ROOT, DEFAULT_TRACKING_URI, run
+from charge_experiments.runner import (
+    DEFAULT_ARTIFACT_ROOT,
+    DEFAULT_RUNS_ROOT,
+    DEFAULT_TRACKING_URI,
+    run,
+)
 
 SUMMARY_COLUMNS = [
     "run_name",
@@ -51,6 +56,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for key in sorted(result.metrics):
         print(f"  {key}: {result.metrics[key]}")
     return 0
+
+
+def _cmd_promote_run(args: argparse.Namespace) -> int:
+    from charge_experiments.runner import promote_run
+
+    rc = 0
+    for run_dir in args.run_dir:
+        try:
+            result = promote_run(
+                run_dir,
+                target_experiment=args.to,
+                runs_root=DEFAULT_RUNS_ROOT,
+                tracking=DEFAULT_TRACKING_URI,
+                artifact_root=DEFAULT_ARTIFACT_ROOT,
+            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            print(f"skipped {run_dir!r}: {exc}")
+            rc = 1
+            continue
+        if not result.logged:
+            print(f"{run_dir!r} already tracked as {result.run_dir} -- skipped")
+            continue
+        moved_note = f" (moved to {result.run_dir})" if result.moved else ""
+        print(f"promoted {run_dir!r} -> experiment {result.experiment!r}{moved_note}")
+    return rc
 
 
 def _cmd_prepare_store(args: argparse.Namespace) -> int:
@@ -216,6 +246,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-tracking", action="store_true", help="skip MLflow logging for this run"
     )
     p_run.set_defaults(func=_cmd_run)
+
+    p_promote = sub.add_parser(
+        "promote-run",
+        help="give an already-completed run directory an MLflow record, "
+        "optionally moving it to a different experiment",
+    )
+    p_promote.add_argument(
+        "run_dir", nargs="+", help="path(s) to a completed run directory"
+    )
+    p_promote.add_argument(
+        "--to",
+        dest="to",
+        default=None,
+        metavar="EXPERIMENT",
+        help="re-log (and move runs/<EXPERIMENT>/<name>) under this "
+        "experiment instead of the run's own config.run.experiment",
+    )
+    p_promote.set_defaults(func=_cmd_promote_run)
 
     p_prepare = sub.add_parser(
         "prepare-store", help="download, parse, and split the DASH molecules SDF"

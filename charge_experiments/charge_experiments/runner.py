@@ -18,11 +18,12 @@ import json
 import logging
 import platform
 import random
+import shutil
 import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -567,6 +568,101 @@ def _log_mlflow(
     }
     with mlflow.start_run(run_name=_run_name(cfg)):
         _log_mlflow_run(tags, to_flat_params(cfg), run_metrics, run_dir)
+
+
+@dataclass(frozen=True)
+class PromoteResult:
+    run_dir: Path
+    experiment: str
+    moved: bool
+    logged: bool
+    """False when an MLflow run already carried this run_dir's own tag --
+    nothing was re-logged (and, if ``target_experiment`` was given but the
+    run_dir already lived there, nothing was re-moved either)."""
+
+
+def promote_run(
+    run_dir: str | Path,
+    *,
+    target_experiment: str | None = None,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    tracking: str = DEFAULT_TRACKING_URI,
+    artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
+) -> PromoteResult:
+    """Give an already-completed run an MLflow record, without re-running
+    fit()/predict() -- reads exactly the ``config.resolved.yaml`` and
+    ``metrics.json`` bytes a real run already wrote.
+
+    Two situations this covers, both real:
+
+    - ``target_experiment=None`` (the back-fill case): a run executed with
+      ``--no-tracking``, or one whose own MLflow logging step crashed
+      *after* local artifacts were already written -- e.g. the
+      sqlite-migration race ``_ensure_experiment`` now retries against.
+      Logs under the run's own ``config.run.experiment``, in place.
+    - ``target_experiment`` set (the exploration -> baseline case): moves
+      ``run_dir`` from ``runs_root/<old>/<name>`` to
+      ``runs_root/<target_experiment>/<name>`` first, then logs there
+      instead -- picking one result out of an exploratory sweep (its own
+      ``run.experiment``, per the "experiments stay untracked" convention)
+      to become part of the tracked baseline.
+
+    Idempotent either way: an MLflow run already carrying this run_dir's
+    own final path as its ``"run_dir"`` tag (the same tag ``_log_mlflow``
+    always sets) is left alone -- ``PromoteResult.logged`` is ``False``,
+    nothing is re-logged or moved again.
+    """
+    run_dir = Path(run_dir)
+    config_path = run_dir / "config.resolved.yaml"
+    metrics_path = run_dir / "metrics.json"
+    if not config_path.exists() or not metrics_path.exists():
+        raise FileNotFoundError(
+            f"{run_dir} has no config.resolved.yaml/metrics.json -- only a "
+            "completed run (one _execute_inner finished) can be promoted"
+        )
+
+    from charge_experiments.config import _build
+
+    raw = yaml.safe_load(config_path.read_text())
+    cfg = _build(raw)
+    run_metrics = json.loads(metrics_path.read_text())
+
+    moved = False
+    if target_experiment is not None and target_experiment != cfg.run.experiment:
+        new_dir = runs_root / target_experiment / run_dir.name
+        new_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(run_dir), str(new_dir))
+        run_dir = new_dir
+        cfg = replace(cfg, run=replace(cfg.run, experiment=target_experiment))
+        moved = True
+
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "mlflow is not installed; promote_run has nothing to log to"
+        ) from exc
+
+    mlflow.set_tracking_uri(tracking)
+    _ensure_experiment(cfg.run.experiment, artifact_root=artifact_root)
+    client = MlflowClient(tracking_uri=tracking)
+    experiment = client.get_experiment_by_name(cfg.run.experiment)
+    assert experiment is not None  # _ensure_experiment just created/found it
+    existing = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.run_dir = '{run_dir}'",
+        max_results=1,
+    )
+    if existing:
+        return PromoteResult(
+            run_dir=run_dir, experiment=cfg.run.experiment, moved=moved, logged=False
+        )
+
+    _log_mlflow(cfg, run_metrics, run_dir, tracking)
+    return PromoteResult(
+        run_dir=run_dir, experiment=cfg.run.experiment, moved=moved, logged=True
+    )
 
 
 def load_molecule_set(

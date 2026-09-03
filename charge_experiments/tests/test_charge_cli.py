@@ -17,6 +17,81 @@ def test_build_parser_rejects_the_removed_run_nested_command():
         parser.parse_args(["run-nested", "--config", "some-config.yaml"])
 
 
+def test_build_parser_promote_run_defaults():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["promote-run", "runs/exp/r1"])
+    assert args.run_dir == ["runs/exp/r1"]
+    assert args.to is None
+
+
+def test_build_parser_promote_run_accepts_multiple_dirs_and_to():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["promote-run", "runs/exp/r1", "runs/exp/r2", "--to", "dash-charges"]
+    )
+    assert args.run_dir == ["runs/exp/r1", "runs/exp/r2"]
+    assert args.to == "dash-charges"
+
+
+def test_promote_run_cli_backfills_and_reports(tmp_path, monkeypatch, capsys):
+    import json
+
+    import pytest
+    import yaml
+
+    pytest.importorskip("mlflow")
+
+    from charge_experiments import cli
+
+    run_dir = tmp_path / "runs" / "exp" / "r1"
+    run_dir.mkdir(parents=True)
+    raw = {
+        "run": {"experiment": "exp", "seed": 0, "tags": {}},
+        "data": {
+            "store": "synthetic",
+            "split_column": "split",
+            "train_split": "train",
+            "val_split": "val",
+            "eval_split": "test",
+        },
+        "predictor": {"name": "global_mean", "params": {}},
+        "normalization": None,
+        "tree_stats_load_path": None,
+        "save_tree_stats": False,
+    }
+    (run_dir / "config.resolved.yaml").write_text(yaml.safe_dump(raw))
+    (run_dir / "metrics.json").write_text(json.dumps({"mae": 0.1}))
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(
+        cli, "DEFAULT_TRACKING_URI", f"sqlite:///{tmp_path / 'mlflow.db'}"
+    )
+    monkeypatch.setattr(cli, "DEFAULT_ARTIFACT_ROOT", tmp_path / "art")
+
+    assert cli.main(["promote-run", str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "promoted" in out
+
+    # a second call is a no-op, not a duplicate record
+    assert cli.main(["promote-run", str(run_dir)]) == 0
+    assert "already tracked" in capsys.readouterr().out
+
+
+def test_promote_run_cli_reports_a_missing_run_as_skipped(
+    tmp_path, monkeypatch, capsys
+):
+    from charge_experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", tmp_path / "runs")
+    rc = cli.main(["promote-run", str(tmp_path / "no-such-run")])
+    assert rc == 1
+    assert "skipped" in capsys.readouterr().out
+
+
 def test_build_parser_subsample_store_defaults():
     from charge_experiments.cli import build_parser
 
