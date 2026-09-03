@@ -620,9 +620,15 @@ def promote_run(
     Idempotent either way: an MLflow run already carrying this run_dir's
     own final path as its ``"run_dir"`` tag (the same tag ``_log_mlflow``
     always sets) is left alone -- ``PromoteResult.logged`` is ``False``,
-    nothing is re-logged or moved again.
+    nothing is re-logged or moved again. Resolved to an absolute path
+    first specifically to make that comparison reliable regardless of
+    what form the caller passed: ``execute()`` always logs the tag as an
+    absolute path (``run_dir`` is built from ``DEFAULT_RUNS_ROOT``, itself
+    absolute), so a relative ``run_dir`` argument here would otherwise
+    never match an already-tracked run's own tag and silently create a
+    duplicate MLflow record on every call instead of no-op'ing.
     """
-    run_dir = Path(run_dir)
+    run_dir = Path(run_dir).resolve()
     config_path = run_dir / "config.resolved.yaml"
     metrics_path = run_dir / "metrics.json"
     if not config_path.exists() or not metrics_path.exists():

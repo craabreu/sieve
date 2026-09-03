@@ -156,6 +156,48 @@ def test_promote_run_is_idempotent(tmp_path):
     assert len(runs) == 1
 
 
+def test_promote_run_is_idempotent_for_a_relative_path_too(tmp_path, monkeypatch):
+    """Regression: every existing idempotency test above passes a
+    tmp_path-derived (always-absolute) run_dir, which never exercised
+    this. execute() always logs the "run_dir" MLflow tag as an absolute
+    path (built from DEFAULT_RUNS_ROOT), so a relative run_dir argument
+    here must still resolve to the same tag before comparing -- otherwise
+    it silently fails to match and creates a duplicate MLflow record on
+    every call instead of no-op'ing. Caught in real use: promoting the 10
+    dash-raw-10fold runs by relative path created 10 duplicates (~940MB
+    of re-copied tree_stats.npz artifacts) before this test existed."""
+    import mlflow
+    from charge_experiments.runner import promote_run
+
+    tracking = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    mlflow.set_tracking_uri(tracking)
+    run_dir = tmp_path / "runs" / "exp" / "r1"
+    _write_completed_run(run_dir, experiment="exp")
+
+    first = promote_run(
+        run_dir,
+        runs_root=tmp_path / "runs",
+        tracking=tracking,
+        artifact_root=tmp_path / "art",
+    )
+    assert first.logged is True
+
+    monkeypatch.chdir(tmp_path)
+    relative = run_dir.relative_to(tmp_path)
+    second = promote_run(
+        relative,
+        runs_root=tmp_path / "runs",
+        tracking=tracking,
+        artifact_root=tmp_path / "art",
+    )
+
+    assert second.logged is False
+    exp = mlflow.get_experiment_by_name("exp")
+    assert exp is not None
+    runs = mlflow.search_runs(experiment_ids=[exp.experiment_id], output_format="list")
+    assert len(runs) == 1
+
+
 def test_promote_run_moves_to_a_different_experiment(tmp_path):
     """The exploration -> baseline case: target_experiment moves the
     run_dir under runs_root/<target>/<name> and logs it there."""
