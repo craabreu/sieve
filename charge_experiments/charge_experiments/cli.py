@@ -112,6 +112,27 @@ def _cmd_subsample_store(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_partition_store(args: argparse.Namespace) -> int:
+    from charge_experiments.prepare_store import partition_store
+
+    result = partition_store(
+        args.source,
+        args.dest,
+        stores_root=DEFAULT_STORES_ROOT,
+        n_stores=args.n_stores,
+        conformers_per_molecule=args.conformers_per_molecule,
+        seed=args.seed,
+    )
+    if args.n_stores == 1:
+        names, summaries = [args.dest], [result]
+    else:
+        names = [f"{args.dest}-{i + 1}" for i in range(args.n_stores)]
+        summaries = result
+    for name, summary_text in zip(names, summaries, strict=True):
+        print(f"wrote {name!r} (partitioned from {args.source!r}):\n{summary_text}")
+    return 0
+
+
 def _cmd_to_united_atom(args: argparse.Namespace) -> int:
     from charge_experiments.prepare_store import to_united_atom_store
 
@@ -311,6 +332,37 @@ def build_parser() -> argparse.ArgumentParser:
         "DEST-N (default: 1, which keeps the bare DEST name)",
     )
     p_subsample.set_defaults(func=_cmd_subsample_store)
+
+    p_partition = sub.add_parser(
+        "partition-store",
+        help="exhaustively split every molecule in a store into N disjoint "
+        "stores, preserving each split's own fractions -- unlike "
+        "subsample-store, nothing is left unused",
+    )
+    p_partition.add_argument("dest", help="name prefix for the partitioned stores")
+    p_partition.add_argument(
+        "--source",
+        default="dash-molecules",
+        help="name of the already-split source store (default: dash-molecules)",
+    )
+    p_partition.add_argument(
+        "--n-stores",
+        type=int,
+        required=True,
+        help="number of disjoint stores to divide every molecule into, "
+        "named DEST-1 ... DEST-N (DEST alone if 1)",
+    )
+    p_partition.add_argument(
+        "--conformers-per-molecule",
+        type=int,
+        default=None,
+        help="max conformers kept per molecule (default: unlimited -- "
+        "every conformer of every molecule is kept)",
+    )
+    p_partition.add_argument(
+        "--seed", type=int, default=0, help="random seed for reproducible partitioning"
+    )
+    p_partition.set_defaults(func=_cmd_partition_store)
 
     p_ua = sub.add_parser(
         "to-united-atom",

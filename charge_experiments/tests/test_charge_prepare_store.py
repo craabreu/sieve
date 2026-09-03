@@ -594,6 +594,165 @@ def test_subsample_store_rejects_n_stores_below_one(tmp_path):
         subsample_store("source-store", "dest-store", stores_root=tmp_path, n_stores=0)
 
 
+def test_partition_store_covers_every_molecule_exactly_once(tmp_path):
+    """Exhaustive, not sampling: every molecule in the source lands in
+    exactly one of the n_stores destination stores -- nothing left
+    unused, unlike subsample_store."""
+    import itertools
+
+    import pandas as pd
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    summaries = partition_store(
+        "source-store", "part", stores_root=tmp_path, n_stores=4, seed=0
+    )
+    assert len(summaries) == 4
+
+    key_sets = []
+    for i in (1, 2, 3, 4):
+        out = pd.read_parquet(tmp_path / f"part-{i}" / "molecules.parquet")
+        key_sets.append(set(out["chembl_id"]))
+
+    union = set().union(*key_sets)
+    assert len(union) == 50  # 30 + 10 + 10
+    assert sum(len(s) for s in key_sets) == 50  # pairwise disjoint, no double-count
+    for a, b in itertools.combinations(key_sets, 2):
+        assert not (a & b)
+
+
+def test_partition_store_block_sizes_differ_by_at_most_one(tmp_path):
+    """31 train molecules into 4 stores: sizes must be 8,8,8,7 in some
+    order (floor/ceil), never anything more skewed."""
+    import pandas as pd
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=31, n_val=10, n_test=10)
+
+    partition_store("source-store", "part", stores_root=tmp_path, n_stores=4, seed=0)
+
+    sizes = []
+    for i in (1, 2, 3, 4):
+        out = pd.read_parquet(tmp_path / f"part-{i}" / "molecules.parquet")
+        sizes.append(int((out["split"] == "train").sum() / 2))  # conformers_per_mol=2
+    assert sorted(sizes) == [7, 8, 8, 8]
+
+
+def test_partition_store_keeps_every_conformer_by_default(tmp_path):
+    """Uncapped by default -- every conformer of every selected molecule
+    survives, unlike subsample_store's own default cap of 1."""
+    import pandas as pd
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=8, n_val=4, n_test=4, conformers_per_mol=3)
+
+    partition_store("source-store", "part", stores_root=tmp_path, n_stores=2, seed=0)
+
+    for i in (1, 2):
+        out = pd.read_parquet(tmp_path / f"part-{i}" / "molecules.parquet")
+        per_mol = out.groupby("chembl_id").size()
+        assert (per_mol == 3).all()
+
+
+def test_partition_store_still_caps_when_conformers_per_molecule_given(tmp_path):
+    import pandas as pd
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=8, n_val=4, n_test=4, conformers_per_mol=3)
+
+    partition_store(
+        "source-store",
+        "part",
+        stores_root=tmp_path,
+        n_stores=2,
+        conformers_per_molecule=1,
+        seed=0,
+    )
+
+    for i in (1, 2):
+        out = pd.read_parquet(tmp_path / f"part-{i}" / "molecules.parquet")
+        per_mol = out.groupby("chembl_id").size()
+        assert (per_mol == 1).all()
+
+
+def test_partition_store_n_stores_one_returns_bare_name_and_a_string(tmp_path):
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=8, n_val=4, n_test=4)
+
+    summary = partition_store(
+        "source-store", "part", stores_root=tmp_path, n_stores=1, seed=0
+    )
+
+    assert isinstance(summary, str)
+    assert (tmp_path / "part" / "molecules.parquet").exists()
+    assert not (tmp_path / "part-1").exists()
+
+
+def test_partition_store_is_reproducible_with_the_same_seed(tmp_path):
+    import pandas as pd
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    partition_store("source-store", "a", stores_root=tmp_path, n_stores=3, seed=7)
+    partition_store("source-store", "b", stores_root=tmp_path, n_stores=3, seed=7)
+
+    for i in (1, 2, 3):
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(tmp_path / f"a-{i}" / "molecules.parquet"),
+            pd.read_parquet(tmp_path / f"b-{i}" / "molecules.parquet"),
+        )
+
+
+def test_partition_store_rejects_n_stores_below_one(tmp_path):
+    import pytest
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    with pytest.raises(ValueError, match="n_stores"):
+        partition_store("source-store", "part", stores_root=tmp_path, n_stores=0)
+
+
+def test_partition_store_rejects_a_non_positive_conformers_per_molecule(tmp_path):
+    import pytest
+    from charge_experiments.prepare_store import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=30, n_val=10, n_test=10)
+
+    with pytest.raises(ValueError, match="conformers_per_molecule"):
+        partition_store(
+            "source-store",
+            "part",
+            stores_root=tmp_path,
+            n_stores=2,
+            conformers_per_molecule=0,
+        )
+
+
+def test_partition_store_raises_without_a_split_column(tmp_path):
+    import pandas as pd
+    import pytest
+    from charge_experiments.prepare_store import partition_store
+
+    store_dir = tmp_path / "unsplit-store"
+    store_dir.mkdir()
+    pd.DataFrame(
+        {
+            "chembl_id": ["A"],
+            "conf_id": ["conf_00"],
+            "dash_id": [None],
+            "mol": [b""],
+            "net_charge": [0.0],
+        }
+    ).to_parquet(store_dir / "molecules.parquet")
+
+    with pytest.raises(ValueError, match="split column"):
+        partition_store("unsplit-store", "part", stores_root=tmp_path, n_stores=2)
+
+
 def _ua_test_mol(smiles, *, add_hs=True, charges=None, isotope_h_idx=None):
     """A small rdkit Mol with a fabricated MBIScharge on every atom, for
     _to_united_atom's own unit tests."""

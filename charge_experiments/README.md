@@ -52,6 +52,19 @@ Because disjoint stores can't be clamped independently, a request the
 source can't fill raises before any store is written, naming the split that
 came up short -- unlike the single-store case, which clamps and warns.
 
+`subsample-store` samples; it always leaves most of a large source unused.
+To instead divide a store's *entire* molecule set into N disjoint stores --
+nothing left over, every conformer of every molecule kept by default --
+use `partition-store`. Each split is shuffled once and cut into N near-equal
+contiguous blocks (sizes differ by at most one), so no molecule is used
+twice and none is skipped:
+
+    uv run python -m charge_experiments partition-store dash-molecules-part --n-stores 10
+
+`--conformers-per-molecule N` caps conformers the same way `subsample-store`
+does, if a run needs a smaller per-molecule footprint; the default is
+unlimited.
+
 To also get a united-atom (heavy-atom-only) version of a store -- every
 conformer's hydrogens removed via rdkit's own `Chem.RemoveHs`, each removed
 H's charge folded onto the heavy atom it was bonded to, any H rdkit itself

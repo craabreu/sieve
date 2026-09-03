@@ -133,6 +133,52 @@ def test_build_parser_subsample_store_accepts_all_flags():
     assert args.n_stores == 5
 
 
+def test_build_parser_partition_store_defaults():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["partition-store", "my-parts", "--n-stores", "5"])
+    assert args.dest == "my-parts"
+    assert args.source == "dash-molecules"
+    assert args.n_stores == 5
+    assert args.conformers_per_molecule is None
+    assert args.seed == 0
+
+
+def test_build_parser_partition_store_requires_n_stores():
+    import pytest
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["partition-store", "my-parts"])
+
+
+def test_build_parser_partition_store_accepts_all_flags():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "partition-store",
+            "my-parts",
+            "--source",
+            "some-other-store",
+            "--n-stores",
+            "10",
+            "--conformers-per-molecule",
+            "3",
+            "--seed",
+            "42",
+        ]
+    )
+    assert args.dest == "my-parts"
+    assert args.source == "some-other-store"
+    assert args.n_stores == 10
+    assert args.conformers_per_molecule == 3
+    assert args.seed == 42
+
+
 def test_build_parser_to_united_atom_defaults():
     from charge_experiments.cli import build_parser
 
