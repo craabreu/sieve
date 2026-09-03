@@ -52,6 +52,20 @@ def test_smoke_pipeline_writes_every_artifact(tmp_path):
     assert (run_dir / "stdout.log").exists()
 
 
+def test_execute_and_run_default_to_untracked():
+    """tracking defaults to None on both execute() and run() -- flipped
+    from an earlier tracking-on-by-default, since every real analysis
+    this series has produced reads manifest.json/metrics.json straight
+    off disk, never MLflow, while MLflow's own artifact duplication has
+    twice caused real disk-usage incidents on this shared machine."""
+    import inspect
+
+    from charge_experiments.runner import execute, run
+
+    assert inspect.signature(execute).parameters["tracking"].default is None
+    assert inspect.signature(run).parameters["tracking"].default is None
+
+
 def test_batch_id_prefixes_the_run_directory_name(tmp_path):
     """Ties several independently-launched runs (e.g. one per
     partition-store fold) together into one sortable, greppable prefix --

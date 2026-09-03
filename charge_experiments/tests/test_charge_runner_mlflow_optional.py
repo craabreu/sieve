@@ -96,8 +96,9 @@ def test_ensure_experiment_raises_after_exhausting_retries(tmp_path, monkeypatch
 
 def test_promote_run_backfills_a_missing_mlflow_record(tmp_path):
     """The back-fill case: a run that finished writing local artifacts
-    but was never logged (--no-tracking, or a crash after local write)
-    gets an MLflow record now, under its own config.run.experiment."""
+    but was never logged (untracked is the default -- no --track flag --
+    or a crash after local write) gets an MLflow record now, under its
+    own config.run.experiment."""
     import mlflow
     from charge_experiments.runner import promote_run
 

@@ -147,10 +147,21 @@ def execute(
     *,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     allow_dirty: bool = False,
-    tracking: str | None = DEFAULT_TRACKING_URI,
+    tracking: str | None = None,
     data_seconds: float = 0.0,
 ) -> RunResult:
-    """Run the pipeline against an already-loaded ``mset``/``masks``."""
+    """Run the pipeline against an already-loaded ``mset``/``masks``.
+
+    ``tracking`` defaults to ``None`` (no MLflow record) -- every real
+    analysis this series has produced came from ``sweep``/``summarize``
+    reading ``manifest.json``/``metrics.json`` directly off disk, never
+    from MLflow, while MLflow's own artifact duplication
+    (``mlflow.log_artifacts`` copies every file a run writes) has twice
+    caused real disk-usage incidents on this shared machine. Pass
+    ``DEFAULT_TRACKING_URI`` explicitly (or ``--track`` on the CLI) to opt
+    back in for a given run; ``promote_run`` is unaffected -- logging to
+    MLflow is its entire purpose, so its own default still points at the
+    real tracking URI."""
     git_info = _git_info(REPO_ROOT)
     if git_info["dirty"] and not allow_dirty:
         raise RuntimeError(
@@ -605,11 +616,12 @@ def promote_run(
 
     Two situations this covers, both real:
 
-    - ``target_experiment=None`` (the back-fill case): a run executed with
-      ``--no-tracking``, or one whose own MLflow logging step crashed
-      *after* local artifacts were already written -- e.g. the
-      sqlite-migration race ``_ensure_experiment`` now retries against.
-      Logs under the run's own ``config.run.experiment``, in place.
+    - ``target_experiment=None`` (the back-fill case): a run executed
+      without ``--track`` (the default, untracked), or one whose own
+      MLflow logging step crashed *after* local artifacts were already
+      written -- e.g. the sqlite-migration race ``_ensure_experiment`` now
+      retries against. Logs under the run's own ``config.run.experiment``,
+      in place.
     - ``target_experiment`` set (the exploration -> baseline case): moves
       ``run_dir`` from ``runs_root/<old>/<name>`` to
       ``runs_root/<target_experiment>/<name>`` first, then logs there
@@ -719,10 +731,11 @@ def run(
     *,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     allow_dirty: bool = False,
-    tracking: str | None = DEFAULT_TRACKING_URI,
+    tracking: str | None = None,
     limit: int | None = None,
 ) -> RunResult:
-    """Load the real store, then run the pipeline (see ``execute``)."""
+    """Load the real store, then run the pipeline (see ``execute``, whose
+    own docstring covers why ``tracking`` defaults to ``None``)."""
     t0 = time.perf_counter()
     mset, masks = load_molecule_set(
         cfg.data.store,

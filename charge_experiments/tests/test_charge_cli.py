@@ -17,6 +17,25 @@ def test_build_parser_rejects_the_removed_run_nested_command():
         parser.parse_args(["run-nested", "--config", "some-config.yaml"])
 
 
+def test_build_parser_run_defaults_to_untracked():
+    """--track is opt-in; the untracked default was deliberately flipped
+    from an earlier --no-tracking opt-out (see runner.execute's own
+    docstring for why)."""
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--config", "some-config.yaml"])
+    assert args.track is False
+
+
+def test_build_parser_run_accepts_track_flag():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--config", "some-config.yaml", "--track"])
+    assert args.track is True
+
+
 def test_build_parser_promote_run_defaults():
     from charge_experiments.cli import build_parser
 

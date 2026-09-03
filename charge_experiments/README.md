@@ -104,6 +104,15 @@ Point a run at a different store with `--set data.store=dash-molecules-50k`,
 or use `--limit N` for a quick sanity check against whatever store is
 configured.
 
+Runs are **untracked by MLflow by default** -- pass `--track` to log one.
+`summarize`/`sweep` always read `manifest.json`/`metrics.json` straight off
+disk regardless, and MLflow's own artifact duplication
+(`mlflow.log_artifacts` copies every file a run writes into
+`mlflow_artifacts/` too) has been the direct cause of more than one
+disk-usage incident on a shared machine. `promote-run` gives an
+already-untracked run an MLflow record after the fact, if you decide you
+want one.
+
 Set `run.batch_id` to tie several independently-launched runs together --
 e.g. one predictor run per `partition-store` fold -- into one shared,
 sortable/greppable run-directory prefix (`<batch_id>__<predictor>-<store>-

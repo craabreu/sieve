@@ -44,7 +44,7 @@ SUMMARY_COLUMNS = [
 
 def _cmd_run(args: argparse.Namespace) -> int:
     cfg = load_config(args.config, overrides=args.set)
-    tracking = None if args.no_tracking else DEFAULT_TRACKING_URI
+    tracking = DEFAULT_TRACKING_URI if args.track else None
     result = run(
         cfg,
         runs_root=DEFAULT_RUNS_ROOT,
@@ -264,7 +264,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-dirty", action="store_true", help="run with an uncommitted git tree"
     )
     p_run.add_argument(
-        "--no-tracking", action="store_true", help="skip MLflow logging for this run"
+        "--track",
+        action="store_true",
+        help="log this run to MLflow (default: off -- see runner.execute's "
+        "own docstring for why)",
     )
     p_run.set_defaults(func=_cmd_run)
 
