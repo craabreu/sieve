@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 import sieve
-from sieve.continuation import class_means
+from sieve.continuation import child_counts, class_means
 from sieve.shrinkage import shrunk_means
 from tests.helpers import chain_batch, simple_config
 
@@ -117,3 +117,238 @@ def test_with_params_switches_class_estimator_without_refitting():
     # same fitted arrays, only the config differs
     for lvl_a, lvl_b in zip(m.levels, switched.levels, strict=True):
         np.testing.assert_array_equal(lvl_a.mean, lvl_b.mean)
+
+
+def test_recursive_agrees_with_flat_at_the_two_deepest_levels():
+    """The level above the deepest averages children that are themselves
+    pooled, so recursion has nothing to bite on there; only levels at least
+    two steps above the deepest can differ."""
+    b = chain_batch(20, graphs=4)
+    mf = sieve.fit(b, simple_config(max_wl_depth=3, class_estimator="continuation"))
+    mr = sieve.fit(
+        b, simple_config(max_wl_depth=3, class_estimator="continuation_recursive")
+    )
+    cf, cr = class_means(mf), class_means(mr)
+    np.testing.assert_array_equal(cf[-1], cr[-1])
+    np.testing.assert_allclose(cf[-2], cr[-2])
+    assert not np.allclose(cf[0], cr[0]), "levels above that must actually differ"
+
+
+def test_recursive_matches_a_hand_computed_two_level_composition():
+    """Level k averages level k+1's *continuation* estimates, which are
+    themselves averages of level k+2's stored pooled means."""
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(
+        b, simple_config(max_wl_depth=3, class_estimator="continuation_recursive")
+    )
+    rec = class_means(m)
+    k = len(m.levels) - 3  # deepest level that recursion actually changes
+    child = m.levels[k + 1]
+    expected = np.array(
+        [
+            rec[k + 1][child.parent == c].mean(axis=0)
+            for c in range(len(m.levels[k].mean))
+        ]
+    )
+    np.testing.assert_allclose(rec[k], expected)
+
+
+def test_child_counts_are_kneser_ney_n1plus():
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(b, simple_config(max_wl_depth=3))
+    counts = child_counts(m)
+    for k in range(len(m.levels) - 1):
+        child = m.levels[k + 1]
+        expected = np.array(
+            [(child.parent == c).sum() for c in range(len(m.levels[k].mean))]
+        )
+        np.testing.assert_array_equal(counts[k], expected)
+    np.testing.assert_array_equal(counts[-1], np.zeros(len(m.levels[-1].mean)))
+
+
+def test_diversity_weight_matches_the_kneser_ney_lambda():
+    """lambda = min(D*C/N, 1) on the parent, applied against the *shrunk*
+    parent exactly as the count rule is."""
+    cfg = simple_config(
+        max_wl_depth=3, shrinkage_strength=0.5, shrinkage_weight="diversity"
+    )
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(b, cfg)
+    sh = shrunk_means(m)
+    means, counts = class_means(m), child_counts(m)
+    for k in range(1, len(m.levels)):
+        lvl = m.levels[k]
+        n = lvl.count[:, None].astype(float)
+        lam = np.minimum(0.5 * counts[k][:, None] / np.maximum(n, 1.0), 1.0)
+        expected = (1 - lam) * means[k] + lam * sh[k - 1][lvl.parent]
+        np.testing.assert_allclose(sh[k], expected, rtol=1e-12)
+
+
+def test_diversity_weight_leaves_the_deepest_level_unshrunk():
+    """C == 0 there, so lambda == 0 -- the deepest class is the only one read
+    on an exact match rather than by backoff."""
+    cfg = simple_config(
+        max_wl_depth=3, shrinkage_strength=2.0, shrinkage_weight="diversity"
+    )
+    m = sieve.fit(chain_batch(20, graphs=4), cfg)
+    np.testing.assert_allclose(shrunk_means(m)[-1], class_means(m)[-1])
+
+
+def test_search_agrees_with_shrunk_means_under_diversity_weighting():
+    """Same change-consistency guard as the count rule: predict.py's own
+    per-node path and shrunk_means must not drift apart."""
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_strength=0.5,
+        shrinkage_weight="diversity",
+    )
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(b, cfg)
+    det = sieve.predict_detailed(m, b)
+    shrunk = shrunk_means(m)
+    for pos, k in enumerate(cfg.backoff_path):
+        sel = det.matched_level == pos
+        if sel.any():
+            np.testing.assert_allclose(det.value[sel], shrunk[k][det.class_id[sel]])
+
+
+def test_predict_loo_rejects_recursive_and_diversity():
+    b = chain_batch(20, graphs=4)
+    for kw in (
+        {"class_estimator": "continuation_recursive"},
+        {"shrinkage_weight": "diversity", "shrinkage_strength": 0.5},
+    ):
+        m = sieve.fit(b, simple_config(max_wl_depth=3, **kw))
+        try:
+            sieve.predict_loo(m, b)
+        except NotImplementedError:
+            pass
+        else:
+            raise AssertionError(f"expected NotImplementedError for {kw}")
+
+
+def test_empirical_bayes_weight_matches_the_hand_derived_posterior():
+    """Non-deepest: C/(C+tau2_k/tau2_parent). Deepest: N/(N+sigma2/tau2_parent)
+    -- two estimands, two units of replication (design.md 4.4)."""
+    from sieve.continuation import atom_variance, root_variance, sibling_variance
+    from sieve.shrinkage import empirical_bayes_weights
+
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    m = sieve.fit(chain_batch(20, graphs=4), cfg)
+    w = empirical_bayes_weights(m)
+    tau, sigma, counts = sibling_variance(m), atom_variance(m), child_counts(m)
+    root, parents = root_variance(m), cfg.level_parents
+
+    for k, lvl in enumerate(m.levels):
+        tp = root if parents[k] < 0 else tau[parents[k]]
+        if tp != tp or tp <= 0:
+            continue  # nan/zero branches asserted separately below
+        n, c = lvl.count.astype(float), counts[k]
+        num = np.where(c > 0, tau[k], sigma[k])
+        size = np.where(c > 0, c, n)
+        expected = size / (size + np.where(num == num, num / tp, 0.0))
+        np.testing.assert_allclose(w[k], expected, rtol=1e-12)
+
+
+def test_empirical_bayes_refuses_a_shrinkage_strength():
+    """alpha is estimated, so a supplied strength would silently do nothing --
+    and a caller who set one plainly expected it to matter. Refuse rather
+    than ignore (design.md 4.4)."""
+    import pytest
+
+    with pytest.raises(ValueError, match="estimates its own"):
+        simple_config(
+            max_wl_depth=3,
+            class_estimator="continuation",
+            shrinkage_weight="empirical_bayes",
+            shrinkage_strength=0.5,
+        )
+
+
+def test_empirical_bayes_weights_are_valid_probabilities():
+    b = chain_batch(20, graphs=4)
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    from sieve.shrinkage import empirical_bayes_weights
+
+    for w in empirical_bayes_weights(sieve.fit(b, cfg)):
+        assert np.all(np.isfinite(w)) and np.all((w >= 0) & (w <= 1))
+
+
+def test_sibling_variance_is_nan_at_the_deepest_level():
+    from sieve.continuation import sibling_variance
+
+    m = sieve.fit(chain_batch(20, graphs=4), simple_config(max_wl_depth=3))
+    assert np.isnan(sibling_variance(m)[-1])
+
+
+def test_a_weight_that_needs_a_strength_is_refused_without_one():
+    """Regression, now enforced at construction. This config -- a non-count
+    weight with the default shrinkage_strength=None -- used to raise a
+    TypeError deep inside predict while shrunk_means quietly skipped
+    shrinkage. Naming a rule that cannot run is a config error, not a
+    silent no-op."""
+    import pytest
+
+    for w in ("count", "diversity"):
+        with pytest.raises(ValueError, match="needs a shrinkage_strength"):
+            simple_config(max_wl_depth=3, shrinkage_weight=w)
+
+
+def test_empirical_bayes_is_active_without_a_strength():
+    """The mirror of the above: alpha is estimated, so EB must apply even
+    though shrinkage_strength is None."""
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    assert cfg.applies_shrinkage is True
+    b = chain_batch(20, graphs=4)
+    plain = simple_config(max_wl_depth=3, class_estimator="continuation")
+    assert not np.allclose(
+        sieve.predict(sieve.fit(b, cfg), b),
+        sieve.predict(sieve.fit(b, plain), b),
+    )
+
+
+def test_empirical_bayes_uses_every_target_dimension():
+    """Regression: the tau^2 estimators once read column 0 only, so a vector
+    target's shrinkage ignored every dimension but the first -- silently, and
+    exactly where it matters most (design.md 9.2's own example is
+    target_dim=50)."""
+    from sieve.batch import NodeBatch
+    from sieve.continuation import sibling_variance
+
+    cfg = simple_config(max_wl_depth=3, target_dim=4)
+    b = chain_batch(20, graphs=4, d=4)
+    base = sibling_variance(sieve.fit(b, cfg))
+    y = b.y.copy()
+    y[:, 3] *= 1000.0
+    scaled = sibling_variance(sieve.fit(NodeBatch(**{**b.__dict__, "y": y}), cfg))
+    assert any(
+        (x == x) and (z == z) and not np.isclose(x, z)
+        for x, z in zip(base, scaled, strict=True)
+    ), "scaling a non-zero target dimension must move tau^2"
+
+
+def test_empirical_bayes_reports_its_estimated_weight():
+    """Under EB the weight varies for a reason other than support, which
+    makes it the one mode where the diagnostic is worth carrying."""
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    b = chain_batch(20, graphs=4)
+    det = sieve.predict_detailed(sieve.fit(b, cfg), b)
+    w = det.shrinkage_weight
+    assert w is not None and np.all(np.isfinite(w)) and np.all((w >= 0) & (w <= 1))

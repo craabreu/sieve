@@ -46,14 +46,15 @@ class SieveModel:
     def with_params(self, **kw) -> SieveModel:
         """A new model sharing the same arrays, with inference params changed.
 
-        ``minimum_support``, ``shrinkage_strength`` and ``class_estimator``
-        are read at prediction time, so sweeping them never requires
-        refitting.
+        ``minimum_support``, ``shrinkage_strength``, ``class_estimator``
+        and ``shrinkage_weight`` are read at prediction time, so sweeping
+        them never requires refitting.
         """
         bad = set(kw) - {
             "minimum_support",
             "shrinkage_strength",
             "class_estimator",
+            "shrinkage_weight",
             "chunk_size",
         }
         if bad:
@@ -114,6 +115,7 @@ class SieveModel:
             "minimum_support": cfg.minimum_support,
             "shrinkage_strength": cfg.shrinkage_strength,
             "class_estimator": cfg.class_estimator,
+            "shrinkage_weight": cfg.shrinkage_weight,
             "chunk_size": cfg.chunk_size,
         }
         arrays = {
@@ -155,6 +157,7 @@ class SieveModel:
             minimum_support=blob["minimum_support"],
             shrinkage_strength=blob["shrinkage_strength"],
             class_estimator=blob["class_estimator"],
+            shrinkage_weight=blob["shrinkage_weight"],
             chunk_size=blob["chunk_size"],
         )
         if cfg.schema_version != blob["schema_version"]:

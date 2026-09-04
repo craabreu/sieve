@@ -96,6 +96,38 @@ def test_class_estimator_rejects_an_unknown_value():
 def test_class_estimator_defaults_to_pooled_and_is_excluded_from_schema_version():
     assert base().class_estimator == "pooled"
     assert base().schema_version == base(class_estimator="continuation").schema_version
+    assert (
+        base().schema_version
+        == base(class_estimator="continuation_recursive").schema_version
+    )
+
+
+def test_shrinkage_weight_rejects_an_unknown_value():
+    with pytest.raises(ValueError, match="shrinkage_weight"):
+        base(shrinkage_weight="entropy")
+
+
+def test_shrinkage_weight_defaults_to_none_meaning_no_shrinkage():
+    """Naming a rule is how shrinkage is requested; the default asks for
+    none, which is exactly what the field's absence used to mean."""
+    cfg = base()
+    assert cfg.shrinkage_weight is None
+    assert cfg.applies_shrinkage is False
+    assert cfg.effective_shrinkage_weight == "count"
+
+
+def test_a_bare_shrinkage_strength_still_means_the_count_rule():
+    """Backward compatibility: configs predating shrinkage_weight must
+    behave exactly as they did."""
+    cfg = base(shrinkage_strength=0.5)
+    assert cfg.applies_shrinkage is True
+    assert cfg.effective_shrinkage_weight == "count"
+
+
+def test_shrinkage_weight_is_excluded_from_schema_version():
+    a = base(shrinkage_strength=0.5)
+    b = base(shrinkage_weight="diversity", shrinkage_strength=0.5)
+    assert a.schema_version == b.schema_version
 
 
 def test_edge_radices_and_n_edge_types_are_a_product_over_attributes():

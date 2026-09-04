@@ -59,6 +59,7 @@ def _build_config(
     minimum_support: int,
     shrinkage_strength: float | None,
     class_estimator: str = "pooled",
+    shrinkage_weight: str | None = None,
     n_jobs: int | None = None,
 ) -> Any:
     """Learn ``attribute_codes``/``edge_codes`` from the training corpus and
@@ -100,6 +101,7 @@ def _build_config(
         minimum_support=minimum_support,
         shrinkage_strength=shrinkage_strength,
         class_estimator=class_estimator,
+        shrinkage_weight=shrinkage_weight,
     )
 
 
@@ -167,14 +169,19 @@ class SievePredictor:
         minimum_support: int = 1,
         shrinkage_strength: float | None = None,
         class_estimator: str = "pooled",
+        shrinkage_weight: str | None = None,
         n_jobs: int | None = None,
         report_loo: bool = False,
     ) -> None:
-        if report_loo and class_estimator == "continuation":
+        if report_loo and (
+            class_estimator != "pooled" or shrinkage_weight not in (None, "count")
+        ):
             raise ValueError(
                 "report_loo=True is not supported with "
-                "class_estimator='continuation' (sieve.predict_loo does not "
-                "yet support it -- see sieve.predict._search's docstring)"
+                f"class_estimator={class_estimator!r}/"
+                f"shrinkage_weight={shrinkage_weight!r} (sieve.predict_loo "
+                "does not yet support either -- see sieve.predict._search's "
+                "docstring)"
             )
         self.attributes = tuple(attributes)
         self.attribute_levels = (
@@ -186,6 +193,7 @@ class SievePredictor:
         self.minimum_support = minimum_support
         self.shrinkage_strength = shrinkage_strength
         self.class_estimator = class_estimator
+        self.shrinkage_weight = shrinkage_weight
         self.n_jobs = n_jobs
         self.report_loo = report_loo
         self._config: Any = None
@@ -222,6 +230,7 @@ class SievePredictor:
             minimum_support=self.minimum_support,
             shrinkage_strength=self.shrinkage_strength,
             class_estimator=self.class_estimator,
+            shrinkage_weight=self.shrinkage_weight,
             n_jobs=self.n_jobs,
         )
         batch = _batch_for(
