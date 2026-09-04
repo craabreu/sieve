@@ -34,16 +34,31 @@ def shrunk_means(model) -> list[np.ndarray]:
       $C$ the number of children, which is interpolated Kneser-Ney's own
       $\\lambda = D\\,N_{1+}(\\text{context})/c(\\text{context})$
       [KneserNey1995Improved] -- so ``shrinkage_strength`` reads as KN's
-      discount $D$, not as a pseudo-count. A class whose atoms are spread
-      over many distinct children is a worse summary of any one of them and
-      defers harder to its parent than an equally-sized class concentrated in
-      a few; the count rule cannot express that distinction at all.
+      discount $D$, not as a pseudo-count. The motivating argument was that a
+      class whose atoms are spread over many distinct children is a worse
+      summary of any one of them, a distinction the count rule cannot express.
+
+    **Measured: the count rule wins.** On DASH charges (element, depth 6, 10
+    folds, against flat continuation without shrinkage) the count rule gains
+    +0.000081 at $\\alpha=0.5$ (t=19.7, 10/10 folds), while diversity gains
+    only +0.000028 at $D=0.3$ (t=5.5) and *loses* 0.000336 at $D=0.75$
+    (t=-23.4, 0/10 folds) -- i.e. it is actively harmful at the discount the
+    language-modeling literature actually recommends. ``"count"`` stays the
+    default; ``"diversity"`` is kept so the comparison stays reproducible.
 
     At the deepest level $C=0$, so the diversity rule applies no shrinkage
     there. That is the literal translation rather than a special case: the
     deepest class is the only one read on an exact match rather than by
     backoff, and the measured optimum under the count rule was already
     $\\alpha\\approx0.5$, i.e. nearly none.
+
+    A caution for anyone revisiting this: the failure of $\\lambda=D C/N$ does
+    *not* show that $C$ is the wrong statistic, only that this functional
+    form is. Under continuation the estimand is a class's typical *child*
+    mean, for which the unit of replication is the child, so an
+    empirical-Bayes treatment would put $C$ in the *effective sample size*
+    ($C/(C+\\alpha)$), not as a multiplier on $\\lambda$. Untested; see
+    design.md 4.4.
 
     Never stored as model state: any added data changes the global mean and
     every estimate depends on its full ancestor chain, so one new node

@@ -496,9 +496,43 @@ level $k$" — with `class_estimator="continuation"`, that raw mean is now $\bar
 rather than $\bar y_{k,c}$. This is coherent for the same reason continuation itself is: every
 non-deepest class is read only by backoff, so shrinking it toward its own shrunk parent interpolates
 between two backoff-target reads — exactly interpolated Kneser–Ney's shape, not an approximation of
-it. The blend weight stays $N_{k,c}$ (§4.2's own weight), not "number of children," which would be
-closer to Kneser–Ney's own discount mass; that choice is unmeasured and stated here as such, not as
-settled.
+it. The blend weight stays $N_{k,c}$ (§4.2's own weight), not "number of children."
+
+That was once stated here as unmeasured. It has since been measured, and the count weight wins.
+Against flat continuation without shrinkage, on DASH charges (element, depth 6, 10 folds):
+
+| variant | $\Delta$ test $r^2$ | $t$ | folds won |
+|---|---:|---:|---:|
+| count, $\alpha=0.5$ | **+0.000081** | 19.7 | 10/10 |
+| count, $\alpha=1$ | +0.000075 | 10.5 | 10/10 |
+| diversity, $D=0.3$ | +0.000028 | 5.5 | 10/10 |
+| diversity, $D=0.75$ | **−0.000336** | −23.4 | 0/10 |
+| recursive continuation, no shrinkage | −0.000001 | −0.7 | 3/10 |
+
+Three things that experiment settles. **Kneser–Ney's own $\lambda=D\,C/N$ is worse than the count
+rule here**, and actively harmful at the discount the literature recommends. **The recursive
+base-measure construction (§4.4's "what the name does not denote") buys exactly nothing** — it moves
+only levels two or more steps above the deepest, which carry little of the error, so the flat form
+costs nothing despite being the simplification. And **fixing the interpolation target did not unlock
+interpolation**: shrinkage adds ~+0.00008 whether it blends toward pooled means or continuation
+ones, so the two corrections are independent and additive rather than the second enabling the first.
+
+The standing configuration is therefore flat continuation with count-weighted shrinkage at
+$\alpha\approx0.5$: $0.98987 \rightarrow 0.99056$, of which continuation is $+0.0006$ and shrinkage
+$+0.00008$.
+
+**What the failure of $\lambda$ does not show.** It does not show that $C$ is the wrong statistic —
+only that multiplying $\lambda$ by it is the wrong functional form. Under continuation the estimand
+is no longer the class's atom-weighted mean but its *typical child* mean, $m_{k,c}$, for which the
+unit of replication is the child rather than the atom. Writing the normal–normal model at that level,
+$\bar y_{k+1,c'}\mid m_{k,c}\sim N(m_{k,c},\ \tau^2_{k,c})$ over the $C$ children, the posterior mean
+puts weight $C/(C+\alpha^{\mathrm{cont}})$ on the class's own continuation estimate with
+$\alpha^{\mathrm{cont}}=\tau^2_{k,c}/\tau^2_{k-1}$ — the same Morris estimator as §13 item 9, but
+with $C$ as the effective sample size and a variance ratio taken between *sibling* means rather than
+between atoms. Every term is computable from what §4.1 already stores (each child's $N$, $\bar y$
+and $\sigma^2$), so it needs no new state. Untested, and worth noting that $C \ll N$ makes it shrink
+far harder than the count rule at equal $\alpha$ — which is the direction that measured *worse*
+above, unless $\tau^2_{k,c}/\tau^2_{k-1}$ is correspondingly small.
 
 **What the name does and does not denote.** "Continuation" here is Kneser–Ney's type-counting
 correction — count each distinct child once rather than in proportion to its population

@@ -31,8 +31,14 @@ LEVEL_WL_PAIR = "wl_pair"
 #                  *continuation* estimates rather than their stored pooled
 #                  means -- the recursive base-measure construction of the
 #                  hierarchical Bayesian form [Teh2006HierarchicalPitmanYor].
-#                  Computed deepest-level-first. Unmeasured relative to the
-#                  flat form; exists to make that comparison runnable.
+#                  Computed deepest-level-first. **Measured: no effect.** On
+#                  DASH charges (element, depth 6, 10 folds) it lands within
+#                  1e-6 of the flat form at every shrinkage setting tried
+#                  (delta -0.000001, t = -0.7, 3/10 folds). Recursion only
+#                  alters levels two or more steps above the deepest, which
+#                  hold little of the error. Kept because it makes the
+#                  comparison reproducible, not because it is preferable --
+#                  "continuation" remains the default for being simpler.
 CLASS_ESTIMATOR_POOLED = "pooled"
 CLASS_ESTIMATOR_CONTINUATION = "continuation"
 CLASS_ESTIMATOR_CONTINUATION_RECURSIVE = "continuation_recursive"
