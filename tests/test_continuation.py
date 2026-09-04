@@ -255,24 +255,22 @@ def test_empirical_bayes_weight_matches_the_hand_derived_posterior():
         np.testing.assert_allclose(w[k], expected, rtol=1e-12)
 
 
-def test_empirical_bayes_ignores_shrinkage_strength():
-    """alpha is estimated -- sweeping the knob must do nothing, which is the
-    whole point of the mode."""
-    b = chain_batch(20, graphs=4)
-    vals = []
-    for strength in (None, 0.5, 100.0):
-        cfg = simple_config(
+def test_empirical_bayes_refuses_a_shrinkage_strength():
+    """alpha is estimated, so a supplied strength would silently do nothing --
+    and a caller who set one plainly expected it to matter. Refuse rather
+    than ignore (design.md 4.4)."""
+    import pytest
+
+    with pytest.raises(ValueError, match="estimates its own"):
+        simple_config(
             max_wl_depth=3,
             class_estimator="continuation",
             shrinkage_weight="empirical_bayes",
-            shrinkage_strength=strength,
+            shrinkage_strength=0.5,
         )
-        vals.append(sieve.predict(sieve.fit(b, cfg), b))
-    np.testing.assert_array_equal(vals[0], vals[1])
-    np.testing.assert_array_equal(vals[0], vals[2])
 
 
-def testempirical_bayes_weights_are_valid_probabilities():
+def test_empirical_bayes_weights_are_valid_probabilities():
     b = chain_batch(20, graphs=4)
     cfg = simple_config(
         max_wl_depth=3,
@@ -292,19 +290,17 @@ def test_sibling_variance_is_nan_at_the_deepest_level():
     assert np.isnan(sibling_variance(m)[-1])
 
 
-def test_diversity_without_a_strength_does_not_crash_and_does_not_shrink():
-    """Regression: predict._search and shrunk_means must agree on *whether*
-    shrinkage applies. Widening one guard without the other made this config
-    -- a non-count weight with the default shrinkage_strength=None -- raise a
-    TypeError in predict while shrunk_means quietly skipped shrinkage."""
-    b = chain_batch(20, graphs=4)
-    shrunk_cfg = simple_config(max_wl_depth=3, shrinkage_weight="diversity")
-    plain = simple_config(max_wl_depth=3)
-    assert shrunk_cfg.applies_shrinkage is False
-    np.testing.assert_array_equal(
-        sieve.predict(sieve.fit(b, shrunk_cfg), b),
-        sieve.predict(sieve.fit(b, plain), b),
-    )
+def test_a_weight_that_needs_a_strength_is_refused_without_one():
+    """Regression, now enforced at construction. This config -- a non-count
+    weight with the default shrinkage_strength=None -- used to raise a
+    TypeError deep inside predict while shrunk_means quietly skipped
+    shrinkage. Naming a rule that cannot run is a config error, not a
+    silent no-op."""
+    import pytest
+
+    for w in ("count", "diversity"):
+        with pytest.raises(ValueError, match="needs a shrinkage_strength"):
+            simple_config(max_wl_depth=3, shrinkage_weight=w)
 
 
 def test_empirical_bayes_is_active_without_a_strength():

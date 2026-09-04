@@ -51,8 +51,12 @@ CLASS_ESTIMATORS = (
 # How shrinkage weights a class's own estimate against its shrunk parent
 # (design.md 4.2, 4.4).
 #
+# ``None`` (the default) means no shrinkage at all; naming a rule is how
+# shrinkage is requested. A bare ``shrinkage_strength`` with no weight still
+# means "count", so configs predating this field are unchanged.
+#
 #   "count"     w = N / (N + alpha) -- the original rule, a function of the
-#               class's atom count alone.
+#               class's atom count alone. Requires a shrinkage_strength.
 #   "diversity" lambda = min(alpha * C / N, 1) is the weight on the *parent*,
 #               with C the number of children. This is interpolated
 #               Kneser-Ney's own lambda = D * N_1+(context) / c(context)
@@ -75,7 +79,8 @@ CLASS_ESTIMATORS = (
 #               tau^2 is pooled per level (design.md 13 item 9's "it comes
 #               out per level"): at C = 2-3 a per-class variance has 1-2
 #               degrees of freedom and is mostly noise. `shrinkage_strength`
-#               is ignored in this mode -- that is the point.
+#               must be None in this mode -- supplying one is refused rather
+#               than ignored, since alpha is estimated.
 #               **Measured best**: +0.000105 vs flat continuation without
 #               shrinkage (t=21.7, 10/10 folds), beating the swept count rule
 #               by +0.000024 (t=16.6, 10/10) while removing its knob.
@@ -114,7 +119,7 @@ class SieveConfig:
     minimum_support: int = 1
     shrinkage_strength: float | None = None
     class_estimator: str = CLASS_ESTIMATOR_POOLED
-    shrinkage_weight: str = SHRINKAGE_WEIGHT_COUNT
+    shrinkage_weight: str | None = None
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
@@ -135,11 +140,27 @@ class SieveConfig:
                 f"class_estimator must be one of {CLASS_ESTIMATORS}, "
                 f"got {self.class_estimator!r}"
             )
-        if self.shrinkage_weight not in SHRINKAGE_WEIGHTS:
-            raise ValueError(
-                f"shrinkage_weight must be one of {SHRINKAGE_WEIGHTS}, "
-                f"got {self.shrinkage_weight!r}"
-            )
+        if self.shrinkage_weight is not None:
+            if self.shrinkage_weight not in SHRINKAGE_WEIGHTS:
+                raise ValueError(
+                    f"shrinkage_weight must be None or one of "
+                    f"{SHRINKAGE_WEIGHTS}, got {self.shrinkage_weight!r}"
+                )
+            if self.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES:
+                if self.shrinkage_strength is not None:
+                    # Refuse rather than ignore: alpha is estimated here, so a
+                    # supplied strength would silently do nothing, and a caller
+                    # who set one plainly expected it to matter.
+                    raise ValueError(
+                        "shrinkage_weight='empirical_bayes' estimates its own "
+                        "alpha; shrinkage_strength must be None, got "
+                        f"{self.shrinkage_strength!r}"
+                    )
+            elif self.shrinkage_strength is None:
+                raise ValueError(
+                    f"shrinkage_weight={self.shrinkage_weight!r} needs a "
+                    "shrinkage_strength; only 'empirical_bayes' estimates one"
+                )
         if self.neighbor_depth is not None:
             a = len(self.attribute_levels)
             if not (1 <= self.neighbor_depth <= a):
@@ -244,9 +265,21 @@ class SieveConfig:
         ``"empirical_bayes"`` needs no strength: alpha is estimated, so the
         mode is always active. The other rules need a strength to scale.
         """
-        if self.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES:
-            return True
+        if self.shrinkage_weight is not None:
+            return True  # naming a rule is the request; validation ensures it is usable
         return self.shrinkage_strength is not None and self.shrinkage_strength != 0.0
+
+    @property
+    def effective_shrinkage_weight(self) -> str:
+        """Which rule actually runs when ``applies_shrinkage``.
+
+        ``shrinkage_weight=None`` with a bare ``shrinkage_strength`` keeps
+        meaning the count rule, so configs written before the field existed
+        behave exactly as they did.
+        """
+        if self.shrinkage_weight is None:
+            return SHRINKAGE_WEIGHT_COUNT
+        return self.shrinkage_weight
 
     @property
     def level_kinds(self) -> tuple[str, ...]:
