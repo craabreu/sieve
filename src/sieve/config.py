@@ -9,12 +9,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 # Level kinds returned by SieveConfig.level_kinds (design.md 3.6).
 LEVEL_ATTR = "attr"
 LEVEL_WL = "wl"
 LEVEL_WL_PAIR = "wl_pair"
+
+# How a class's estimate is formed from what is stored beneath it.
+#
+#   "pooled"       the class's own atom-weighted mean -- every atom under it
+#                  counted once. The original rule.
+#   "continuation" the unweighted mean of the class's *children's* means, so
+#                  each distinct child environment counts once regardless of
+#                  how many atoms it holds; a class with no children keeps its
+#                  pooled mean. The Kneser-Ney continuation-count correction
+#                  [KneserNey1995Improved; ChenGoodman1999Smoothing], see
+#                  literature.md 4.2.
+CLASS_ESTIMATOR_POOLED = "pooled"
+CLASS_ESTIMATOR_CONTINUATION = "continuation"
+CLASS_ESTIMATORS = (CLASS_ESTIMATOR_POOLED, CLASS_ESTIMATOR_CONTINUATION)
 
 
 @dataclass(frozen=True)
@@ -40,6 +54,7 @@ class SieveConfig:
     neighbor_depth: int | None = None
     minimum_support: int = 1
     shrinkage_strength: float | None = None
+    class_estimator: str = CLASS_ESTIMATOR_POOLED
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
@@ -55,6 +70,11 @@ class SieveConfig:
             raise ValueError("target_dim must be >= 1")
         if self.minimum_support < 1:
             raise ValueError("minimum_support must be >= 1")
+        if self.class_estimator not in CLASS_ESTIMATORS:
+            raise ValueError(
+                f"class_estimator must be one of {CLASS_ESTIMATORS}, "
+                f"got {self.class_estimator!r}"
+            )
         if self.neighbor_depth is not None:
             a = len(self.attribute_levels)
             if not (1 <= self.neighbor_depth <= a):
@@ -228,9 +248,12 @@ class SieveConfig:
     def schema_version(self) -> str:
         """Digest over everything that changes what a class means (design.md 9.2).
 
-        ``minimum_support``, ``shrinkage_strength`` and ``chunk_size`` are
-        deliberately excluded: they are read at prediction time and do not
-        invalidate fitted statistics.
+        ``minimum_support``, ``shrinkage_strength``, ``class_estimator`` and
+        ``chunk_size`` are deliberately excluded: they are read at prediction
+        time and do not invalidate fitted statistics. ``class_estimator``
+        belongs here rather than in the digest because it only changes which
+        stored numbers an estimate is *read from* -- the classes themselves,
+        and every count and mean in them, are identical either way.
         """
         payload = {
             "target_dim": self.target_dim,

@@ -36,6 +36,8 @@ with hierarchical fallback or smoothing?"*
 |---|---|---|---|
 | **Kuhn et al. 2008, HOSE NMR prediction** | Nested atom environments; average of matching targets; sphere-by-sphere fallback | HOSE rather than WL; NMR-specific | Closest precedent for the exact inference rule |
 | **Katz 1987, backoff smoothing** | Most-specific context → recursive backoff to shorter context under sparse counts | Language modeling; discrete distributions, not conditional means | Canonical precedent for the backoff *principle* |
+| **Kneser & Ney 1995, continuation counts** | The distribution backed off *to* is estimated from distinct-context counts, not raw frequency | Language modeling; discrete distributions | The fallback estimator must be calibrated for the population that actually reaches it |
+| **Chen & Goodman 1999, smoothing study** | Controlled comparison of the whole smoothing family; introduces modified Kneser–Ney | Language modeling; perplexity rather than regression error | Empirical authority for which smoothing choices matter, and for interpolation over pure backoff |
 | **Lehner et al. 2023, DASH** | Hierarchical atom-centered substructures; property distributions at hierarchy nodes | Hierarchy derived from GNN attention; chemistry-specific | Very close architectural precedent |
 | **Lehner et al. 2024, DASH Properties** | Hierarchical structural classes populated with atomic target values; no refit per property | DASH hierarchy and medians rather than WL classes and means | Closest general atomic-property precedent |
 | **Kriege, Giscard & Wilson 2016, WL-OA** | Successive WL refinements induce a hierarchy of vertex classes | No target regression | Key theoretical precedent for WL ancestry |
@@ -111,6 +113,38 @@ context length. This matters for the write-up in two ways:
 Bilmes and Kirchhoff generalize this to backoff over *multiple factors* rather than a single context,
 including the problem of choosing an order among them [Bilmes2003FactoredLM] — the direct precedent
 for graded attribute levels.
+
+Katz's rule is not where that literature stops. Kneser and Ney observed that the distribution the
+recursion falls back *to* should not be estimated the same way as the one it falls back *from*
+[KneserNey1995Improved]. A lower-order estimate is consulted precisely when the more specific context
+was **unseen**, so estimating it from raw frequency calibrates it for the wrong population — it is
+dominated by the contexts that were never backed off from in the first place. Their correction is to
+estimate it from *continuation counts*, the number of **distinct** higher-order contexts a symbol
+completes, rather than from occurrence counts.
+
+Chen and Goodman's controlled comparison of the family — additive, Good–Turing, Katz,
+Jelinek–Mercer, Witten–Bell, absolute discounting, Kneser–Ney, on common data with parameters
+optimized on held-out sets — is the standard empirical reference for which of these choices actually
+matter, and contributes modified Kneser–Ney (interpolated, with count-dependent discounts), which
+remains the field's default baseline [ChenGoodman1999Smoothing]. Two of its structural findings bear
+directly on Sieve:
+
+1. **Continuation-count estimation of the backoff distribution is the single largest effect** they
+   isolate. Sieve's analog is exact and needs no new state: a class's stored $\bar y$ is the
+   atom-weighted pool of everything beneath it, so it is dominated by its most abundant children —
+   yet it is read *only* by queries whose own child class was absent. Aggregating a class's children
+   as units, rather than pooling their atoms, is the direct translation, and the children's means
+   already exist one level down.
+2. **Interpolated models outperform pure backoff**, especially at low counts, because a small but
+   nonzero count still benefits from the coarser estimate instead of being replaced by it. Sieve's
+   `shrinkage_strength` (§4.12) is the interpolation arm of precisely this comparison — and Chen and
+   Goodman's pairing of the two findings suggests the two are not independent, since what
+   interpolation blends toward is what continuation counts correct.
+
+The transfer is not automatic. These methods smooth discrete probability distributions, whereas Sieve
+estimates conditional means, and the discounting machinery that reserves probability mass has no
+direct analog here. What does transfer is the estimator-calibration argument — a claim about which
+population a fallback estimate should represent, not about mass.
 
 ### 4.3 DASH (2023)
 
@@ -349,8 +383,8 @@ is a literature that could bear on it, and none has been searched.
 **6.3 Environment-conditioned empirical property statistics** — Kammeraad et al. 2020; mmpdb 2018;
 target/mean-encoding literature.
 
-**6.4 Hierarchical statistical smoothing and backoff** — Katz 1987; Bilmes & Kirchhoff 2003;
-Micci-Barreca 2001; Agarwal et al. 2022.
+**6.4 Hierarchical statistical smoothing and backoff** — Katz 1987; Kneser & Ney 1995; Chen &
+Goodman 1999; Bilmes & Kirchhoff 2003; Micci-Barreca 2001; Agarwal et al. 2022.
 
 ### Relevance ranking
 
@@ -362,12 +396,14 @@ Micci-Barreca 2001; Agarwal et al. 2022.
 4. **Agarwal et al. 2022 / Hierarchical Shrinkage** — closest statistical precedent for the
    regularized variant.
 5. **Katz 1987** — canonical precedent for the backoff principle and its sparse-count failure modes.
-6. **Rogers & Hahn 2010 / ECFP** — establishes that WL identifiers on molecules are a familiar
+6. **Kneser & Ney 1995 / Chen & Goodman 1999** — the backoff estimate must be calibrated for the
+   population that actually reaches it, and the controlled empirical case for that correction.
+7. **Rogers & Hahn 2010 / ECFP** — establishes that WL identifiers on molecules are a familiar
    representation.
-7. **Dalke et al. 2018 / mmpdb** — radius-specific environment/property statistics.
-8. **Kammeraad et al. 2020** — mean atomic properties over graph-derived structural classes.
-9. **Bilmes & Kirchhoff 2003** — backoff over ordered factors, and the ordering problem.
-10. **Schulz et al. 2022 / generalized WL** — basis for future similarity-based smoothing.
+8. **Dalke et al. 2018 / mmpdb** — radius-specific environment/property statistics.
+9. **Kammeraad et al. 2020** — mean atomic properties over graph-derived structural classes.
+10. **Bilmes & Kirchhoff 2003** — backoff over ordered factors, and the ordering problem.
+11. **Schulz et al. 2022 / generalized WL** — basis for future similarity-based smoothing.
 
 > **Sieve should be presented as a particular use of WL's nested vertex partitions as the complete
 > regression and OOV-backoff hierarchy, not as the invention of hierarchical environment-based
@@ -390,6 +426,10 @@ DOI, or if any document cites a key that is not registered. See `references/READ
 **[Morris1983EmpiricalBayes]** Morris, C. N. *Parametric Empirical Bayes Inference: Theory and Applications.* **Journal of the American Statistical Association** **78**(381), 47–55 (1983). DOI: `10.1080/01621459.1983.10477920`
 
 **[Katz1987Backoff]** Katz, S. M. *Estimation of Probabilities from Sparse Data for the Language Model Component of a Speech Recognizer.* **IEEE Transactions on Acoustics, Speech, and Signal Processing** **35**(3), 400–401 (1987). DOI: `10.1109/TASSP.1987.1165125`
+
+**[KneserNey1995Improved]** Kneser, R.; Ney, H. *Improved Backing-off for M-gram Language Modeling.* **1995 International Conference on Acoustics, Speech, and Signal Processing (ICASSP-95)** **1**, 181–184 (1995). DOI: `10.1109/ICASSP.1995.479394`
+
+**[ChenGoodman1999Smoothing]** Chen, S. F.; Goodman, J. *An Empirical Study of Smoothing Techniques for Language Modeling.* **Computer Speech & Language** **13**(4), 359–393 (1999). DOI: `10.1006/csla.1999.0128`
 
 **[MicciBarreca2001HighCardinality]** Micci-Barreca, D. *A Preprocessing Scheme for High-Cardinality Categorical Attributes in Classification and Prediction Problems.* **ACM SIGKDD Explorations Newsletter** **3**(1), 27–32 (2001). DOI: `10.1145/507533.507538`
 
@@ -452,6 +492,8 @@ accumulation and merge algorithms rather than as Sieve precedents.
 | Rogers & Hahn 2010 (+ Morgan 1965) | ECFP atom-environment identifiers *are* 1-WL on molecules. Its absence was the most exposed gap: a cheminformatics reviewer would raise it immediately. Also enables an independent encoder validation against RDKit |
 | Morris et al. 2019 | The standard citation for the MPNN↔1-WL correspondence underpinning the depth-matched baseline argument |
 | Bilmes & Kirchhoff 2003 | Precedent for backoff over an ordered set of factors, and for the ordering problem it creates |
+| Kneser & Ney 1995 | The backoff *estimator* — not just the backoff rule — has an established correction. Sieve's fallback reads a class's atom-weighted pool, which is exactly the raw-frequency estimate Kneser–Ney replaces. Registering Katz without this made §4.2 cite the problem and omit the standard answer |
+| Chen & Goodman 1999 | The controlled empirical study behind the whole family, and the source of modified Kneser–Ney. Supplies the evidence for two claims §4.2 now makes — that continuation-count estimation dominates, and that interpolation beats pure backoff — neither of which should rest on the mechanism papers alone |
 
 ---
 

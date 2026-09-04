@@ -19,6 +19,8 @@ Rogers2010ECFP                  10.1021/ci100050t
 
 # --- Smoothing, backoff, target encoding ---
 Katz1987Backoff                 10.1109/TASSP.1987.1165125
+KneserNey1995Improved           10.1109/ICASSP.1995.479394
+ChenGoodman1999Smoothing        10.1006/csla.1999.0128
 MicciBarreca2001HighCardinality 10.1145/507533.507538
 Bilmes2003FactoredLM             10.3115/1073483.1073485
 Morris1983EmpiricalBayes         10.1080/01621459.1983.10477920

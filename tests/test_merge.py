@@ -147,6 +147,25 @@ def test_class_present_in_only_one_model_is_carried_through_exactly():
     np.testing.assert_allclose(m.levels[-1].msd, a.levels[-1].msd)
 
 
+def test_models_differing_only_in_class_estimator_still_merge():
+    """class_estimator is excluded from schema_version (it only changes which
+    stored numbers an estimate is read from, not what the classes mean), so
+    check_mergeable does not block this -- unlike test_incompatible_configs_
+    are_rejected_loudly below, where max_wl_depth genuinely does differ.
+    merge_models keeps the *left* operand's config, same precedent as
+    shrinkage_strength/minimum_support today; asserted here rather than
+    assumed."""
+    b = chain_batch(10, graphs=2)
+    a = sieve.fit(
+        split_batch(b, b.graph_id == 0), simple_config(class_estimator="pooled")
+    )
+    c = sieve.fit(
+        split_batch(b, b.graph_id == 1), simple_config(class_estimator="continuation")
+    )
+    merged = a.merge(c)
+    assert merged.config.class_estimator == "pooled"
+
+
 def test_incompatible_configs_are_rejected_loudly():
     b = chain_batch(8)
     a = sieve.fit(b, simple_config(max_wl_depth=2))

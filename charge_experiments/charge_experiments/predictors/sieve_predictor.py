@@ -58,6 +58,7 @@ def _build_config(
     max_wl_depth: int,
     minimum_support: int,
     shrinkage_strength: float | None,
+    class_estimator: str = "pooled",
     n_jobs: int | None = None,
 ) -> Any:
     """Learn ``attribute_codes``/``edge_codes`` from the training corpus and
@@ -98,6 +99,7 @@ def _build_config(
         neighbor_depth=neighbor_depth,
         minimum_support=minimum_support,
         shrinkage_strength=shrinkage_strength,
+        class_estimator=class_estimator,
     )
 
 
@@ -140,6 +142,16 @@ class SievePredictor:
     default: it costs a second featurization of train (~38% on a real run),
     and a default that changed the shape of metrics.json mid-series would
     break comparability with runs already recorded.
+
+    ``class_estimator`` selects how a matched class's estimate is read
+    (``sieve.config.CLASS_ESTIMATOR_POOLED``/``_CONTINUATION``, design.md
+    4.4) -- inference-time, so it is cheap to sweep against one fit.
+    ``report_loo=True`` together with ``class_estimator="continuation"``
+    raises here, at construction, rather than after ``fit`` and a full
+    train featurization: ``sieve.predict_loo`` does not yet support
+    continuation (a deliberate scope cut, not a structural one -- see
+    ``sieve.predict._search``'s own docstring) and would otherwise raise
+    only once ``predict_loo_raw`` is actually called, ~38% of a run late.
     """
 
     name: ClassVar[str] = "sieve"
@@ -154,9 +166,16 @@ class SievePredictor:
         max_wl_depth: int = 3,
         minimum_support: int = 1,
         shrinkage_strength: float | None = None,
+        class_estimator: str = "pooled",
         n_jobs: int | None = None,
         report_loo: bool = False,
     ) -> None:
+        if report_loo and class_estimator == "continuation":
+            raise ValueError(
+                "report_loo=True is not supported with "
+                "class_estimator='continuation' (sieve.predict_loo does not "
+                "yet support it -- see sieve.predict._search's docstring)"
+            )
         self.attributes = tuple(attributes)
         self.attribute_levels = (
             None if attribute_levels is None else tuple(attribute_levels)
@@ -166,6 +185,7 @@ class SievePredictor:
         self.max_wl_depth = max_wl_depth
         self.minimum_support = minimum_support
         self.shrinkage_strength = shrinkage_strength
+        self.class_estimator = class_estimator
         self.n_jobs = n_jobs
         self.report_loo = report_loo
         self._config: Any = None
@@ -201,6 +221,7 @@ class SievePredictor:
             max_wl_depth=self.max_wl_depth,
             minimum_support=self.minimum_support,
             shrinkage_strength=self.shrinkage_strength,
+            class_estimator=self.class_estimator,
             n_jobs=self.n_jobs,
         )
         batch = _batch_for(

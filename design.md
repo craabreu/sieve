@@ -465,6 +465,49 @@ Student-$t$, not Gaussian. Its log-density is not quadratic, which would destroy
 §6.4 and turn a one-line solve into an iteratively reweighted one. The Gaussian with inflated
 variance is taken deliberately, not by oversight.
 
+### 4.4 Continuation estimates are derived, never stored
+
+A class's stored $\bar y_{k,c}$ is the atom-weighted pool of every observation beneath it — every
+atom counted once, so an abundant child dominates it. But by the prefix property (§2.2), a class at
+any non-deepest backoff level is read *only* by a query whose own child class was absent. It is
+consulted precisely by the population it under-represents.
+
+This is the Kneser–Ney continuation-count correction, adapted from language modeling
+[KneserNey1995Improved; ChenGoodman1999Smoothing] — see literature.md §4.2. The fix is to aggregate a
+class's children as *units* rather than pooling their atoms:
+
+$$
+\bar y^{\mathrm{cont}}_{k,c}=\frac{1}{|\mathrm{children}(k,c)|}\sum_{c'\in\mathrm{children}(k,c)}\bar y_{k+1,c'}
+$$
+
+one level deep, over the **stored** child means — never recursive, never averaging another class's
+own continuation estimate. A class with no children (the deepest backoff level; nothing refines it
+further) keeps $\bar y_{k,c}$ unchanged: it is the one level a query reads on an exact match, not on
+backoff, so there is nothing to recalibrate.
+
+Selected by `SieveConfig.class_estimator` (`"pooled"` default, `"continuation"`), read at prediction
+time and excluded from `schema_version` — it changes which stored numbers an estimate is read from,
+not what a class means or what is stored in it. Like §4.2, it is derived on demand
+(`continuation.class_means`), never stored: it is a pure function of the fitted arrays and needs no
+invalidation bookkeeping.
+
+**Composes with shrinkage, and not by accident.** §4.2's recursion is defined over "the raw mean at
+level $k$" — with `class_estimator="continuation"`, that raw mean is now $\bar y^{\mathrm{cont}}_{k,c}$
+rather than $\bar y_{k,c}$. This is coherent for the same reason continuation itself is: every
+non-deepest class is read only by backoff, so shrinking it toward its own shrunk parent interpolates
+between two backoff-target reads — exactly interpolated Kneser–Ney's shape, not an approximation of
+it. The blend weight stays $N_{k,c}$ (§4.2's own weight), not "number of children," which would be
+closer to Kneser–Ney's own discount mass; that choice is unmeasured and stated here as such, not as
+settled.
+
+**Scope.** The prefix-property argument holds cleanly at `minimum_support == 1`. Above it, a query
+can reach level $k$ with its own child class *present but under-supported* — that query saw its own
+context, so continuation is calibrated for the wrong population there too, in the other direction.
+Not exercised: `minimum_support > 1` has independently measured as harmful on the one target tried.
+Not yet supported: `predict_loo` under continuation, a deliberate scope cut (design.md 10.3's
+own held-out-node correction needs the dropped node's child class identity, which the current search
+loop does not retain across iterations) rather than a structural limitation.
+
 ---
 
 ## 5. Immutable models with a merge monoid
@@ -645,6 +688,9 @@ for k in 0..L:                                 # attribute levels then WL depths
     best = estimate(k, id)
 return best
 ```
+
+`estimate(k, id)` reads `SieveConfig.class_estimator` (§4.4): the class's own pooled mean by
+default, or its children's continuation mean.
 
 Identical answer to a top-down $L\to0$ scan, but never refines past $k^\star+1$. Both `break`
 conditions are valid only because of the prefix properties in §2. The loop is indifferent to whether
@@ -960,7 +1006,8 @@ file and let $\alpha$ drift out of sync with the values it produced.
   "max_wl_depth": 3,
   "n_levels": 6,
   "minimum_support": 5,
-  "shrinkage_strength": 2.0
+  "shrinkage_strength": 2.0,
+  "class_estimator": "pooled"
 }
 ```
 
@@ -975,9 +1022,9 @@ Two version fields, doing different jobs:
   mechanism behind "reject incompatible configs loudly"; without it, config drift silently produces a
   model whose classes mean two different things.
 
-`minimum_support` and `shrinkage_strength` are inference-time parameters, not part of
-`schema_version` — changing them does not invalidate the fitted statistics, and two models
-differing only in $\alpha$ are still mergeable.
+`minimum_support`, `shrinkage_strength` and `class_estimator` (§4.4) are inference-time parameters,
+not part of `schema_version` — changing them does not invalidate the fitted statistics, and two
+models differing only in $\alpha$ or in `class_estimator` are still mergeable.
 
 ### 9.3 Round-trip guarantee
 
@@ -1067,11 +1114,11 @@ natural test suite.
 | Global fallback iff level 0 is unsupported | §2.2 |
 | `merge` is associative, commutative, with the empty model as identity | §5.4 |
 | `merge` of disjoint shards equals fitting their union | §5.2 |
-| $\alpha=0$ reproduces raw means; $\alpha\to\infty$ reproduces the global mean | §4.2 |
+| $\alpha=0$ reproduces the class estimator's own means; $\alpha\to\infty$ reproduces the global mean | §4.2, §4.4 |
 | Save/load reproduces predictions bit-exactly | §9.3 |
 | Changing only target values leaves every class id unchanged | §7.2 |
 | Batched and per-node prediction agree | §6.1 |
-| `predict_loo` on a class of size 2 returns the other member's value | §10.3 |
+| `predict_loo` on a class of size 2 returns the other member's value (`class_estimator="pooled"` only — continuation is not yet supported under LOO, §4.4) | §10.3 |
 | Two 1-WL-indistinguishable graphs *do* collide | accepted limit |
 
 The last is a negative control: it pins the known 1-WL expressiveness bound as intended behavior
@@ -1222,6 +1269,12 @@ $(k^\star,\,N,\,s^2)$ says how specific the matched environment was, how much tr
 and how heterogeneous its labels were. That is genuinely informative for triage, and it is not a
 predictive interval — anything claiming to be one needs conformal prediction or the machinery of
 [JonasKuhn2019Uncertainty], neither of which is in scope. Any write-up must say so explicitly.
+
+**`support` and `variance` describe the matched class itself, not necessarily where `value` came
+from.** Under `class_estimator="continuation"` (§4.4), `value` at a non-deepest level is the
+unweighted mean of the matched class's *children* — `support`/`variance` still report the matched
+class's own $N$/$s^2$, its pooled population. A reader should not assume `value` is literally "the
+mean of these `support` atoms with this `variance`" without checking `class_estimator`.
 
 A high global-fallback rate is a *featurization* alarm, not a prediction: it means atoms are arriving
 whose level-0 attributes were never seen. Surface it prominently rather than burying it in a column.
