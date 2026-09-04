@@ -96,6 +96,20 @@ def test_class_estimator_rejects_an_unknown_value():
 def test_class_estimator_defaults_to_pooled_and_is_excluded_from_schema_version():
     assert base().class_estimator == "pooled"
     assert base().schema_version == base(class_estimator="continuation").schema_version
+    assert (
+        base().schema_version
+        == base(class_estimator="continuation_recursive").schema_version
+    )
+
+
+def test_shrinkage_weight_rejects_an_unknown_value():
+    with pytest.raises(ValueError, match="shrinkage_weight"):
+        base(shrinkage_weight="entropy")
+
+
+def test_shrinkage_weight_defaults_to_count_and_is_excluded_from_schema_version():
+    assert base().shrinkage_weight == "count"
+    assert base().schema_version == base(shrinkage_weight="diversity").schema_version
 
 
 def test_edge_radices_and_n_edge_types_are_a_product_over_attributes():

@@ -42,6 +42,24 @@ def test_round_trip_preserves_class_estimator(tmp_path):
     assert np.array_equal(a, c)
 
 
+def test_round_trip_preserves_the_new_inference_knobs(tmp_path):
+    cfg = simple_config(
+        max_wl_depth=2,
+        class_estimator="continuation_recursive",
+        shrinkage_weight="diversity",
+        shrinkage_strength=0.5,
+    )
+    m = sieve.fit(chain_batch(10), cfg)
+    p = tmp_path / "m.npz"
+    m.save(p)
+    loaded = sieve.SieveModel.load(p)
+    assert loaded.config.class_estimator == "continuation_recursive"
+    assert loaded.config.shrinkage_weight == "diversity"
+    assert np.array_equal(
+        sieve.predict(m, chain_batch(10)), sieve.predict(loaded, chain_batch(10))
+    )
+
+
 def test_loading_a_format_version_3_model_refuses_rather_than_guessing(tmp_path):
     """format_version 3 files predate class_estimator entirely -- there is no
     default to fall back to that would not silently misdescribe what
@@ -56,6 +74,7 @@ def test_loading_a_format_version_3_model_refuses_rather_than_guessing(tmp_path)
     cfg = json.loads(bytes(data["config"]).decode())
     cfg["format_version"] = 3
     del cfg["class_estimator"]
+    del cfg["shrinkage_weight"]
     data["config"] = np.frombuffer(json.dumps(cfg).encode(), np.uint8)
     np.savez(p, **data)
     with pytest.raises(ValueError, match="format_version 3"):
