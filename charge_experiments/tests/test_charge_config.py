@@ -31,6 +31,36 @@ def test_load_config_round_trips_a_minimal_yaml(tmp_path):
     assert cfg.data.val_split == "val"
     assert cfg.data.eval_split == "test"
     assert cfg.predictor.name == "global_mean"
+    assert cfg.run.batch_id is None
+
+
+def test_load_config_reads_batch_id(tmp_path):
+    from charge_experiments.config import load_config
+
+    raw = _base_raw()
+    raw["run"]["batch_id"] = "dash-10fold-2026-09-03"
+    path = _write_yaml(tmp_path, raw)
+    cfg = load_config(path)
+    assert cfg.run.batch_id == "dash-10fold-2026-09-03"
+
+
+def test_load_config_sets_batch_id_via_override(tmp_path):
+    from charge_experiments.config import load_config
+
+    path = _write_yaml(tmp_path, _base_raw())
+    cfg = load_config(path, overrides=["run.batch_id=my-batch"])
+    assert cfg.run.batch_id == "my-batch"
+
+
+def test_to_dict_and_to_flat_params_include_batch_id(tmp_path):
+    from charge_experiments.config import load_config, to_dict, to_flat_params
+
+    raw = _base_raw()
+    raw["run"]["batch_id"] = "my-batch"
+    path = _write_yaml(tmp_path, raw)
+    cfg = load_config(path)
+    assert to_dict(cfg)["run"]["batch_id"] == "my-batch"
+    assert to_flat_params(cfg)["run.batch_id"] == "my-batch"
 
 
 def test_load_config_rejects_unknown_top_level_key(tmp_path):

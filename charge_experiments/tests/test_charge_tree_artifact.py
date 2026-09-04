@@ -63,6 +63,147 @@ def test_compute_node_stats_aggregates_a_node_visited_via_multiple_paths():
     assert stats.mean[idx] == pytest.approx(0.3)
 
 
+def test_merge_node_stats_matches_computing_on_the_union_directly():
+    """merge_node_stats(compute_node_stats(A), compute_node_stats(B)) must
+    equal compute_node_stats(A + B) exactly -- the same property
+    sieve.merge's own test_fold_matches_sequential_merge asserts for sieve
+    classes, here for DASH-tree's own (branch_idx, node_id) stats. Both
+    shards touch node (0, 1); only A touches (0, 2); only B touches (1, 0)
+    -- exercising overlap and each shard's own exclusive nodes together."""
+    from charge_experiments.tree_artifact import compute_node_stats, merge_node_stats
+
+    paths_a = [[(0, 1)], [(0, 1), (0, 2)], [(0, 2)]]
+    charge_a = np.array([0.10, 0.30, 0.50])
+    paths_b = [[(0, 1)], [(0, 1)], [(1, 0)]]
+    charge_b = np.array([0.20, 0.90, -0.40])
+
+    a = compute_node_stats(paths_a, charge_a)
+    b = compute_node_stats(paths_b, charge_b)
+    merged = merge_node_stats(a, b)
+
+    whole = compute_node_stats(paths_a + paths_b, np.concatenate([charge_a, charge_b]))
+
+    def as_dict(stats):
+        return {
+            (int(br), int(nd)): (float(m), float(s), int(c))
+            for br, nd, m, s, c in zip(
+                stats.branch_idx,
+                stats.node_id,
+                stats.mean,
+                stats.std,
+                stats.count,
+                strict=True,
+            )
+        }
+
+    merged_d, whole_d = as_dict(merged), as_dict(whole)
+    assert merged_d.keys() == whole_d.keys()
+    for key in whole_d:
+        m_mean, m_std, m_count = merged_d[key]
+        w_mean, w_std, w_count = whole_d[key]
+        assert m_count == w_count
+        assert m_mean == pytest.approx(w_mean)
+        assert m_std == pytest.approx(w_std)
+
+
+def test_merge_node_stats_a_node_exclusive_to_one_side_passes_through():
+    from charge_experiments.tree_artifact import compute_node_stats, merge_node_stats
+
+    a = compute_node_stats([[(0, 1)]], np.array([0.5]))
+    b = compute_node_stats([[(0, 2)]], np.array([0.7]))
+
+    merged = merge_node_stats(a, b)
+
+    assert set(
+        zip(merged.branch_idx.tolist(), merged.node_id.tolist(), strict=True)
+    ) == {
+        (0, 1),
+        (0, 2),
+    }
+    assert merged.count.tolist() == [1, 1]
+    np.testing.assert_allclose(sorted(merged.mean), [0.5, 0.7])
+
+
+def test_merge_node_stats_is_commutative():
+    from charge_experiments.tree_artifact import compute_node_stats, merge_node_stats
+
+    a = compute_node_stats([[(0, 1)], [(0, 1)]], np.array([0.1, 0.3]))
+    b = compute_node_stats([[(0, 1)], [(0, 1)], [(0, 1)]], np.array([0.2, 0.4, 0.9]))
+
+    ab = merge_node_stats(a, b)
+    ba = merge_node_stats(b, a)
+
+    idx_ab = ab.node_id.tolist().index(1)
+    idx_ba = ba.node_id.tolist().index(1)
+    assert ab.count[idx_ab] == ba.count[idx_ba]
+    assert ab.mean[idx_ab] == pytest.approx(ba.mean[idx_ba])
+    assert ab.std[idx_ab] == pytest.approx(ba.std[idx_ba])
+
+
+def test_fold_node_stats_reduces_many_shards_left_to_right():
+    """The N-way convenience wrapper the 60k-1..5-style fold workflow
+    actually needs: fold K independently-fit shards into one, exactly
+    equal to fitting their union directly."""
+    from charge_experiments.tree_artifact import (
+        compute_node_stats,
+        fold_node_stats,
+    )
+
+    shards_paths = [[[(0, 1)]], [[(0, 1)], [(0, 2)]], [[(0, 2)]]]
+    shards_charge = [np.array([0.1]), np.array([0.2, 0.4]), np.array([0.6])]
+    shards = [
+        compute_node_stats(p, c)
+        for p, c in zip(shards_paths, shards_charge, strict=True)
+    ]
+
+    folded = fold_node_stats(shards)
+
+    whole = compute_node_stats(
+        [p for paths in shards_paths for p in paths],
+        np.concatenate(shards_charge),
+    )
+
+    def as_dict(stats):
+        return {
+            (int(br), int(nd)): (float(m), float(s), int(c))
+            for br, nd, m, s, c in zip(
+                stats.branch_idx,
+                stats.node_id,
+                stats.mean,
+                stats.std,
+                stats.count,
+                strict=True,
+            )
+        }
+
+    folded_d, whole_d = as_dict(folded), as_dict(whole)
+    assert folded_d.keys() == whole_d.keys()
+    for key in whole_d:
+        f_mean, f_std, f_count = folded_d[key]
+        w_mean, w_std, w_count = whole_d[key]
+        assert f_count == w_count
+        assert f_mean == pytest.approx(w_mean)
+        assert f_std == pytest.approx(w_std)
+
+
+def test_fold_node_stats_of_a_single_shard_is_that_shard():
+    from charge_experiments.tree_artifact import compute_node_stats, fold_node_stats
+
+    stats = compute_node_stats([[(0, 1)]], np.array([0.3]))
+    folded = fold_node_stats([stats])
+
+    assert folded.count.tolist() == stats.count.tolist()
+    np.testing.assert_allclose(folded.mean, stats.mean)
+    np.testing.assert_allclose(folded.std, stats.std)
+
+
+def test_fold_node_stats_rejects_an_empty_sequence():
+    from charge_experiments.tree_artifact import fold_node_stats
+
+    with pytest.raises(ValueError, match="at least one shard"):
+        fold_node_stats([])
+
+
 def test_apply_node_stats_writes_mean_and_std_columns():
     from charge_experiments.tree_artifact import apply_node_stats, compute_node_stats
 

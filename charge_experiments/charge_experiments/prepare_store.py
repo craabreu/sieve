@@ -550,6 +550,97 @@ def subsample_store(
     return summaries[0] if n_stores == 1 else summaries
 
 
+def partition_store(
+    source_store: str,
+    dest_prefix: str,
+    *,
+    stores_root: Path,
+    n_stores: int,
+    conformers_per_molecule: int | None = None,
+    seed: int = 0,
+) -> str | list[str]:
+    """Exhaustively partition *every* molecule in ``source_store`` into
+    ``n_stores`` disjoint stores -- unlike ``subsample_store``, nothing is
+    left unused: each molecule lands in exactly one destination store.
+    Each store still reproduces the source's own real train/val/test
+    fractions (measured directly, same convention as ``subsample_store``),
+    but molecule assignment is exhaustive division rather than a
+    proportional target with clamping -- each split's own molecule list is
+    shuffled once and divided into ``n_stores`` near-equal contiguous
+    blocks (sizes differ by at most one, via ``divmod``), so every
+    molecule in that split is used and none is used twice.
+
+    ``conformers_per_molecule`` defaults to ``None`` here (unlike
+    ``subsample_store``'s default of ``1``): unlimited, every conformer of
+    every selected molecule is kept. Passing an explicit value caps it the
+    same way ``subsample_store`` does (uniform sampling without
+    replacement when a molecule has more than the cap).
+
+    Named ``dest_prefix-1`` ... ``dest_prefix-n_stores``, mirroring
+    ``subsample_store``'s own ``n_stores`` convention exactly, including
+    ``n_stores=1`` keeping the bare ``dest_prefix`` name and returning one
+    summary string instead of a list.
+    """
+    if n_stores < 1:
+        raise ValueError("n_stores must be >= 1")
+    if conformers_per_molecule is not None and conformers_per_molecule < 1:
+        raise ValueError("conformers_per_molecule must be >= 1 or None (uncapped)")
+
+    import pandas as pd
+
+    source_path = stores_root / source_store / "molecules.parquet"
+    df = pd.read_parquet(source_path)
+    if "split" not in df.columns:
+        raise ValueError(
+            f"{source_path} has no split column; run prepare_store on "
+            f"{source_store!r} first"
+        )
+
+    mol_key = df["chembl_id"].fillna(df["dash_id"])
+    split_col = df["split"].to_numpy()
+    positions_by_key = df.groupby(mol_key).indices
+
+    keys_by_split: dict[str, list[str]] = {}
+    for key, positions in positions_by_key.items():
+        keys_by_split.setdefault(split_col[positions[0]], []).append(str(key))
+
+    rng = np.random.default_rng(seed)
+    selected_positions: list[list[np.ndarray]] = [[] for _ in range(n_stores)]
+    for split_name in ("train", "val", "test"):
+        keys = keys_by_split.get(split_name, [])
+        if not keys:
+            continue
+        order = rng.permutation(len(keys))
+        base, remainder = divmod(len(keys), n_stores)
+        start = 0
+        for store_index in range(n_stores):
+            size = base + (1 if store_index < remainder else 0)
+            block = order[start : start + size]
+            start += size
+            for i in block:
+                positions = positions_by_key[keys[i]]
+                if (
+                    conformers_per_molecule is not None
+                    and len(positions) > conformers_per_molecule
+                ):
+                    positions = rng.choice(
+                        positions, size=conformers_per_molecule, replace=False
+                    )
+                selected_positions[store_index].append(positions)
+
+    summaries = [
+        _write_subsample(
+            df,
+            positions,
+            source_store=source_store,
+            dest_dir=stores_root
+            / (dest_prefix if n_stores == 1 else f"{dest_prefix}-{store_index + 1}"),
+        )
+        for store_index, positions in enumerate(selected_positions)
+    ]
+    return summaries[0] if n_stores == 1 else summaries
+
+
 def _write_subsample(
     df: Any,
     selected_positions: list[np.ndarray],

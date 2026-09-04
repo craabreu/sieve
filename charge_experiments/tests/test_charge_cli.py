@@ -17,6 +17,25 @@ def test_build_parser_rejects_the_removed_run_nested_command():
         parser.parse_args(["run-nested", "--config", "some-config.yaml"])
 
 
+def test_build_parser_run_defaults_to_untracked():
+    """--track is opt-in; the untracked default was deliberately flipped
+    from an earlier --no-tracking opt-out (see runner.execute's own
+    docstring for why)."""
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--config", "some-config.yaml"])
+    assert args.track is False
+
+
+def test_build_parser_run_accepts_track_flag():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--config", "some-config.yaml", "--track"])
+    assert args.track is True
+
+
 def test_build_parser_promote_run_defaults():
     from charge_experiments.cli import build_parser
 
@@ -131,6 +150,52 @@ def test_build_parser_subsample_store_accepts_all_flags():
     assert args.conformers_per_molecule == 3
     assert args.seed == 42
     assert args.n_stores == 5
+
+
+def test_build_parser_partition_store_defaults():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["partition-store", "my-parts", "--n-stores", "5"])
+    assert args.dest == "my-parts"
+    assert args.source == "dash-molecules"
+    assert args.n_stores == 5
+    assert args.conformers_per_molecule is None
+    assert args.seed == 0
+
+
+def test_build_parser_partition_store_requires_n_stores():
+    import pytest
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["partition-store", "my-parts"])
+
+
+def test_build_parser_partition_store_accepts_all_flags():
+    from charge_experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "partition-store",
+            "my-parts",
+            "--source",
+            "some-other-store",
+            "--n-stores",
+            "10",
+            "--conformers-per-molecule",
+            "3",
+            "--seed",
+            "42",
+        ]
+    )
+    assert args.dest == "my-parts"
+    assert args.source == "some-other-store"
+    assert args.n_stores == 10
+    assert args.conformers_per_molecule == 3
+    assert args.seed == 42
 
 
 def test_build_parser_to_united_atom_defaults():

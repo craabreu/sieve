@@ -96,8 +96,9 @@ def test_ensure_experiment_raises_after_exhausting_retries(tmp_path, monkeypatch
 
 def test_promote_run_backfills_a_missing_mlflow_record(tmp_path):
     """The back-fill case: a run that finished writing local artifacts
-    but was never logged (--no-tracking, or a crash after local write)
-    gets an MLflow record now, under its own config.run.experiment."""
+    but was never logged (untracked is the default -- no --track flag --
+    or a crash after local write) gets an MLflow record now, under its
+    own config.run.experiment."""
     import mlflow
     from charge_experiments.runner import promote_run
 
@@ -149,6 +150,48 @@ def test_promote_run_is_idempotent(tmp_path):
     )
 
     assert first.logged is True
+    assert second.logged is False
+    exp = mlflow.get_experiment_by_name("exp")
+    assert exp is not None
+    runs = mlflow.search_runs(experiment_ids=[exp.experiment_id], output_format="list")
+    assert len(runs) == 1
+
+
+def test_promote_run_is_idempotent_for_a_relative_path_too(tmp_path, monkeypatch):
+    """Regression: every existing idempotency test above passes a
+    tmp_path-derived (always-absolute) run_dir, which never exercised
+    this. execute() always logs the "run_dir" MLflow tag as an absolute
+    path (built from DEFAULT_RUNS_ROOT), so a relative run_dir argument
+    here must still resolve to the same tag before comparing -- otherwise
+    it silently fails to match and creates a duplicate MLflow record on
+    every call instead of no-op'ing. Caught in real use: promoting the 10
+    dash-raw-10fold runs by relative path created 10 duplicates (~940MB
+    of re-copied tree_stats.npz artifacts) before this test existed."""
+    import mlflow
+    from charge_experiments.runner import promote_run
+
+    tracking = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    mlflow.set_tracking_uri(tracking)
+    run_dir = tmp_path / "runs" / "exp" / "r1"
+    _write_completed_run(run_dir, experiment="exp")
+
+    first = promote_run(
+        run_dir,
+        runs_root=tmp_path / "runs",
+        tracking=tracking,
+        artifact_root=tmp_path / "art",
+    )
+    assert first.logged is True
+
+    monkeypatch.chdir(tmp_path)
+    relative = run_dir.relative_to(tmp_path)
+    second = promote_run(
+        relative,
+        runs_root=tmp_path / "runs",
+        tracking=tracking,
+        artifact_root=tmp_path / "art",
+    )
+
     assert second.logged is False
     exp = mlflow.get_experiment_by_name("exp")
     assert exp is not None
@@ -223,3 +266,45 @@ def test_promote_run_raises_for_an_incomplete_run(tmp_path):
 
     with pytest.raises(FileNotFoundError, match=r"metrics\.json|config\.resolved"):
         promote_run(run_dir, runs_root=tmp_path / "runs")
+
+
+def test_execute_logs_batch_id_as_an_mlflow_tag(tmp_path):
+    """run.batch_id shows up as its own MLflow tag (independent of the
+    run_name string it also prefixes), for querying a whole sweep at
+    once."""
+    pytest.importorskip("rdkit")
+
+    import mlflow
+    import numpy as np
+    from charge_experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
+    from charge_experiments.runner import execute
+
+    from charge_experiments.tests.helpers import synthetic_molecule_set
+
+    tracking = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    cfg = ExperimentCfg(
+        run=RunCfg(experiment="exp", seed=0, batch_id="10fold-2026"),
+        data=DataCfg(store="synthetic", split_column="split"),
+        predictor=PredictorCfg(name="global_mean", params={}),
+    )
+    mset = synthetic_molecule_set(n_mol=20, seed=0)
+    rng = np.random.default_rng(1)
+    labels = rng.choice(["train", "val", "test"], size=20, p=[0.6, 0.2, 0.2])
+    masks = {name: labels == name for name in ("train", "val", "test")}
+
+    execute(
+        cfg,
+        mset,
+        masks,
+        runs_root=tmp_path / "runs",
+        allow_dirty=True,
+        tracking=tracking,
+    )
+
+    mlflow.set_tracking_uri(tracking)
+    exp = mlflow.get_experiment_by_name("exp")
+    assert exp is not None
+    runs = mlflow.search_runs(experiment_ids=[exp.experiment_id], output_format="list")
+    assert len(runs) == 1
+    assert runs[0].data.tags["batch_id"] == "10fold-2026"
+    assert runs[0].info.run_name.startswith("10fold-2026__")

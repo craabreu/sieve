@@ -52,6 +52,19 @@ Because disjoint stores can't be clamped independently, a request the
 source can't fill raises before any store is written, naming the split that
 came up short -- unlike the single-store case, which clamps and warns.
 
+`subsample-store` samples; it always leaves most of a large source unused.
+To instead divide a store's *entire* molecule set into N disjoint stores --
+nothing left over, every conformer of every molecule kept by default --
+use `partition-store`. Each split is shuffled once and cut into N near-equal
+contiguous blocks (sizes differ by at most one), so no molecule is used
+twice and none is skipped:
+
+    uv run python -m charge_experiments partition-store dash-molecules-part --n-stores 10
+
+`--conformers-per-molecule N` caps conformers the same way `subsample-store`
+does, if a run needs a smaller per-molecule footprint; the default is
+unlimited.
+
 To also get a united-atom (heavy-atom-only) version of a store -- every
 conformer's hydrogens removed via rdkit's own `Chem.RemoveHs`, each removed
 H's charge folded onto the heavy atom it was bonded to, any H rdkit itself
@@ -90,6 +103,28 @@ copy of its own -- the loaded path is already the provenance record):
 Point a run at a different store with `--set data.store=dash-molecules-50k`,
 or use `--limit N` for a quick sanity check against whatever store is
 configured.
+
+Runs are **untracked by MLflow by default** -- pass `--track` to log one.
+`summarize`/`sweep` always read `manifest.json`/`metrics.json` straight off
+disk regardless, and MLflow's own artifact duplication
+(`mlflow.log_artifacts` copies every file a run writes into
+`mlflow_artifacts/` too) has been the direct cause of more than one
+disk-usage incident on a shared machine. `promote-run` gives an
+already-untracked run an MLflow record after the fact, if you decide you
+want one.
+
+Set `run.batch_id` to tie several independently-launched runs together --
+e.g. one predictor run per `partition-store` fold -- into one shared,
+sortable/greppable run-directory prefix (`<batch_id>__<predictor>-<store>-
+s<seed>__<timestamp>__<uuid>`), and a matching MLflow tag. `experiment`
+stays a broad, reused category (`dash-charges`); `batch_id` identifies one
+specific sweep instance, so re-running the same batch next month is
+visibly distinct from today's:
+
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      uv run python -m charge_experiments run --config configs/dash-charge-example.yaml \
+        --set data.store=dash-molecules-10fold-$i --set run.batch_id=dash-10fold-2026-09-03
+    done
 
 ### Collecting results
 
