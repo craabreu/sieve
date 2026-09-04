@@ -500,6 +500,21 @@ it. The blend weight stays $N_{k,c}$ (§4.2's own weight), not "number of childr
 closer to Kneser–Ney's own discount mass; that choice is unmeasured and stated here as such, not as
 settled.
 
+**What the name does and does not denote.** "Continuation" here is Kneser–Ney's type-counting
+correction — count each distinct child once rather than in proportion to its population
+[KneserNey1995Improved] — and nothing more. It is **not** the recursive base-measure construction
+that the hierarchical Bayesian treatment of the same idea adds: there, each context's prior mean is
+the next-coarser context's *own modeled* distribution, recursively to the root, and interpolated
+Kneser–Ney falls out as approximate inference in that model
+[Teh2006HierarchicalPitmanYor; MacKayPeto1995HierarchicalDirichlet]. The distinction matters here
+precisely because Sieve's chain is $L$ levels deep, which is the setting that literature addresses —
+so the recursive reading is the one an informed reader would otherwise assume.
+
+Sieve does have that recursion, but it lives in §4.2: shrinkage consumes the *already-shrunk* parent
+top-down. Continuation is the flat half of the same lineage, and the two are deliberately kept
+separate — $\bar y^{\mathrm{cont}}$ reads stored pooled child means, never another class's
+continuation estimate, so that exactly one mechanism in the model recurses.
+
 **Scope.** The prefix-property argument holds cleanly at `minimum_support == 1`. Above it, a query
 can reach level $k$ with its own child class *present but under-supported* — that query saw its own
 context, so continuation is calibrated for the wrong population there too, in the other direction.

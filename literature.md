@@ -38,6 +38,7 @@ with hierarchical fallback or smoothing?"*
 | **Katz 1987, backoff smoothing** | Most-specific context → recursive backoff to shorter context under sparse counts | Language modeling; discrete distributions, not conditional means | Canonical precedent for the backoff *principle* |
 | **Kneser & Ney 1995, continuation counts** | The distribution backed off *to* is estimated from distinct-context counts, not raw frequency | Language modeling; discrete distributions | The fallback estimator must be calibrated for the population that actually reaches it |
 | **Chen & Goodman 1999, smoothing study** | Controlled comparison of the whole smoothing family; introduces modified Kneser–Ney | Language modeling; perplexity rather than regression error | Empirical authority for which smoothing choices matter, and for interpolation over pure backoff |
+| **Teh 2006, hierarchical Pitman–Yor LM** | Backoff hierarchy of arbitrary depth where each level's prior mean is the coarser level's own distribution; interpolated Kneser–Ney recovered as approximate inference | Discrete distributions; full Bayesian nonparametric treatment | The recursive generalization of continuation smoothing — the structure Sieve's shrinkage already has, and the one its continuation estimator deliberately does not |
 | **Lehner et al. 2023, DASH** | Hierarchical atom-centered substructures; property distributions at hierarchy nodes | Hierarchy derived from GNN attention; chemistry-specific | Very close architectural precedent |
 | **Lehner et al. 2024, DASH Properties** | Hierarchical structural classes populated with atomic target values; no refit per property | DASH hierarchy and medians rather than WL classes and means | Closest general atomic-property precedent |
 | **Kriege, Giscard & Wilson 2016, WL-OA** | Successive WL refinements induce a hierarchy of vertex classes | No target regression | Key theoretical precedent for WL ancestry |
@@ -145,6 +146,34 @@ The transfer is not automatic. These methods smooth discrete probability distrib
 estimates conditional means, and the discounting machinery that reserves probability mass has no
 direct analog here. What does transfer is the estimator-calibration argument — a claim about which
 population a fallback estimate should represent, not about mass.
+
+**The recursive generalization, and why Sieve only takes half of it.** Kneser–Ney is stated for two
+orders at a time. The Bayesian reformulation generalizes it to a hierarchy of arbitrary depth, which
+is the structure Sieve actually has. Teh places a Pitman–Yor prior on each context's distribution
+whose *mean* is the next-shorter context's distribution, recursively — "we recursively place a prior
+over $G_{\pi(\mathbf u)}$ … repeated until we get to $G_\emptyset$" — and shows that "an
+approximation to the hierarchical Pitman-Yor language model recovers the exact formulation of
+interpolated Kneser-Ney", i.e. interpolated KN *is* a particular approximate inference scheme in that
+model [Teh2006HierarchicalPitmanYor]. It generalizes MacKay and Peto's earlier hierarchical Dirichlet
+language model [MacKayPeto1995HierarchicalDirichlet].
+
+That family splits cleanly across Sieve's two existing mechanisms, and the split is worth stating
+because it is not symmetric:
+
+- **The recursive prior structure is already Sieve's shrinkage** (design.md §4.2): each level blends
+  its own estimate toward the *already-shrunk* parent, top-down to the global mean. Same shape as a
+  base measure that is itself a smoothed distribution rather than raw counts.
+- **The type-counting correction is Sieve's continuation estimator** (design.md §4.4) — but
+  deliberately *flat*: one level deep, over the immediate children's **stored pooled** means, never
+  over another class's own continuation estimate. The recursive version is a different, unmeasured
+  estimator.
+
+So "continuation" here names the Kneser–Ney type-counting correction, not the recursive base-measure
+construction that the hierarchical Bayesian treatment adds on top of it. A reader who arrives from
+the hierarchical Pitman–Yor literature would otherwise reasonably assume the recursive form, since
+Sieve's multi-level chain is exactly the setting that literature addresses. `design.md` §4.4 states
+the restriction at the point of definition; this note records why the restriction is worth stating at
+all.
 
 ### 4.3 DASH (2023)
 
@@ -384,7 +413,8 @@ is a literature that could bear on it, and none has been searched.
 target/mean-encoding literature.
 
 **6.4 Hierarchical statistical smoothing and backoff** — Katz 1987; Kneser & Ney 1995; Chen &
-Goodman 1999; Bilmes & Kirchhoff 2003; Micci-Barreca 2001; Agarwal et al. 2022.
+Goodman 1999; MacKay & Peto 1995; Teh 2006; Bilmes & Kirchhoff 2003; Micci-Barreca 2001;
+Agarwal et al. 2022.
 
 ### Relevance ranking
 
@@ -398,12 +428,15 @@ Goodman 1999; Bilmes & Kirchhoff 2003; Micci-Barreca 2001; Agarwal et al. 2022.
 5. **Katz 1987** — canonical precedent for the backoff principle and its sparse-count failure modes.
 6. **Kneser & Ney 1995 / Chen & Goodman 1999** — the backoff estimate must be calibrated for the
    population that actually reaches it, and the controlled empirical case for that correction.
-7. **Rogers & Hahn 2010 / ECFP** — establishes that WL identifiers on molecules are a familiar
+7. **Teh 2006 / hierarchical Pitman–Yor** (with MacKay & Peto 1995) — the depth-general Bayesian
+   form of that correction, and the reference that fixes what Sieve's "continuation" does and does
+   not denote.
+8. **Rogers & Hahn 2010 / ECFP** — establishes that WL identifiers on molecules are a familiar
    representation.
-8. **Dalke et al. 2018 / mmpdb** — radius-specific environment/property statistics.
-9. **Kammeraad et al. 2020** — mean atomic properties over graph-derived structural classes.
-10. **Bilmes & Kirchhoff 2003** — backoff over ordered factors, and the ordering problem.
-11. **Schulz et al. 2022 / generalized WL** — basis for future similarity-based smoothing.
+9. **Dalke et al. 2018 / mmpdb** — radius-specific environment/property statistics.
+10. **Kammeraad et al. 2020** — mean atomic properties over graph-derived structural classes.
+11. **Bilmes & Kirchhoff 2003** — backoff over ordered factors, and the ordering problem.
+12. **Schulz et al. 2022 / generalized WL** — basis for future similarity-based smoothing.
 
 > **Sieve should be presented as a particular use of WL's nested vertex partitions as the complete
 > regression and OOV-backoff hierarchy, not as the invention of hierarchical environment-based
@@ -429,7 +462,11 @@ DOI, or if any document cites a key that is not registered. See `references/READ
 
 **[KneserNey1995Improved]** Kneser, R.; Ney, H. *Improved Backing-off for M-gram Language Modeling.* **1995 International Conference on Acoustics, Speech, and Signal Processing (ICASSP-95)** **1**, 181–184 (1995). DOI: `10.1109/ICASSP.1995.479394`
 
+**[MacKayPeto1995HierarchicalDirichlet]** MacKay, D. J. C.; Peto, L. C. B. *A Hierarchical Dirichlet Language Model.* **Natural Language Engineering** **1**(3), 289–308 (1995). DOI: `10.1017/S1351324900000218`
+
 **[ChenGoodman1999Smoothing]** Chen, S. F.; Goodman, J. *An Empirical Study of Smoothing Techniques for Language Modeling.* **Computer Speech & Language** **13**(4), 359–393 (1999). DOI: `10.1006/csla.1999.0128`
+
+**[Teh2006HierarchicalPitmanYor]** Teh, Y. W. *A Hierarchical Bayesian Language Model Based on Pitman-Yor Processes.* **Proceedings of COLING-ACL 2006**, 985–992 (2006). DOI: `10.3115/1220175.1220299`
 
 **[MicciBarreca2001HighCardinality]** Micci-Barreca, D. *A Preprocessing Scheme for High-Cardinality Categorical Attributes in Classification and Prediction Problems.* **ACM SIGKDD Explorations Newsletter** **3**(1), 27–32 (2001). DOI: `10.1145/507533.507538`
 
@@ -494,6 +531,7 @@ accumulation and merge algorithms rather than as Sieve precedents.
 | Bilmes & Kirchhoff 2003 | Precedent for backoff over an ordered set of factors, and for the ordering problem it creates |
 | Kneser & Ney 1995 | The backoff *estimator* — not just the backoff rule — has an established correction. Sieve's fallback reads a class's atom-weighted pool, which is exactly the raw-frequency estimate Kneser–Ney replaces. Registering Katz without this made §4.2 cite the problem and omit the standard answer |
 | Chen & Goodman 1999 | The controlled empirical study behind the whole family, and the source of modified Kneser–Ney. Supplies the evidence for two claims §4.2 now makes — that continuation-count estimation dominates, and that interpolation beats pure backoff — neither of which should rest on the mechanism papers alone |
+| Teh 2006 (+ MacKay & Peto 1995) | Added on a terminology audit, not a coverage gap. Kneser–Ney is a two-order correction; Sieve's chain is L levels deep, and the depth-general form of the idea is the hierarchical Bayesian one, where each level's prior mean is the coarser level's own distribution. Without it the name "continuation" silently invites the recursive reading, which is *not* what `class_estimator="continuation"` computes. Teh also proves interpolated Kneser–Ney is approximate inference in that model, which is what makes the two literatures one lineage rather than two analogies |
 
 ---
 

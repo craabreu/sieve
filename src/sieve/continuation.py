@@ -10,6 +10,13 @@ pooled estimate is calibrated for the wrong population.
 The continuation estimate aggregates a class's children as *units* instead:
 the unweighted mean of the children's own stored means, so a rare-but-real
 child stops being swamped by an abundant one. See literature.md 4.2.
+
+"Continuation" names Kneser-Ney's type-counting correction only. It is *not*
+the recursive base-measure construction of the hierarchical Bayesian form of
+the same idea [Teh2006HierarchicalPitmanYor], where each level's prior mean
+is the coarser level's own modeled distribution. Sieve does recurse that way
+-- in ``shrinkage.shrunk_means`` (design.md 4.2), not here. Keeping exactly
+one recursing mechanism is deliberate; see design.md 4.4.
 """
 
 from __future__ import annotations
