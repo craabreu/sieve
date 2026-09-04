@@ -7,8 +7,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from sieve.batch import NodeBatch
-from sieve.config import CLASS_ESTIMATOR_CONTINUATION, LEVEL_WL
-from sieve.continuation import class_means
+from sieve.config import (
+    CLASS_ESTIMATOR_POOLED,
+    LEVEL_WL,
+    SHRINKAGE_WEIGHT_DIVERSITY,
+)
+from sieve.continuation import child_counts, class_means
 from sieve.merge import _lookup_rows as _lookup
 from sieve.merge import _translate
 from sieve.refine import refine
@@ -70,9 +74,16 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     still -- see ``charge_experiments``' ``SievePredictor.__init__``.
     """
     cfg = model.config
-    if loo_y is not None and cfg.class_estimator == CLASS_ESTIMATOR_CONTINUATION:
+    if loo_y is not None and cfg.class_estimator != CLASS_ESTIMATOR_POOLED:
         raise NotImplementedError(
-            "predict_loo does not yet support class_estimator='continuation'"
+            f"predict_loo does not yet support class_estimator={cfg.class_estimator!r}"
+        )
+    if loo_y is not None and cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY:
+        # lambda is built from the matched class's own C and N, both of which
+        # the held-out node contributes to; correcting it needs the same child
+        # identity predict_loo already lacks for continuation.
+        raise NotImplementedError(
+            "predict_loo does not yet support shrinkage_weight='diversity'"
         )
     n, d = batch.n_nodes, cfg.target_dim
     query = refine(batch, cfg)
@@ -172,7 +183,15 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         # LOO-adjusted when `loo_y` is set -- combined with the *parent's*
         # shrunk estimate reduces to the identical formula (and identical
         # values) for `predict`, while getting `predict_loo` right too.
+        #
+        # Under shrinkage_weight="diversity" that per-node recomputation has
+        # nothing to recompute: lambda is a pure class property (C and N of
+        # the matched class), not a function of the query's own support, so
+        # the class-indexed shrunk value *is* the answer. LOO is refused for
+        # that mode above, which is what makes reading it directly safe here.
         shrunk = shrunk_means(model)
+        diversity = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
+        counts = child_counts(model) if diversity else None
         for k in backoff_path:
             sel = matched == k
             if sel.any():
@@ -182,10 +201,23 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
                     parent_est = np.broadcast_to(model.global_mean, (sel.sum(), d))
                 else:
                     parent_est = shrunk[p][model.levels[k].parent[class_id[sel]]]
-                value[sel] = (
-                    nn[:, None] * raw[sel] + cfg.shrinkage_strength * parent_est
-                ) / (nn[:, None] + cfg.shrinkage_strength)
-                weight[sel] = nn / (nn + cfg.shrinkage_strength)
+                if diversity:
+                    cls_n = model.levels[k].count[class_id[sel]].astype(np.float64)
+                    lam = np.minimum(
+                        cfg.shrinkage_strength
+                        * counts[k][class_id[sel]]
+                        / np.maximum(cls_n, 1.0),
+                        1.0,
+                    )
+                    value[sel] = (1.0 - lam[:, None]) * raw[sel] + lam[
+                        :, None
+                    ] * parent_est
+                    weight[sel] = 1.0 - lam
+                else:
+                    value[sel] = (
+                        nn[:, None] * raw[sel] + cfg.shrinkage_strength * parent_est
+                    ) / (nn[:, None] + cfg.shrinkage_strength)
+                    weight[sel] = nn / (nn + cfg.shrinkage_strength)
         return Predictions(
             value,
             _matched_out(matched),

@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 # Level kinds returned by SieveConfig.level_kinds (design.md 3.6).
 LEVEL_ATTR = "attr"
@@ -26,9 +26,40 @@ LEVEL_WL_PAIR = "wl_pair"
 #                  pooled mean. The Kneser-Ney continuation-count correction
 #                  [KneserNey1995Improved; ChenGoodman1999Smoothing], see
 #                  literature.md 4.2.
+#   "continuation_recursive"
+#                  as above, but each level averages its children's own
+#                  *continuation* estimates rather than their stored pooled
+#                  means -- the recursive base-measure construction of the
+#                  hierarchical Bayesian form [Teh2006HierarchicalPitmanYor].
+#                  Computed deepest-level-first. Unmeasured relative to the
+#                  flat form; exists to make that comparison runnable.
 CLASS_ESTIMATOR_POOLED = "pooled"
 CLASS_ESTIMATOR_CONTINUATION = "continuation"
-CLASS_ESTIMATORS = (CLASS_ESTIMATOR_POOLED, CLASS_ESTIMATOR_CONTINUATION)
+CLASS_ESTIMATOR_CONTINUATION_RECURSIVE = "continuation_recursive"
+CLASS_ESTIMATORS = (
+    CLASS_ESTIMATOR_POOLED,
+    CLASS_ESTIMATOR_CONTINUATION,
+    CLASS_ESTIMATOR_CONTINUATION_RECURSIVE,
+)
+
+# How shrinkage weights a class's own estimate against its shrunk parent
+# (design.md 4.2, 4.4).
+#
+#   "count"     w = N / (N + alpha) -- the original rule, a function of the
+#               class's atom count alone.
+#   "diversity" lambda = min(alpha * C / N, 1) is the weight on the *parent*,
+#               with C the number of children. This is interpolated
+#               Kneser-Ney's own lambda = D * N_1+(context) / c(context)
+#               [KneserNey1995Improved], so `shrinkage_strength` reads as
+#               KN's discount D rather than as a pseudo-count. A class whose
+#               atoms are spread over many distinct children defers harder to
+#               its parent than an equally-sized class concentrated in a few.
+#               At the deepest level C == 0, so lambda == 0 and no shrinkage
+#               is applied -- see design.md 4.4 on why that is defensible
+#               rather than a degenerate case.
+SHRINKAGE_WEIGHT_COUNT = "count"
+SHRINKAGE_WEIGHT_DIVERSITY = "diversity"
+SHRINKAGE_WEIGHTS = (SHRINKAGE_WEIGHT_COUNT, SHRINKAGE_WEIGHT_DIVERSITY)
 
 
 @dataclass(frozen=True)
@@ -55,6 +86,7 @@ class SieveConfig:
     minimum_support: int = 1
     shrinkage_strength: float | None = None
     class_estimator: str = CLASS_ESTIMATOR_POOLED
+    shrinkage_weight: str = SHRINKAGE_WEIGHT_COUNT
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
@@ -74,6 +106,11 @@ class SieveConfig:
             raise ValueError(
                 f"class_estimator must be one of {CLASS_ESTIMATORS}, "
                 f"got {self.class_estimator!r}"
+            )
+        if self.shrinkage_weight not in SHRINKAGE_WEIGHTS:
+            raise ValueError(
+                f"shrinkage_weight must be one of {SHRINKAGE_WEIGHTS}, "
+                f"got {self.shrinkage_weight!r}"
             )
         if self.neighbor_depth is not None:
             a = len(self.attribute_levels)
@@ -248,12 +285,14 @@ class SieveConfig:
     def schema_version(self) -> str:
         """Digest over everything that changes what a class means (design.md 9.2).
 
-        ``minimum_support``, ``shrinkage_strength``, ``class_estimator`` and
-        ``chunk_size`` are deliberately excluded: they are read at prediction
-        time and do not invalidate fitted statistics. ``class_estimator``
-        belongs here rather than in the digest because it only changes which
-        stored numbers an estimate is *read from* -- the classes themselves,
-        and every count and mean in them, are identical either way.
+        ``minimum_support``, ``shrinkage_strength``, ``class_estimator``,
+        ``shrinkage_weight`` and ``chunk_size`` are deliberately excluded:
+        they are read at prediction time and do not invalidate fitted
+        statistics. ``class_estimator``/``shrinkage_weight`` belong here
+        rather than in the digest because they only change which stored
+        numbers an estimate is *read from*, and how they are combined -- the
+        classes themselves, and every count and mean in them, are identical
+        either way.
         """
         payload = {
             "target_dim": self.target_dim,

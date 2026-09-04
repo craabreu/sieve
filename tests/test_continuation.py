@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 import sieve
-from sieve.continuation import class_means
+from sieve.continuation import child_counts, class_means
 from sieve.shrinkage import shrunk_means
 from tests.helpers import chain_batch, simple_config
 
@@ -117,3 +117,112 @@ def test_with_params_switches_class_estimator_without_refitting():
     # same fitted arrays, only the config differs
     for lvl_a, lvl_b in zip(m.levels, switched.levels, strict=True):
         np.testing.assert_array_equal(lvl_a.mean, lvl_b.mean)
+
+
+def test_recursive_agrees_with_flat_at_the_two_deepest_levels():
+    """The level above the deepest averages children that are themselves
+    pooled, so recursion has nothing to bite on there; only levels at least
+    two steps above the deepest can differ."""
+    b = chain_batch(20, graphs=4)
+    mf = sieve.fit(b, simple_config(max_wl_depth=3, class_estimator="continuation"))
+    mr = sieve.fit(
+        b, simple_config(max_wl_depth=3, class_estimator="continuation_recursive")
+    )
+    cf, cr = class_means(mf), class_means(mr)
+    np.testing.assert_array_equal(cf[-1], cr[-1])
+    np.testing.assert_allclose(cf[-2], cr[-2])
+    assert not np.allclose(cf[0], cr[0]), "levels above that must actually differ"
+
+
+def test_recursive_matches_a_hand_computed_two_level_composition():
+    """Level k averages level k+1's *continuation* estimates, which are
+    themselves averages of level k+2's stored pooled means."""
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(
+        b, simple_config(max_wl_depth=3, class_estimator="continuation_recursive")
+    )
+    rec = class_means(m)
+    k = len(m.levels) - 3  # deepest level that recursion actually changes
+    child = m.levels[k + 1]
+    expected = np.array(
+        [
+            rec[k + 1][child.parent == c].mean(axis=0)
+            for c in range(len(m.levels[k].mean))
+        ]
+    )
+    np.testing.assert_allclose(rec[k], expected)
+
+
+def test_child_counts_are_kneser_ney_n1plus():
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(b, simple_config(max_wl_depth=3))
+    counts = child_counts(m)
+    for k in range(len(m.levels) - 1):
+        child = m.levels[k + 1]
+        expected = np.array(
+            [(child.parent == c).sum() for c in range(len(m.levels[k].mean))]
+        )
+        np.testing.assert_array_equal(counts[k], expected)
+    np.testing.assert_array_equal(counts[-1], np.zeros(len(m.levels[-1].mean)))
+
+
+def test_diversity_weight_matches_the_kneser_ney_lambda():
+    """lambda = min(D*C/N, 1) on the parent, applied against the *shrunk*
+    parent exactly as the count rule is."""
+    cfg = simple_config(
+        max_wl_depth=3, shrinkage_strength=0.5, shrinkage_weight="diversity"
+    )
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(b, cfg)
+    sh = shrunk_means(m)
+    means, counts = class_means(m), child_counts(m)
+    for k in range(1, len(m.levels)):
+        lvl = m.levels[k]
+        n = lvl.count[:, None].astype(float)
+        lam = np.minimum(0.5 * counts[k][:, None] / np.maximum(n, 1.0), 1.0)
+        expected = (1 - lam) * means[k] + lam * sh[k - 1][lvl.parent]
+        np.testing.assert_allclose(sh[k], expected, rtol=1e-12)
+
+
+def test_diversity_weight_leaves_the_deepest_level_unshrunk():
+    """C == 0 there, so lambda == 0 -- the deepest class is the only one read
+    on an exact match rather than by backoff."""
+    cfg = simple_config(
+        max_wl_depth=3, shrinkage_strength=2.0, shrinkage_weight="diversity"
+    )
+    m = sieve.fit(chain_batch(20, graphs=4), cfg)
+    np.testing.assert_allclose(shrunk_means(m)[-1], class_means(m)[-1])
+
+
+def test_search_agrees_with_shrunk_means_under_diversity_weighting():
+    """Same change-consistency guard as the count rule: predict.py's own
+    per-node path and shrunk_means must not drift apart."""
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_strength=0.5,
+        shrinkage_weight="diversity",
+    )
+    b = chain_batch(20, graphs=4)
+    m = sieve.fit(b, cfg)
+    det = sieve.predict_detailed(m, b)
+    shrunk = shrunk_means(m)
+    for pos, k in enumerate(cfg.backoff_path):
+        sel = det.matched_level == pos
+        if sel.any():
+            np.testing.assert_allclose(det.value[sel], shrunk[k][det.class_id[sel]])
+
+
+def test_predict_loo_rejects_recursive_and_diversity():
+    b = chain_batch(20, graphs=4)
+    for kw in (
+        {"class_estimator": "continuation_recursive"},
+        {"shrinkage_weight": "diversity", "shrinkage_strength": 0.5},
+    ):
+        m = sieve.fit(b, simple_config(max_wl_depth=3, **kw))
+        try:
+            sieve.predict_loo(m, b)
+        except NotImplementedError:
+            pass
+        else:
+            raise AssertionError(f"expected NotImplementedError for {kw}")
