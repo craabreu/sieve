@@ -104,7 +104,16 @@ def _package_versions() -> dict[str, str]:
 
 def _run_name(cfg: ExperimentCfg) -> str:
     d = cfg.data
-    return f"{cfg.predictor.name}-{d.store}-s{cfg.run.seed}"
+    name = f"{cfg.predictor.name}-{d.store}-s{cfg.run.seed}"
+    if cfg.run.batch_id is not None:
+        # Prefixed, not appended: every run in a batch then shares one
+        # sorts-and-greps-together prefix regardless of what predictor/
+        # store/seed varies between them (e.g. one predictor run per fold
+        # of a partition-store split) -- feeds the run directory name,
+        # MLflow's own run_name, and manifest.json's "run_name" all at
+        # once, since all three call this function.
+        name = f"{cfg.run.batch_id}__{name}"
+    return name
 
 
 def _savez_run(path: Path, test: MoleculeSet, pred: Prediction, /) -> None:
@@ -138,10 +147,21 @@ def execute(
     *,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     allow_dirty: bool = False,
-    tracking: str | None = DEFAULT_TRACKING_URI,
+    tracking: str | None = None,
     data_seconds: float = 0.0,
 ) -> RunResult:
-    """Run the pipeline against an already-loaded ``mset``/``masks``."""
+    """Run the pipeline against an already-loaded ``mset``/``masks``.
+
+    ``tracking`` defaults to ``None`` (no MLflow record) -- every real
+    analysis this series has produced came from ``sweep``/``summarize``
+    reading ``manifest.json``/``metrics.json`` directly off disk, never
+    from MLflow, while MLflow's own artifact duplication
+    (``mlflow.log_artifacts`` copies every file a run writes) has twice
+    caused real disk-usage incidents on this shared machine. Pass
+    ``DEFAULT_TRACKING_URI`` explicitly (or ``--track`` on the CLI) to opt
+    back in for a given run; ``promote_run`` is unaffected -- logging to
+    MLflow is its entire purpose, so its own default still points at the
+    real tracking URI."""
     git_info = _git_info(REPO_ROOT)
     if git_info["dirty"] and not allow_dirty:
         raise RuntimeError(
@@ -564,6 +584,7 @@ def _log_mlflow(
         "store": cfg.data.store,
         "seed": str(cfg.run.seed),
         "run_dir": str(run_dir),
+        **({"batch_id": cfg.run.batch_id} if cfg.run.batch_id is not None else {}),
         **{f"tag.{k}": v for k, v in cfg.run.tags.items()},
     }
     with mlflow.start_run(run_name=_run_name(cfg)):
@@ -595,11 +616,12 @@ def promote_run(
 
     Two situations this covers, both real:
 
-    - ``target_experiment=None`` (the back-fill case): a run executed with
-      ``--no-tracking``, or one whose own MLflow logging step crashed
-      *after* local artifacts were already written -- e.g. the
-      sqlite-migration race ``_ensure_experiment`` now retries against.
-      Logs under the run's own ``config.run.experiment``, in place.
+    - ``target_experiment=None`` (the back-fill case): a run executed
+      without ``--track`` (the default, untracked), or one whose own
+      MLflow logging step crashed *after* local artifacts were already
+      written -- e.g. the sqlite-migration race ``_ensure_experiment`` now
+      retries against. Logs under the run's own ``config.run.experiment``,
+      in place.
     - ``target_experiment`` set (the exploration -> baseline case): moves
       ``run_dir`` from ``runs_root/<old>/<name>`` to
       ``runs_root/<target_experiment>/<name>`` first, then logs there
@@ -610,9 +632,15 @@ def promote_run(
     Idempotent either way: an MLflow run already carrying this run_dir's
     own final path as its ``"run_dir"`` tag (the same tag ``_log_mlflow``
     always sets) is left alone -- ``PromoteResult.logged`` is ``False``,
-    nothing is re-logged or moved again.
+    nothing is re-logged or moved again. Resolved to an absolute path
+    first specifically to make that comparison reliable regardless of
+    what form the caller passed: ``execute()`` always logs the tag as an
+    absolute path (``run_dir`` is built from ``DEFAULT_RUNS_ROOT``, itself
+    absolute), so a relative ``run_dir`` argument here would otherwise
+    never match an already-tracked run's own tag and silently create a
+    duplicate MLflow record on every call instead of no-op'ing.
     """
-    run_dir = Path(run_dir)
+    run_dir = Path(run_dir).resolve()
     config_path = run_dir / "config.resolved.yaml"
     metrics_path = run_dir / "metrics.json"
     if not config_path.exists() or not metrics_path.exists():
@@ -703,10 +731,11 @@ def run(
     *,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     allow_dirty: bool = False,
-    tracking: str | None = DEFAULT_TRACKING_URI,
+    tracking: str | None = None,
     limit: int | None = None,
 ) -> RunResult:
-    """Load the real store, then run the pipeline (see ``execute``)."""
+    """Load the real store, then run the pipeline (see ``execute``, whose
+    own docstring covers why ``tracking`` defaults to ``None``)."""
     t0 = time.perf_counter()
     mset, masks = load_molecule_set(
         cfg.data.store,

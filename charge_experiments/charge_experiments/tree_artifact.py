@@ -9,7 +9,9 @@ produces it -- see ``DASHChargePredictor.save_model_state``/
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import reduce
 from pathlib import Path
 from typing import Any
 
@@ -91,6 +93,87 @@ def compute_node_stats(
         std=std_arr,
         count=count_arr,
     )
+
+
+def merge_node_stats(a: TreeNodeStats, b: TreeNodeStats) -> TreeNodeStats:
+    """Combine two independently computed ``TreeNodeStats`` into exactly
+    what ``compute_node_stats`` would have produced fitting the union of
+    their two atom sets directly -- verified in
+    ``test_merge_node_stats_matches_computing_on_the_union_directly``.
+
+    Uses the same parallel mean/variance combination (Chan et al.) that
+    ``sieve.merge`` already relies on for its own class statistics
+    (``merge.py``'s ``merge_level``/``merge_models``, ``msd[i] = wA *
+    msd[i] + wB * b.msd + wA * wB * delta * delta``) -- exact, not an
+    approximation, in exact arithmetic; the usual floating-point summation-
+    order noise applies same as any running-variance algorithm.
+
+    Unlike ``sieve``'s own class ids -- dynamically discovered per shard,
+    so its own merge needs to remap one shard's ids into the other's
+    before combining -- DASH-tree's ``(branch_idx, node_id)`` keys come
+    from the externally published tree topology, identical across every
+    shard by construction. So this is a plain outer join on that key: a
+    node populated only in ``a`` or only in ``b`` passes through
+    unchanged; a node populated in both gets its ``(count, mean, std)``
+    combined exactly, no remapping needed at all.
+    """
+    combined: dict[PathKey, tuple[int, float, float]] = {}
+    for branch_idx, node_id, count, mean, std in zip(
+        a.branch_idx, a.node_id, a.count, a.mean, a.std, strict=True
+    ):
+        combined[(int(branch_idx), int(node_id))] = (
+            int(count),
+            float(mean),
+            float(std) ** 2,
+        )
+
+    for branch_idx, node_id, n_b, mean_b, std_b in zip(
+        b.branch_idx, b.node_id, b.count, b.mean, b.std, strict=True
+    ):
+        key = (int(branch_idx), int(node_id))
+        n_b, mean_b, var_b = int(n_b), float(mean_b), float(std_b) ** 2
+        if key in combined:
+            n_a, mean_a, var_a = combined[key]
+            n = n_a + n_b
+            w_a, w_b = n_a / n, n_b / n
+            delta = mean_b - mean_a
+            combined[key] = (
+                n,
+                mean_a + w_b * delta,
+                w_a * var_a + w_b * var_b + w_a * w_b * delta * delta,
+            )
+        else:
+            combined[key] = (n_b, mean_b, var_b)
+
+    keys = list(combined)
+    return TreeNodeStats(
+        branch_idx=np.array([k[0] for k in keys], dtype=np.int64),
+        node_id=np.array([k[1] for k in keys], dtype=np.int64),
+        mean=np.array([combined[k][1] for k in keys], dtype=np.float64),
+        std=np.sqrt(np.array([combined[k][2] for k in keys], dtype=np.float64)),
+        count=np.array([combined[k][0] for k in keys], dtype=np.int64),
+    )
+
+
+def fold_node_stats(shards: Iterable[TreeNodeStats]) -> TreeNodeStats:
+    """``merge_node_stats`` over any number of shards -- the direct answer
+    to "recover a K'-fold result from a K-fold partition (K' < K) by
+    merging the shards back together," e.g. 5-fold from a 10-fold
+    partition. A single shard is returned unchanged; at least one is
+    required (there is no meaningful "empty" ``TreeNodeStats``, unlike
+    ``sieve.merge.fold``'s ``SieveModel.empty()`` identity -- this module
+    has no equivalent zero element to fall back to).
+
+    Left-to-right reduction, not ``sieve.merge.fold``'s balanced-tree
+    pairing: that optimization earns its complexity at large shard counts
+    (its own docstring: O(N^2) sequential vs O(N log N) paired), but the
+    partitions this module merges are counted in single/low-double digits
+    (a 5- or 10-way split of one store), where the difference is noise.
+    """
+    shards = list(shards)
+    if not shards:
+        raise ValueError("fold_node_stats requires at least one shard")
+    return reduce(merge_node_stats, shards)
 
 
 def save_node_stats(stats: TreeNodeStats, path: str | Path) -> None:

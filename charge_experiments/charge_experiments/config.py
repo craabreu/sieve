@@ -5,9 +5,12 @@ specific additions: an optional top-level `normalization` key (a name from
 ``ExperimentCfg.normalization``'s own docstring and runner.py's `_predict`
 -- and an optional `tree_stats_load_path` key to skip `fit()` in favor of
 an earlier run's own saved model state -- see
-``ExperimentCfg.tree_stats_load_path``'s own docstring. There is exactly
-one valid split column (`split` -- this series builds no size-biased
-second split, per the design spec's "Out of scope" list)."""
+``ExperimentCfg.tree_stats_load_path``'s own docstring. `run.batch_id`
+groups several runs launched together as one sweep into a shared,
+greppable run-directory prefix -- see ``RunCfg.batch_id``'s own
+docstring. There is exactly one valid split column (`split` -- this
+series builds no size-biased second split, per the design spec's
+"Out of scope" list)."""
 
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from charge_experiments.normalize import NORMALIZERS
 
 VALID_SPLIT_COLUMNS = ("split",)
 
-_RUN_KEYS = {"experiment", "seed", "tags"}
+_RUN_KEYS = {"experiment", "seed", "tags", "batch_id"}
 _DATA_KEYS = {"store", "split_column", "train_split", "val_split", "eval_split"}
 _PREDICTOR_KEYS = {"name", "params"}
 _TOP_KEYS = {
@@ -41,6 +44,16 @@ class RunCfg:
     experiment: str
     seed: int
     tags: Mapping[str, str] = field(default_factory=dict)
+    batch_id: str | None = None
+    """Groups several independent runs (e.g. one per fold of a
+    ``partition-store`` split) that were launched together as one logical
+    sweep -- distinct from ``experiment``, which is a broad, reused
+    category (``dash-charges``), not a specific sweep instance: the same
+    experiment accumulates many unrelated batches over time. When set,
+    prefixes the run directory name (``runner._run_name``) so every run in
+    a batch sorts and greps together regardless of when each one finished,
+    and is also logged as an MLflow tag. ``None`` (the default) leaves
+    run-directory naming exactly as before."""
 
 
 @dataclass(frozen=True)
@@ -146,6 +159,7 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
         experiment=run_raw["experiment"],
         seed=run_raw["seed"],
         tags=dict(run_raw.get("tags", {})),
+        batch_id=run_raw.get("batch_id"),
     )
 
     data_raw = raw["data"]
@@ -210,6 +224,7 @@ def to_dict(cfg: ExperimentCfg) -> dict[str, Any]:
             "experiment": cfg.run.experiment,
             "seed": cfg.run.seed,
             "tags": dict(cfg.run.tags),
+            "batch_id": cfg.run.batch_id,
         },
         "data": {
             "store": cfg.data.store,
@@ -229,6 +244,7 @@ def to_flat_params(cfg: ExperimentCfg) -> dict[str, str]:
     """Flatten a config to dot-separated string params, for MLflow logging."""
     out: dict[str, str] = {}
     _flatten("run", {"experiment": cfg.run.experiment, "seed": cfg.run.seed}, out)
+    _flatten("run.batch_id", cfg.run.batch_id, out)
     for k, v in cfg.run.tags.items():
         out[f"run.tags.{k}"] = str(v)
     _flatten(
