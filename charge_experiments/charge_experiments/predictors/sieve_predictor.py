@@ -59,7 +59,7 @@ def _build_config(
     minimum_support: int,
     shrinkage_strength: float | None,
     class_estimator: str = "pooled",
-    shrinkage_weight: str = "count",
+    shrinkage_weight: str | None = None,
     n_jobs: int | None = None,
 ) -> Any:
     """Learn ``attribute_codes``/``edge_codes`` from the training corpus and
@@ -169,11 +169,13 @@ class SievePredictor:
         minimum_support: int = 1,
         shrinkage_strength: float | None = None,
         class_estimator: str = "pooled",
-        shrinkage_weight: str = "count",
+        shrinkage_weight: str | None = None,
         n_jobs: int | None = None,
         report_loo: bool = False,
     ) -> None:
-        if report_loo and (class_estimator != "pooled" or shrinkage_weight != "count"):
+        if report_loo and (
+            class_estimator != "pooled" or shrinkage_weight not in (None, "count")
+        ):
             raise ValueError(
                 "report_loo=True is not supported with "
                 f"class_estimator={class_estimator!r}/"

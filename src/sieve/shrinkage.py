@@ -84,8 +84,8 @@ def shrunk_means(model) -> list[np.ndarray]:
     shrinkage_strength = cfg.shrinkage_strength
     parents = cfg.level_parents
     means = class_means(model)
-    diversity = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
-    eb = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
+    diversity = cfg.effective_shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
+    eb = cfg.effective_shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
     applies = cfg.applies_shrinkage
     counts = child_counts(model) if (diversity or eb) else None
     eb_w = empirical_bayes_weights(model) if eb else None

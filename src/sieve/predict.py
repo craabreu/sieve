@@ -80,13 +80,13 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         raise NotImplementedError(
             f"predict_loo does not yet support class_estimator={cfg.class_estimator!r}"
         )
-    if loo_y is not None and cfg.shrinkage_weight != SHRINKAGE_WEIGHT_COUNT:
+    if loo_y is not None and cfg.effective_shrinkage_weight != SHRINKAGE_WEIGHT_COUNT:
         # lambda is built from the matched class's own C and N, both of which
         # the held-out node contributes to; correcting it needs the same child
         # identity predict_loo already lacks for continuation.
         raise NotImplementedError(
             f"predict_loo does not yet support "
-            f"shrinkage_weight={cfg.shrinkage_weight!r}"
+            f"shrinkage_weight={cfg.effective_shrinkage_weight!r}"
         )
     n, d = batch.n_nodes, cfg.target_dim
     query = refine(batch, cfg)
@@ -193,8 +193,8 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         # the class-indexed shrunk value *is* the answer. LOO is refused for
         # that mode above, which is what makes reading it directly safe here.
         shrunk = shrunk_means(model)
-        diversity = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
-        eb = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
+        diversity = cfg.effective_shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
+        eb = cfg.effective_shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
         counts = child_counts(model) if diversity else None
         eb_w = empirical_bayes_weights(model) if eb else None
         for k in backoff_path:
