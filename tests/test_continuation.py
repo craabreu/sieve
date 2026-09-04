@@ -226,3 +226,133 @@ def test_predict_loo_rejects_recursive_and_diversity():
             pass
         else:
             raise AssertionError(f"expected NotImplementedError for {kw}")
+
+
+def test_empirical_bayes_weight_matches_the_hand_derived_posterior():
+    """Non-deepest: C/(C+tau2_k/tau2_parent). Deepest: N/(N+sigma2/tau2_parent)
+    -- two estimands, two units of replication (design.md 4.4)."""
+    from sieve.continuation import atom_variance, root_variance, sibling_variance
+    from sieve.shrinkage import empirical_bayes_weights
+
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    m = sieve.fit(chain_batch(20, graphs=4), cfg)
+    w = empirical_bayes_weights(m)
+    tau, sigma, counts = sibling_variance(m), atom_variance(m), child_counts(m)
+    root, parents = root_variance(m), cfg.level_parents
+
+    for k, lvl in enumerate(m.levels):
+        tp = root if parents[k] < 0 else tau[parents[k]]
+        if tp != tp or tp <= 0:
+            continue  # nan/zero branches asserted separately below
+        n, c = lvl.count.astype(float), counts[k]
+        num = np.where(c > 0, tau[k], sigma[k])
+        size = np.where(c > 0, c, n)
+        expected = size / (size + np.where(num == num, num / tp, 0.0))
+        np.testing.assert_allclose(w[k], expected, rtol=1e-12)
+
+
+def test_empirical_bayes_ignores_shrinkage_strength():
+    """alpha is estimated -- sweeping the knob must do nothing, which is the
+    whole point of the mode."""
+    b = chain_batch(20, graphs=4)
+    vals = []
+    for strength in (None, 0.5, 100.0):
+        cfg = simple_config(
+            max_wl_depth=3,
+            class_estimator="continuation",
+            shrinkage_weight="empirical_bayes",
+            shrinkage_strength=strength,
+        )
+        vals.append(sieve.predict(sieve.fit(b, cfg), b))
+    np.testing.assert_array_equal(vals[0], vals[1])
+    np.testing.assert_array_equal(vals[0], vals[2])
+
+
+def testempirical_bayes_weights_are_valid_probabilities():
+    b = chain_batch(20, graphs=4)
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    from sieve.shrinkage import empirical_bayes_weights
+
+    for w in empirical_bayes_weights(sieve.fit(b, cfg)):
+        assert np.all(np.isfinite(w)) and np.all((w >= 0) & (w <= 1))
+
+
+def test_sibling_variance_is_nan_at_the_deepest_level():
+    from sieve.continuation import sibling_variance
+
+    m = sieve.fit(chain_batch(20, graphs=4), simple_config(max_wl_depth=3))
+    assert np.isnan(sibling_variance(m)[-1])
+
+
+def test_diversity_without_a_strength_does_not_crash_and_does_not_shrink():
+    """Regression: predict._search and shrunk_means must agree on *whether*
+    shrinkage applies. Widening one guard without the other made this config
+    -- a non-count weight with the default shrinkage_strength=None -- raise a
+    TypeError in predict while shrunk_means quietly skipped shrinkage."""
+    b = chain_batch(20, graphs=4)
+    shrunk_cfg = simple_config(max_wl_depth=3, shrinkage_weight="diversity")
+    plain = simple_config(max_wl_depth=3)
+    assert shrunk_cfg.applies_shrinkage is False
+    np.testing.assert_array_equal(
+        sieve.predict(sieve.fit(b, shrunk_cfg), b),
+        sieve.predict(sieve.fit(b, plain), b),
+    )
+
+
+def test_empirical_bayes_is_active_without_a_strength():
+    """The mirror of the above: alpha is estimated, so EB must apply even
+    though shrinkage_strength is None."""
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    assert cfg.applies_shrinkage is True
+    b = chain_batch(20, graphs=4)
+    plain = simple_config(max_wl_depth=3, class_estimator="continuation")
+    assert not np.allclose(
+        sieve.predict(sieve.fit(b, cfg), b),
+        sieve.predict(sieve.fit(b, plain), b),
+    )
+
+
+def test_empirical_bayes_uses_every_target_dimension():
+    """Regression: the tau^2 estimators once read column 0 only, so a vector
+    target's shrinkage ignored every dimension but the first -- silently, and
+    exactly where it matters most (design.md 9.2's own example is
+    target_dim=50)."""
+    from sieve.batch import NodeBatch
+    from sieve.continuation import sibling_variance
+
+    cfg = simple_config(max_wl_depth=3, target_dim=4)
+    b = chain_batch(20, graphs=4, d=4)
+    base = sibling_variance(sieve.fit(b, cfg))
+    y = b.y.copy()
+    y[:, 3] *= 1000.0
+    scaled = sibling_variance(sieve.fit(NodeBatch(**{**b.__dict__, "y": y}), cfg))
+    assert any(
+        (x == x) and (z == z) and not np.isclose(x, z)
+        for x, z in zip(base, scaled, strict=True)
+    ), "scaling a non-zero target dimension must move tau^2"
+
+
+def test_empirical_bayes_reports_its_estimated_weight():
+    """Under EB the weight varies for a reason other than support, which
+    makes it the one mode where the diagnostic is worth carrying."""
+    cfg = simple_config(
+        max_wl_depth=3,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    b = chain_batch(20, graphs=4)
+    det = sieve.predict_detailed(sieve.fit(b, cfg), b)
+    w = det.shrinkage_weight
+    assert w is not None and np.all(np.isfinite(w)) and np.all((w >= 0) & (w <= 1))

@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from sieve.config import SHRINKAGE_WEIGHT_DIVERSITY
-from sieve.continuation import child_counts, class_means
+from sieve.config import (
+    SHRINKAGE_WEIGHT_DIVERSITY,
+    SHRINKAGE_WEIGHT_EMPIRICAL_BAYES,
+)
+from sieve.continuation import (
+    atom_variance,
+    child_counts,
+    class_means,
+    root_variance,
+    sibling_variance,
+)
 
 
 def shrunk_means(model) -> list[np.ndarray]:
@@ -76,7 +85,10 @@ def shrunk_means(model) -> list[np.ndarray]:
     parents = cfg.level_parents
     means = class_means(model)
     diversity = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
-    counts = child_counts(model) if diversity else None
+    eb = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
+    applies = cfg.applies_shrinkage
+    counts = child_counts(model) if (diversity or eb) else None
+    eb_w = empirical_bayes_weights(model) if eb else None
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
         n = lvl.count[:, None].astype(np.float64)
@@ -87,7 +99,12 @@ def shrunk_means(model) -> list[np.ndarray]:
             if p < 0
             else out[p][lvl.parent]
         )
-        if shrinkage_strength is None or shrinkage_strength == 0.0:
+        if eb:
+            # alpha is estimated, so shrinkage_strength plays no part -- there
+            # is no "off" setting to check for here.
+            w = eb_w[k][:, None]
+            out.append(np.where(n > 0, w * raw + (1.0 - w) * parent_est, parent_est))
+        elif not applies:
             out.append(np.where(n > 0, raw, parent_est))
         elif diversity:
             # KN's lambda: weight on the parent grows with the number of
@@ -104,4 +121,51 @@ def shrunk_means(model) -> list[np.ndarray]:
             out.append(
                 (n * raw + shrinkage_strength * parent_est) / (n + shrinkage_strength)
             )
+    return out
+
+
+def empirical_bayes_weights(model) -> list[np.ndarray]:
+    r"""Per-class weight on a class's *own* estimate under
+    ``shrinkage_weight="empirical_bayes"``.
+
+    Two cases, because the estimand differs (design.md 4.4):
+
+    - **Non-deepest class** under continuation: it estimates its typical
+      child's mean, whose unit of replication is the child, so the
+      normal-normal posterior weight is $C/(C+\alpha_k)$ with
+      $\alpha_k=\hat\tau^2_k/\hat\tau^2_{k-1}$.
+    - **Deepest class**: no children, so it estimates its own pooled mean and
+      ordinary atom-level EB applies -- $N/(N+\bar\sigma^2/\hat\tau^2_{k-1})$,
+      exactly Morris's original with $\alpha$ estimated rather than swept.
+
+    $\hat\tau^2_{k-1}=0$ means the parent's children are indistinguishable,
+    so $\alpha=\infty$ and the class is shrunk fully -- the reading
+    design.md 13 item 9 gives that clamp. A non-estimable $\hat\tau^2$
+    (``nan``, no level has two siblings anywhere) falls back to no shrinkage,
+    which is what the level would do with no evidence to shrink on.
+    """
+    parents = model.config.level_parents
+    tau = sibling_variance(model)
+    sigma = atom_variance(model)
+    counts = child_counts(model)
+    root = root_variance(model)
+
+    out: list[np.ndarray] = []
+    for k, lvl in enumerate(model.levels):
+        p = parents[k]
+        tau_parent = root if p < 0 else tau[p]
+        n = lvl.count.astype(np.float64)
+        c = counts[k]
+        # numerator: the class's own scale -- sibling spread where it has
+        # children, atom-level noise where it does not.
+        num = np.where(c > 0, tau[k] if tau[k] == tau[k] else np.nan, sigma[k])
+        size = np.where(c > 0, c, n)
+        if tau_parent != tau_parent:  # nan: nothing to shrink toward
+            out.append(np.ones(len(n)))
+            continue
+        if tau_parent <= 0.0:
+            out.append(np.zeros(len(n)))  # alpha -> inf: shrink fully
+            continue
+        alpha = np.where(num == num, num / tau_parent, 0.0)
+        out.append(size / (size + alpha))
     return out

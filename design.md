@@ -508,6 +508,7 @@ Against flat continuation without shrinkage, on DASH charges (element, depth 6, 
 | diversity, $D=0.3$ | +0.000028 | 5.5 | 10/10 |
 | diversity, $D=0.75$ | **−0.000336** | −23.4 | 0/10 |
 | recursive continuation, no shrinkage | −0.000001 | −0.7 | 3/10 |
+| **empirical Bayes** (no knob) | **+0.000105** | **21.7** | **10/10** |
 
 Three things that experiment settles. **Kneser–Ney's own $\lambda=D\,C/N$ is worse than the count
 rule here**, and actively harmful at the discount the literature recommends. **The recursive
@@ -517,22 +518,35 @@ costs nothing despite being the simplification. And **fixing the interpolation t
 interpolation**: shrinkage adds ~+0.00008 whether it blends toward pooled means or continuation
 ones, so the two corrections are independent and additive rather than the second enabling the first.
 
-The standing configuration is therefore flat continuation with count-weighted shrinkage at
-$\alpha\approx0.5$: $0.98987 \rightarrow 0.99056$, of which continuation is $+0.0006$ and shrinkage
-$+0.00008$.
+**Where $C$ actually belonged.** The failure of $\lambda$ was never evidence that $C$ is the wrong
+statistic — only that multiplying the parent's weight by it is the wrong functional form. Under
+continuation the estimand is no longer the class's atom-weighted mean but its *typical child* mean,
+$m_{k,c}$, for which the unit of replication is the child rather than the atom. Writing the
+normal–normal model at that level, $\bar y_{k+1,c'}\mid m_{k,c}\sim N(m_{k,c},\ \tau^2_{k,c})$ over
+the $C$ children, the posterior mean puts weight $C/(C+\alpha_k)$ on the class's own continuation
+estimate with $\alpha_k=\hat\tau^2_k/\hat\tau^2_{k-1}$ — the same Morris estimator as §13 item 9,
+but with $C$ as the effective sample size and a variance ratio taken between *sibling* means rather
+than between atoms. The deepest class has no children, so it estimates its own pooled mean and
+ordinary atom-level EB applies there, $N/(N+\bar\sigma^2/\hat\tau^2_{k-1})$: two estimands, two
+units of replication. Every term is computable from what §4.1 already stores, so it needs no new
+state, and $\hat\tau^2$ is pooled per level because at $C=2$–3 a per-class variance carries 1–2
+degrees of freedom and is mostly noise.
 
-**What the failure of $\lambda$ does not show.** It does not show that $C$ is the wrong statistic —
-only that multiplying $\lambda$ by it is the wrong functional form. Under continuation the estimand
-is no longer the class's atom-weighted mean but its *typical child* mean, $m_{k,c}$, for which the
-unit of replication is the child rather than the atom. Writing the normal–normal model at that level,
-$\bar y_{k+1,c'}\mid m_{k,c}\sim N(m_{k,c},\ \tau^2_{k,c})$ over the $C$ children, the posterior mean
-puts weight $C/(C+\alpha^{\mathrm{cont}})$ on the class's own continuation estimate with
-$\alpha^{\mathrm{cont}}=\tau^2_{k,c}/\tau^2_{k-1}$ — the same Morris estimator as §13 item 9, but
-with $C$ as the effective sample size and a variance ratio taken between *sibling* means rather than
-between atoms. Every term is computable from what §4.1 already stores (each child's $N$, $\bar y$
-and $\sigma^2$), so it needs no new state. Untested, and worth noting that $C \ll N$ makes it shrink
-far harder than the count rule at equal $\alpha$ — which is the direction that measured *worse*
-above, unless $\tau^2_{k,c}/\tau^2_{k-1}$ is correspondingly small.
+**That is `shrinkage_weight="empirical_bayes"`, and it wins.** +0.000105 against flat continuation
+without shrinkage (t=21.7, 10/10 folds), beating the hand-swept count rule by +0.000024 (t=16.6,
+10/10) *while removing the hyperparameter*. It is the only one of the three literature-derived
+refinements tried here that improved on the baseline it was designed against.
+
+A prediction recorded before the run was wrong in an instructive direction: $C \ll N$ was expected to
+make EB shrink far harder than the count rule, which is the direction that measured worse. It does
+not, because $\hat\tau^2$ falls steeply with depth — a class's children are far more alike than
+classes are at the level above — so $\alpha_k$ comes out at 0.035–0.11 and the weights land at
+0.97–0.998, *lighter* than the count rule. Small $C$ and small $\alpha$ cancel.
+
+The standing configuration is therefore flat continuation with empirical-Bayes shrinkage:
+$0.98987 \rightarrow 0.99058$, of which continuation is $+0.00061$ and shrinkage $+0.00011$.
+`"count"` remains the *default* only because changing it would alter behavior for anyone setting
+`shrinkage_strength`.
 
 **What the name does and does not denote.** "Continuation" here is Kneser–Ney's type-counting
 correction — count each distinct child once rather than in proportion to its population
