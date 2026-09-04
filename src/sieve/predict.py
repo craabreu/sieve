@@ -212,9 +212,11 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
                     # weight is itself the interesting diagnostic here, since
                     # it is the only mode where it varies for a reason other
                     # than support.
+                    assert eb_w is not None  # set iff `eb`
                     value[sel] = shrunk[k][class_id[sel]]
                     weight[sel] = eb_w[k][class_id[sel]]
                 elif diversity:
+                    assert counts is not None  # set iff `diversity`
                     cls_n = model.levels[k].count[class_id[sel]].astype(np.float64)
                     lam = np.minimum(
                         cfg.shrinkage_strength

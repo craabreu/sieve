@@ -87,7 +87,7 @@ def shrunk_means(model) -> list[np.ndarray]:
     diversity = cfg.effective_shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
     eb = cfg.effective_shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
     applies = cfg.applies_shrinkage
-    counts = child_counts(model) if (diversity or eb) else None
+    counts = child_counts(model) if diversity else None
     eb_w = empirical_bayes_weights(model) if eb else None
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
@@ -102,6 +102,7 @@ def shrunk_means(model) -> list[np.ndarray]:
         if eb:
             # alpha is estimated, so shrinkage_strength plays no part -- there
             # is no "off" setting to check for here.
+            assert eb_w is not None  # set iff `eb`; the checker cannot see that
             w = eb_w[k][:, None]
             out.append(np.where(n > 0, w * raw + (1.0 - w) * parent_est, parent_est))
         elif not applies:
@@ -111,6 +112,7 @@ def shrunk_means(model) -> list[np.ndarray]:
             # distinct children per atom. Clipped at 1 -- C > N/alpha is
             # possible for a small, highly fragmented class, and beyond that
             # the class contributes nothing of its own.
+            assert counts is not None  # set iff `diversity`
             lam = np.minimum(
                 shrinkage_strength * counts[k][:, None] / np.maximum(n, 1.0), 1.0
             )
