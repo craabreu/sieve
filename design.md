@@ -419,6 +419,11 @@ means do not.
 
 ### 4.3 Variance shrinkage
 
+> **Superseded — see design-update-v2.md §2, §3.** This section predates §4.4 and was never
+> implemented: there is no $\alpha^v$ and no $\tilde\sigma^2$ in the code. §6.4's only real
+> requirement is *relative* variance, which a level-pooled approximation meets without this
+> recursion.
+
 A class variance estimated from a handful of members is barely better than no estimate at all: at
 $N=2$ the sample variance has roughly 100% relative error, and at $N=1$ it does not exist (§4.1
 returns NaN there, deliberately, so a stored zero cannot be mistaken for observed homogeneity).
@@ -782,6 +787,11 @@ half a level shallower for four-and-a-half times the support. That is the trade 
 and it is why the default should not be 1.
 
 ### 6.4 Constrained prediction
+
+> **Partly superseded — see design-update-v2.md §1, §3.** This section predates §4.4. The EEM
+> correspondence and the algebra stand as written; the claim that $\mu_i$ and
+> $\sigma^2_{\text{pred},i}$ are the moments of one coherent distribution holds only under
+> `class_estimator="pooled"`.
 
 Sieve predicts each node independently, so nothing makes a group of nodes respect a property of the
 group. Partial charges are the motivating case: a conformer's atomic charges must sum to its formal
@@ -1379,6 +1389,8 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    than reduce it; being the MLE of an idealized model does not settle it. `charge_experiments`'
    `NORMALIZERS` registry and nested-run machinery already apply several schemes to one set of raw
    predictions, so this is a three-way comparison on identical inputs, not three separate runs.
+   **The "only $\sigma^2$ has a derivation" premise lapses under §4.4's continuation estimator and
+   is restored by design-update-v2.md §3, which also names a cheaper diagnostic to run first.**
 9. **How $\alpha$ (§4.2) and $\alpha^v$ (§4.3) should be set.** Both admit systematic treatment, by
    different routes, and both are inference-time parameters — so a whole sweep costs one fit.
    - $\alpha$ has a closed form. Sieve's weight $N/(N+\alpha)$ *is* the normal–normal hierarchical
