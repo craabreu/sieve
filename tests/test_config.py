@@ -88,6 +88,16 @@ def test_empty_attribute_group_is_rejected():
         base(attribute_levels=(("element",), ()))
 
 
+def test_class_estimator_rejects_an_unknown_value():
+    with pytest.raises(ValueError, match="class_estimator"):
+        base(class_estimator="median")
+
+
+def test_class_estimator_defaults_to_pooled_and_is_excluded_from_schema_version():
+    assert base().class_estimator == "pooled"
+    assert base().schema_version == base(class_estimator="continuation").schema_version
+
+
 def test_edge_radices_and_n_edge_types_are_a_product_over_attributes():
     """n_edge_types is the size of the collapsed edge alphabet. Each attribute
     contributes its vocabulary plus one reserved unknown code, and the

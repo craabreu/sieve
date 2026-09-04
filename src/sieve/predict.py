@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from sieve.batch import NodeBatch
-from sieve.config import LEVEL_WL
+from sieve.config import CLASS_ESTIMATOR_CONTINUATION, LEVEL_WL
+from sieve.continuation import class_means
 from sieve.merge import _lookup_rows as _lookup
 from sieve.merge import _translate
 from sieve.refine import refine
@@ -20,6 +21,11 @@ class Predictions:
     These are diagnostics, not calibrated uncertainties: the triple
     (matched_level, support, variance) says how specific the environment was,
     how much support it had, and how heterogeneous its labels were.
+
+    Under ``cfg.class_estimator == "continuation"`` (design.md 4.4), `value`
+    at a non-deepest level is the unweighted mean of the matched class's
+    *children* -- `support`/`variance` still describe the matched class's
+    own pooled population, not the children averaged into `value`.
     """
 
     value: np.ndarray  # (n, d)
@@ -51,11 +57,27 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     on the returned ``Predictions`` reports *position along that path*, not
     the raw level index, so it stays comparable across different
     ``neighbor_depth`` settings (reduces to the raw index when unset).
+
+    ``cfg.class_estimator == "continuation"`` is not yet supported under LOO
+    (``loo_y`` set): the LOO correction needs the held-out node's own child
+    class identity, which this loop does not currently retain across
+    iterations. Deliberate scope cut, not a structural limitation -- the
+    correction has a closed form and the information is one array away
+    (each node's child ``cid`` is already computed the iteration before it
+    drops out of ``alive``); left out because the continuation experiment
+    this exists for does not exercise ``predict_loo``. A caller reaches this
+    almost certainly by way of ``report_loo``, which should raise earlier
+    still -- see ``charge_experiments``' ``SievePredictor.__init__``.
     """
     cfg = model.config
+    if loo_y is not None and cfg.class_estimator == CLASS_ESTIMATOR_CONTINUATION:
+        raise NotImplementedError(
+            "predict_loo does not yet support class_estimator='continuation'"
+        )
     n, d = batch.n_nodes, cfg.target_dim
     query = refine(batch, cfg)
 
+    means = class_means(model)
     kinds = cfg.level_kinds
     parents = cfg.level_parents
     neighbor_src = cfg.neighbor_source
@@ -99,12 +121,15 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         if ok.any():
             cnt = lvl.count[cid[ok]].astype(np.float64)
             if loo_y is None:
-                est_ok = lvl.mean[cid[ok]]
+                est_ok = means[k][cid[ok]]
                 eff_n = cnt
             else:
                 eff_n = cnt - 1.0
                 # N == 1 leaves nothing behind: treat as unsupported and let
                 # the search back off to the parent rather than dividing by 0.
+                # lvl.mean, not means[k]: this branch only runs when loo_y is
+                # set, and continuation is already rejected above in that
+                # case, so cfg.class_estimator is guaranteed "pooled" here.
                 est_ok = np.where(
                     eff_n[:, None] > 0,
                     (cnt[:, None] * lvl.mean[cid[ok]] - loo_y[ok])

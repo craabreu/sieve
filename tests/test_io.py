@@ -30,6 +30,38 @@ def test_round_trip_preserves_config(tmp_path):
     assert loaded.config.shrinkage_strength == 0.5
 
 
+def test_round_trip_preserves_class_estimator(tmp_path):
+    cfg = simple_config(max_wl_depth=2, class_estimator="continuation")
+    m = sieve.fit(chain_batch(10), cfg)
+    p = tmp_path / "m.npz"
+    m.save(p)
+    loaded = sieve.SieveModel.load(p)
+    assert loaded.config.class_estimator == "continuation"
+    a = sieve.predict(m, chain_batch(10))
+    c = sieve.predict(loaded, chain_batch(10))
+    assert np.array_equal(a, c)
+
+
+def test_loading_a_format_version_3_model_refuses_rather_than_guessing(tmp_path):
+    """format_version 3 files predate class_estimator entirely -- there is no
+    default to fall back to that would not silently misdescribe what
+    predictions the file's classes actually support. Same clean-break policy
+    as the v2 case above."""
+    import json
+
+    m = sieve.fit(chain_batch(6), simple_config())
+    p = tmp_path / "m.npz"
+    m.save(p)
+    data = dict(np.load(p, allow_pickle=False))
+    cfg = json.loads(bytes(data["config"]).decode())
+    cfg["format_version"] = 3
+    del cfg["class_estimator"]
+    data["config"] = np.frombuffer(json.dumps(cfg).encode(), np.uint8)
+    np.savez(p, **data)
+    with pytest.raises(ValueError, match="format_version 3"):
+        sieve.SieveModel.load(p)
+
+
 def test_loaded_model_still_merges(tmp_path):
     cfg = simple_config()
     b = chain_batch(10, graphs=4)
