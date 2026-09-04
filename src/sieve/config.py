@@ -63,9 +63,31 @@ CLASS_ESTIMATORS = (
 #               At the deepest level C == 0, so lambda == 0 and no shrinkage
 #               is applied -- see design.md 4.4 on why that is defensible
 #               rather than a degenerate case.
+#   "empirical_bayes"
+#               the normal-normal posterior weight with the estimand's own
+#               unit of replication, and alpha estimated rather than swept
+#               [Morris1983EmpiricalBayes]. Under continuation a non-deepest
+#               class estimates its *typical child* mean, whose unit is the
+#               child, giving w = C/(C+alpha_k) with
+#               alpha_k = tau^2_k / tau^2_{k-1}; the deepest class has no
+#               children and estimates its own pooled mean, so ordinary
+#               atom-level EB applies there, w = N/(N+sigma^2/tau^2_{k-1}).
+#               tau^2 is pooled per level (design.md 13 item 9's "it comes
+#               out per level"): at C = 2-3 a per-class variance has 1-2
+#               degrees of freedom and is mostly noise. `shrinkage_strength`
+#               is ignored in this mode -- that is the point.
+#               **Measured best**: +0.000105 vs flat continuation without
+#               shrinkage (t=21.7, 10/10 folds), beating the swept count rule
+#               by +0.000024 (t=16.6, 10/10) while removing its knob.
+#               `"count"` stays the default only for backward compatibility.
 SHRINKAGE_WEIGHT_COUNT = "count"
 SHRINKAGE_WEIGHT_DIVERSITY = "diversity"
-SHRINKAGE_WEIGHTS = (SHRINKAGE_WEIGHT_COUNT, SHRINKAGE_WEIGHT_DIVERSITY)
+SHRINKAGE_WEIGHT_EMPIRICAL_BAYES = "empirical_bayes"
+SHRINKAGE_WEIGHTS = (
+    SHRINKAGE_WEIGHT_COUNT,
+    SHRINKAGE_WEIGHT_DIVERSITY,
+    SHRINKAGE_WEIGHT_EMPIRICAL_BAYES,
+)
 
 
 @dataclass(frozen=True)
@@ -206,6 +228,25 @@ class SieveConfig:
         (see ``level_kinds``)."""
         extra = self.max_wl_depth if self.neighbor_depth is not None else 0
         return len(self.attribute_levels) + self.max_wl_depth + extra
+
+    @property
+    def applies_shrinkage(self) -> bool:
+        """Whether the shrinkage pass does anything at all.
+
+        One predicate, read by both ``shrinkage.shrunk_means`` and
+        ``predict._search``, because they must agree: a config that shrinks in
+        one and not the other silently produces two different models. That is
+        not hypothetical -- widening ``_search``'s guard without widening this
+        made ``shrinkage_weight="diversity"`` with the default
+        ``shrinkage_strength=None`` crash in ``predict`` while
+        ``shrunk_means`` quietly skipped shrinkage.
+
+        ``"empirical_bayes"`` needs no strength: alpha is estimated, so the
+        mode is always active. The other rules need a strength to scale.
+        """
+        if self.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES:
+            return True
+        return self.shrinkage_strength is not None and self.shrinkage_strength != 0.0
 
     @property
     def level_kinds(self) -> tuple[str, ...]:

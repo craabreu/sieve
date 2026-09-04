@@ -10,7 +10,9 @@ from sieve.batch import NodeBatch
 from sieve.config import (
     CLASS_ESTIMATOR_POOLED,
     LEVEL_WL,
+    SHRINKAGE_WEIGHT_COUNT,
     SHRINKAGE_WEIGHT_DIVERSITY,
+    SHRINKAGE_WEIGHT_EMPIRICAL_BAYES,
 )
 from sieve.continuation import child_counts, class_means
 from sieve.merge import _lookup_rows as _lookup
@@ -78,12 +80,13 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         raise NotImplementedError(
             f"predict_loo does not yet support class_estimator={cfg.class_estimator!r}"
         )
-    if loo_y is not None and cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY:
+    if loo_y is not None and cfg.shrinkage_weight != SHRINKAGE_WEIGHT_COUNT:
         # lambda is built from the matched class's own C and N, both of which
         # the held-out node contributes to; correcting it needs the same child
         # identity predict_loo already lacks for continuation.
         raise NotImplementedError(
-            "predict_loo does not yet support shrinkage_weight='diversity'"
+            f"predict_loo does not yet support "
+            f"shrinkage_weight={cfg.shrinkage_weight!r}"
         )
     n, d = batch.n_nodes, cfg.target_dim
     query = refine(batch, cfg)
@@ -168,8 +171,8 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     def _matched_out(matched: np.ndarray) -> np.ndarray:
         return np.where(matched >= 0, backoff_pos[matched], -1)
 
-    if cfg.shrinkage_strength is not None:
-        from sieve.shrinkage import shrunk_means
+    if cfg.applies_shrinkage:
+        from sieve.shrinkage import empirical_bayes_weights, shrunk_means
 
         raw = value.copy()
         weight = np.zeros(n)
@@ -191,7 +194,9 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         # that mode above, which is what makes reading it directly safe here.
         shrunk = shrunk_means(model)
         diversity = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_DIVERSITY
+        eb = cfg.shrinkage_weight == SHRINKAGE_WEIGHT_EMPIRICAL_BAYES
         counts = child_counts(model) if diversity else None
+        eb_w = empirical_bayes_weights(model) if eb else None
         for k in backoff_path:
             sel = matched == k
             if sel.any():
@@ -201,7 +206,15 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
                     parent_est = np.broadcast_to(model.global_mean, (sel.sum(), d))
                 else:
                     parent_est = shrunk[p][model.levels[k].parent[class_id[sel]]]
-                if diversity:
+                if eb:
+                    # The weight is estimated per class, so the class-indexed
+                    # shrunk value is already the answer -- and the estimated
+                    # weight is itself the interesting diagnostic here, since
+                    # it is the only mode where it varies for a reason other
+                    # than support.
+                    value[sel] = shrunk[k][class_id[sel]]
+                    weight[sel] = eb_w[k][class_id[sel]]
+                elif diversity:
                     cls_n = model.levels[k].count[class_id[sel]].astype(np.float64)
                     lam = np.minimum(
                         cfg.shrinkage_strength
