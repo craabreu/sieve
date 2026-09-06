@@ -4,7 +4,8 @@
 **Date:** 2026-09-04
 **Scope:** §4.3 and §6.4 of `design.md` were written before continuation (§4.4) existed and were
 never revisited. This note records how they drifted, records that §4.3 was never implemented at
-all, and decides what §6.4 should consume instead.
+all, measures what the stored `msd` is actually worth (§3.1), and decides what §6.4 should consume
+instead.
 **Relationship to other documents:** `design.md` remains the primary reference. Where this note and
 `design.md` disagree, this note wins for the sections it lists, until they are folded back in.
 Unlike `design-update-v1.md`, which was purely a historical record, §3 below **is** a decision.
@@ -92,7 +93,7 @@ be — the problem it solves is harder than §6.4 poses.
 
 ---
 
-## 3. Decision: §6.4 consumes a level-pooled variance, not §4.3's recursion
+## 3. Decision: §6.4 consumes a floored per-class variance, not §4.3's recursion
 
 **The solve is scale-invariant in $\sigma^2$.** For $c_i=1$, §6.4 reduces to
 $x_i=\mu_i+\text{residual}\cdot\sigma^2_i/\sum_j\sigma^2_j$: multiplying every $\sigma^2$ by a
@@ -104,15 +105,19 @@ poses.
 **The approximation.** Take
 
 $$
-\sigma^2_i=\bar\sigma^2_{k^\star_i},
+\sigma^2_i=\max\!\left(s^2_{k^\star_i,c_i},\ \bar\sigma^2_{k^\star_i}\right),
 \qquad
 \sigma^2_i=\sigma^2_{\text{global}}\ \text{ where }\ k^\star_i=-1
 $$
 
-with $\bar\sigma^2_k$ the count-weighted mean within-class variance at the matched level —
-`continuation.atom_variance(model)`, one float per level, already computed there for the
-empirical-Bayes weights — and $\sigma^2_{\text{global}}$ the stored `global_msd`. Total by
-construction, no NaN at $N=1$, no new stored state, no new knob.
+— the matched class's own variance, **floored at its level's pooled value**, with $\bar\sigma^2_k$
+the count-weighted mean within-class variance at that level (`continuation.atom_variance(model)`,
+one float per level, already computed there for the empirical-Bayes weights) and
+$\sigma^2_{\text{global}}$ the stored `global_msd`. Total by construction (the floor is defined
+even where $s^2$ is NaN at $N=1$), no new stored state, no knob.
+
+An earlier draft of this section used $\bar\sigma^2_{k^\star_i}$ alone, discarding the per-class
+term. §3.1 is the measurement that overturned that.
 
 **Why this is defensible rather than merely expedient.** By the variance decomposition
 $\bar\sigma^2_k\approx\bar\sigma^2_{k+1}+\hat\tau^2_k$: the level-pooled atom variance already
@@ -122,17 +127,15 @@ is §1's critique — but that is a bias on one component of a quantity required
 to a common factor. That is a far weaker objection than the one against per-class pooled `msd`,
 where the miscalibration concentrates in whichever single child dominates the class.
 
-**Drop the $(1+1/N)$ inflation rather than porting it.** It is the term §13 item 8 named as the
-risk — "concentrating the residual hardest on high-variance nodes — which, after §4.3's $(1+1/N)$
-inflation, are disproportionately the low-support nodes whose predictions are already least
-reliable" — and at level-pooled granularity it is the only term that would reintroduce per-node
-estimation noise.
+**The $(1+1/N)$ inflation is still dropped, but for the opposite reason to the one first given.**
+The floor subsumes it and does so at the right magnitude: §3.1 shows a class with $N=2$ needs its
+$\sigma$ multiplied by ~3.4 (~11× in variance), where $(1+1/N)$ supplies 1.22× in $\sigma$ —
+directionally right, an order of magnitude too weak.
 
-**What this gives up.** Any genuine per-class variance signal. Within a match level every atom
-weights identically, so the scheme reduces to "shallower matches absorb more residual." Given that
-per-class variances carry 1–2 degrees of freedom (§4.4's own argument for pooling $\hat\tau^2$ per
-level) and that effects measured in this repo run ~1e-4 in $r^2$, that is the right bet to take
-first. It is testable afterwards by adding the per-class arm to the same comparison.
+**What this gives up.** Genuine per-class signal *below* the level average — a class whose atoms
+really are more homogeneous than its level's typical class is floored up to the average and loses
+that distinction. §3.1 measures the cost as small, and it buys removing the one large
+miscalibration in the table.
 
 **Caveat for $d>1$.** `atom_variance` sums over target dimensions to match `sibling_variance`'s
 scale, while §6.4 applies one scalar constraint per dimension independently. For charges $d=1$ and
@@ -140,6 +143,67 @@ it does not bite; the per-dimension variant is the same function without the sum
 
 **Not implemented in this commit.** This note records the decision; `NORMALIZERS` still holds two
 of three arms.
+
+### 3.1 What the stored `msd` is actually worth
+
+Measured on `dash-molecules-10fold-1` (82,358 train / 10,299 test conformers, 427,832 test atoms;
+default attributes, `max_wl_depth=3`, `minimum_support=1`, `pooled`, no shrinkage; test MAE
+0.01765). Every test atom matched something and only 202 — 0.05% — had NaN-or-zero variance, so
+§2's totality hole is structurally real but empirically negligible on this store.
+
+**`msd` is well calibrated wherever the class has support.** Binning test atoms by their matched
+class's $\sigma=\sqrt{s^2}$, the ratio $\mathbb E|y-\mu| / 0.798\sigma$ (1.0 = Gaussian-calibrated)
+sits at 1.04–1.10 across deciles 2–9 — a tenfold range of $\sigma$, from 0.0089 to 0.068. The
+stored class variance predicts realized error magnitude to within ~5–10% over that whole range.
+The residual excess is as plausibly tail-heaviness as bias.
+
+**It fails in exactly one place, and badly.** Binned by support instead:
+
+| $N$ | atoms | mean $\sigma$ | mean $\lvert$err$\rvert$ | ratio |
+|---|---:|---:|---:|---:|
+| 2 | 1336 | 0.00766 | 0.02076 | **3.40** |
+| 3–4 | 28557 | 0.00836 | 0.01911 | **2.86** |
+| 5–9 | 30163 | 0.01513 | 0.01836 | 1.52 |
+| 10–19 | 24882 | 0.01844 | 0.01800 | 1.22 |
+| 20–49 | 37386 | 0.02080 | 0.01832 | 1.10 |
+| 50–99 | 31287 | 0.02243 | 0.01854 | 1.04 |
+| 100–299 | 49926 | 0.02307 | 0.01828 | 0.99 |
+| 300–999 | 57503 | 0.02242 | 0.01775 | 0.99 |
+| 1000+ | 166590 | 0.01975 | 0.01666 | 1.06 |
+
+`msd` becomes trustworthy around $N\approx20$–50 and is essentially exact by $N\ge100$.
+
+**This inverts §13 item 8's stated worry.** That item feared σ² weighting would concentrate
+residual on high-variance nodes, "which, after §4.3's $(1+1/N)$ inflation, are disproportionately
+the low-support nodes whose predictions are already least reliable." In this data the relationship
+runs the other way: low-support classes carry *spuriously small* $\sigma$ (0.0077 at $N=2$ against
+0.0198 at $N\ge1000$), so an uninflated σ² scheme **under**-weights them. Note also that mean
+$|$err$|$ is nearly flat across support (0.0177–0.0208 from $N=2$ to $N=999$) — low support is not
+itself predictive of larger error here, though that flatness pools across levels and is partly
+deeper-match-is-better cancelling lower-support-is-worse.
+
+**The variance is real signal, and it survives within a molecule** — the only place the solve can
+use it, since a molecule-constant factor cancels in $\sigma^2_i/\sum_j\sigma^2_j$:
+
+| variant | within-molecule Pearson | Spearman |
+|---|---:|---:|
+| per-class $s^2$ | 0.5872 | 0.4657 |
+| level-pooled $\bar\sigma^2_k$ | 0.5835 | 0.4074 |
+| floored, $n_v=5$ | 0.5984 | 0.5052 |
+| floored, $n_v=20$ | 0.6028 | **0.5131** |
+| floored, $n_v=100$ | **0.6034** | 0.4946 |
+| $\max(s^2,\ \bar\sigma^2_k)$ | 0.6024 | 0.4910 |
+
+Three readings. **σ-weighting has something equal weighting throws away**: within-molecule
+$r\approx0.6$ is not noise. **Per-class and level-pooled are nearly tied on their own** (0.5872 vs
+0.5835), so the level-pooled draft was not badly wrong — but it is dominated. **Both are beaten by
+flooring**, and the knob-free $\max(s^2,\bar\sigma^2_k)$ lands within noise of the best swept
+threshold, which is why it is what §3 adopts. The threshold sweep's own optimum, $n_v\approx20$,
+coincides with where the support table crosses ratio 1.1 — the two measurements agree on where
+`msd` starts being usable.
+
+**Scope.** One fold, one config, `class_estimator="pooled"`. It says nothing about §1's
+continuation-specific pairing problem, which needs the same measurement under `continuation`.
 
 ---
 
@@ -159,7 +223,9 @@ $\sigma^1$ and $\sigma^2$ both weight by that uncorrected quantity, and weight b
 exactly the backed-off nodes continuation exists to fix. `equal_weighted` reads no variance at all,
 so continuation cannot touch its justification. But invariance is not correctness: $\sigma^0$ is
 $\eta_i$ constant — every node equally soft — which is also a strong false claim, merely one this
-particular argument has no leverage on.
+particular argument has no leverage on. §3.1 now measures it directly and finds it false: within a
+molecule, $\sigma$ orders atoms by realized $|$error$|$ at $r\approx0.6$. Nodes are demonstrably
+not equally soft, and `equal_weighted` discards that ordering by construction.
 
 **A cheaper diagnostic to run first.** All three schemes differ only in proportion to the residual
 $X-\sum_j\mu_j$ they distribute, and coincide at zero residual. If continuation reduces per-atom
@@ -168,7 +234,9 @@ add coherently across a molecule while estimator variance partly cancels, so $|X
 should fall. Measuring that under `pooled` vs `continuation` needs no new fit and no normalizer at
 all, and it bounds how much the three-way comparison can possibly show.
 
-**Nothing here is measured.** `NORMALIZERS` has no σ² entry; `sieve_predictor`'s own docstring
+**No normalization outcome here is measured** — §3.1 measures the variance the schemes would
+consume, not what any of them does to MAE. `NORMALIZERS` has no σ² entry; `sieve_predictor`'s own
+docstring
 records that `std_weighted` was deliberately deferred "for a follow-up once this `atom_std` has
 been checked against real data"; and the only normalization numbers in the repo are DASH's own
 baseline (test MAE 0.0190 unnormalized → 0.0193 under `std_weighted`, buying exact charge
