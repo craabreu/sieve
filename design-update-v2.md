@@ -93,7 +93,7 @@ be — the problem it solves is harder than §6.4 poses.
 
 ---
 
-## 3. Decision: §6.4 consumes a floored per-class variance, not §4.3's recursion
+## 3. Decision: §6.4 consumes the posterior predictive variance, not §4.3's recursion
 
 **The solve is scale-invariant in $\sigma^2$.** For $c_i=1$, §6.4 reduces to
 $x_i=\mu_i+\text{residual}\cdot\sigma^2_i/\sum_j\sigma^2_j$: multiplying every $\sigma^2$ by a
@@ -102,44 +102,46 @@ common constant changes nothing. Normalization never needs a calibrated variance
 top-down pass, the Student-$t$ caveat — solves a strictly harder problem than its only consumer
 poses.
 
-**The approximation.** Take
+**The estimator.** Take
 
 $$
-\sigma^2_i=\max\!\left(s^2_{k^\star_i,c_i},\ \bar\sigma^2_{k^\star_i}\right),
+\sigma^2_i=\underbrace{s^2_{k^\star_i,c_i}}_{\text{within-class}}
++\underbrace{\hat\tau^2_{\mathrm{pa}(k^\star_i)}\left(1-w_{c_i}\right)}
+        _{\text{posterior variance of the class mean}},
 \qquad
 \sigma^2_i=\sigma^2_{\text{global}}\ \text{ where }\ k^\star_i=-1
 $$
 
-— the matched class's own variance, **floored at its level's pooled value**, with $\bar\sigma^2_k$
-the count-weighted mean within-class variance at that level (`continuation.atom_variance(model)`,
-one float per level, already computed there for the empirical-Bayes weights) and
-$\sigma^2_{\text{global}}$ the stored `global_msd`. Total by construction (the floor is defined
-even where $s^2$ is NaN at $N=1$), no new stored state, no knob.
+with $w_c$ the empirical-Bayes weight `shrinkage.empirical_bayes_weights` already returns,
+$\hat\tau^2_k$ the sibling variance from `continuation.sibling_variance` (`root_variance` at level
+0), and $\sigma^2_{\text{global}}$ the stored `global_msd`. Nothing new is stored, nothing new is
+estimated, and there is no knob.
 
-An earlier draft of this section used $\bar\sigma^2_{k^\star_i}$ alone, discarding the per-class
-term. §3.1 is the measurement that overturned that.
+**This is not an approximation — it is the posterior predictive variance of the model §4.4 already
+fits.** Writing the normal–normal model Sieve assumes,
+$\bar y_c\mid m_c\sim N(m_c,\sigma^2/N_c)$ and $m_c\sim N(\mu_{\mathrm{pa}},\tau^2_k)$, the
+posterior mean is $w\bar y_c+(1-w)\mu_{\mathrm{pa}}$ with $w=N/(N+\alpha)$ — exactly
+`empirical_bayes_weights` — and the posterior variance falls out of the same fit as
+$\tau^2(1-w)=\sigma^2/(N+\alpha)$. A new atom's predictive variance is that plus the within-class
+spread. Sieve was already computing the first moment of this posterior and discarding the second.
 
-**Why this is defensible rather than merely expedient.** By the variance decomposition
-$\bar\sigma^2_k\approx\bar\sigma^2_{k+1}+\hat\tau^2_k$: the level-pooled atom variance already
-carries both components a backed-off node's predictive variance needs — within-child spread plus
-between-child spread. It gets the between-child term atom-weighted rather than unit-weighted, which
-is §1's critique — but that is a bias on one component of a quantity required to be correct only up
-to a common factor. That is a far weaker objection than the one against per-class pooled `msd`,
-where the miscalibration concentrates in whichever single child dominates the class.
+**Note the sign, because it corrects the reasoning in §4.3 and in an earlier draft here.**
+$\sigma^2/(N+\alpha)<\sigma^2/N$: shrinkage makes the class mean *more* certain, not less. So the
+mean's standard error cannot be the source of the low-support miscalibration §3.1 measures — the
+correct EB term is *smaller* than §4.3's $(1+1/N)$. The entire deficit lives in $\hat\sigma^2$
+itself, i.e. in `msd`, which at $N=2$ carries a relative standard error of $\sqrt{2/(N-1)}=141\%$.
+$(1+1/N)$ stays dropped, superseded by a derived term rather than by a hand-set one.
 
-**The $(1+1/N)$ inflation is still dropped, but for the opposite reason to the one first given.**
-The floor subsumes it and does so at the right magnitude: §3.1 shows a class with $N=2$ needs its
-$\sigma$ multiplied by ~3.4 (~11× in variance), where $(1+1/N)$ supplies 1.22× in $\sigma$ —
-directionally right, an order of magnitude too weak.
+**Two earlier drafts of this section were wrong, and §3.1 records why.** The first used
+$\bar\sigma^2_{k^\star_i}$ alone; the second used $\max(s^2,\bar\sigma^2_k)$. Both are dominated by
+the form above on the criterion §6.4 actually reads.
 
-**What this gives up.** Genuine per-class signal *below* the level average — a class whose atoms
-really are more homogeneous than its level's typical class is floored up to the average and loses
-that distinction. §3.1 measures the cost as small, and it buys removing the one large
-miscalibration in the table.
-
-**Caveat for $d>1$.** `atom_variance` sums over target dimensions to match `sibling_variance`'s
-scale, while §6.4 applies one scalar constraint per dimension independently. For charges $d=1$ and
-it does not bite; the per-dimension variant is the same function without the sum.
+**Caveat for $d>1$, and it now bites harder.** `sibling_variance`/`atom_variance` sum over target
+dimensions (deliberately — they feed a scalar weight), while $s^2$ is per-dimension and §6.4 applies
+one scalar constraint per dimension independently. The estimator above therefore adds a
+per-dimension term to a dimension-summed one, which is only coherent at $d=1$. For charges $d=1$;
+for any multi-dimensional target both $\hat\tau^2$ and $\bar\sigma^2$ need their per-dimension
+variants, which is the same function without the sum.
 
 **Not implemented in this commit.** This note records the decision; `NORMALIZERS` still holds two
 of three arms.
@@ -185,25 +187,48 @@ deeper-match-is-better cancelling lower-support-is-worse.
 **The variance is real signal, and it survives within a molecule** — the only place the solve can
 use it, since a molecule-constant factor cancels in $\sigma^2_i/\sum_j\sigma^2_j$:
 
-| variant | within-molecule Pearson | Spearman |
-|---|---:|---:|
-| per-class $s^2$ | 0.5872 | 0.4657 |
-| level-pooled $\bar\sigma^2_k$ | 0.5835 | 0.4074 |
-| floored, $n_v=5$ | 0.5984 | 0.5052 |
-| floored, $n_v=20$ | 0.6028 | **0.5131** |
-| floored, $n_v=100$ | **0.6034** | 0.4946 |
-| $\max(s^2,\ \bar\sigma^2_k)$ | 0.6024 | 0.4910 |
+Scored on both criteria at once — ranking, which is all §6.4 can read, and calibration by support,
+which is what an honest reported uncertainty needs:
 
-Three readings. **σ-weighting has something equal weighting throws away**: within-molecule
-$r\approx0.6$ is not noise. **Per-class and level-pooled are nearly tied on their own** (0.5872 vs
-0.5835), so the level-pooled draft was not badly wrong — but it is dominated. **Both are beaten by
-flooring**, and the knob-free $\max(s^2,\bar\sigma^2_k)$ lands within noise of the best swept
-threshold, which is why it is what §3 adopts. The threshold sweep's own optimum, $n_v\approx20$,
-coincides with where the support table crosses ratio 1.1 — the two measurements agree on where
-`msd` starts being usable.
+| $\sigma$ estimator | within-mol $r$ | Spearman | ratio $N<5$ | ratio $N\ge100$ | overall |
+|---|---:|---:|---:|---:|---:|
+| raw $s$ (today) | 0.5872 | 0.4657 | 2.89 | 1.03 | 1.13 |
+| level-pooled $\bar\sigma_k$ | 0.5835 | 0.4074 | 1.24 | 1.02 | 1.06 |
+| $\max(s,\bar\sigma_k)$ | 0.6024 | 0.4910 | 1.15 | 0.84 | 0.88 |
+| $\sqrt{\bar\sigma^2_k+\hat\tau^2_{\mathrm{pa}}(1-w)}$ | 0.5678 | 0.3908 | **0.98** | **1.01** | **1.02** |
+| **$\sqrt{s^2+\hat\tau^2_{\mathrm{pa}}(1-w)}$** | **0.6081** | **0.5279** | 1.32 | 1.02 | 1.05 |
+| $\sqrt{\max(s^2,\bar\sigma^2_k)+\hat\tau^2_{\mathrm{pa}}(1-w)}$ | 0.6071 | 0.4955 | 0.93 | 0.84 | 0.85 |
+
+Four readings. **σ-weighting has something `equal_weighted` throws away**: within-molecule
+$r\approx0.6$ is not noise. **The EB term is what fixes low support, and it does it better than any
+floor**: adding $\hat\tau^2_{\mathrm{pa}}(1-w)$ to raw $s$ moves the $N<5$ ratio from 2.89 to 1.32
+*and* raises Spearman from 0.466 to 0.528, because $1-w$ is largest exactly where support is
+thinnest — a class-specific correction where a floor is a blunt one. **Calibration and ranking are
+not the same criterion**: the best-calibrated row (level-pooled within, 0.98/1.01/1.02) has the
+*worst* ranking in the table, worse than raw $s$; pooling away per-class spread buys calibration by
+discarding the signal §6.4 reads. **The floor is dominated**: $\max(s,\bar\sigma_k)$, which the
+previous draft adopted, is beaten on both ranking metrics and over-estimates $\sigma$ by ~19% at
+$N\ge100$ (ratio 0.84), because it lifts genuinely homogeneous classes to their level average.
+
+$\sqrt{s^2+\hat\tau^2_{\mathrm{pa}}(1-w)}$ therefore wins ranking outright while staying within 5%
+of calibrated overall. Its one weakness is the $N<5$ bin (1.32); flooring the within-class term as
+well repairs that (0.93) at the cost of ranking and of over-estimating elsewhere. §3 takes the
+unfloored form because §6.4 reads ranking, and records the floored variant as the choice to make
+instead if a calibrated *reported* uncertainty ever becomes the consumer.
+
+**Clustering was the obvious suspect and it is not the cause.** A class's $N$ counts conformers,
+and conformers of one molecule are near-replicates, so a low-$N$ class measuring only conformational
+jitter would explain the collapse with no new mechanism. It does not hold: distinct training
+molecules per class give mean $M/N=1.000$ at $N=2$, 0.997 at $N=3$–4, and 0.935 at $N=5$–9 — no
+pseudo-replication at all at the low end. Recalibrating by $M$ instead of $N$ moves the bottom bin
+only from 3.40 to 3.20. Replication does appear in the large classes ($M/N=0.636$ at $N\ge50$), but
+those are the well-calibrated ones. The deficit is small-sample noise in $s^2$, exactly as the
+$\sqrt{2/(N-1)}$ relative standard error predicts.
 
 **Scope.** One fold, one config, `class_estimator="pooled"`. It says nothing about §1's
 continuation-specific pairing problem, which needs the same measurement under `continuation`.
+Reference values for that fit: $\bar\sigma_k=[0.194, 0.066, 0.028, 0.017]$,
+$\hat\tau_k=[0.332, 0.110, 0.034, \mathrm{nan}]$, root $\hat\tau=0.573$.
 
 ---
 
