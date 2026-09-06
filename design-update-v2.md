@@ -105,7 +105,8 @@ poses.
 **The estimator.** Take
 
 $$
-\sigma^2_i=\underbrace{s^2_{k^\star_i,c_i}}_{\text{within-class}}
+\sigma^2_i=\underbrace{\frac{(N_c-1)\,s^2_{k^\star_i,c_i}+\alpha^v\,\bar\sigma^2_{k^\star_i}}
+                            {(N_c-1)+\alpha^v}}_{\text{shrunk within-class}}
 +\underbrace{\hat\tau^2_{\mathrm{pa}(k^\star_i)}\left(1-w_{c_i}\right)}
         _{\text{posterior variance of the class mean}},
 \qquad
@@ -114,8 +115,13 @@ $$
 
 with $w_c$ the empirical-Bayes weight `shrinkage.empirical_bayes_weights` already returns,
 $\hat\tau^2_k$ the sibling variance from `continuation.sibling_variance` (`root_variance` at level
-0), and $\sigma^2_{\text{global}}$ the stored `global_msd`. Nothing new is stored, nothing new is
-estimated, and there is no knob.
+0), $\bar\sigma^2_k$ the level-pooled `continuation.atom_variance`, and $\sigma^2_{\text{global}}$
+the stored `global_msd`. Nothing new is stored and nothing new is estimated.
+
+**$\alpha^v\approx10$**, and it is the one knob here — reintroduced deliberately after §3.1 showed
+the knob-free alternatives are both worse. Performance is flat over $\alpha^v\in[5,20]$ (§3.1), so
+it is not a delicate choice; §13 item 9's calibration route ($\mathrm{Var}(z)=1$) remains the way to
+set it properly.
 
 **This is not an approximation — it is the posterior predictive variance of the model §4.4 already
 fits.** Writing the normal–normal model Sieve assumes,
@@ -132,9 +138,16 @@ correct EB term is *smaller* than §4.3's $(1+1/N)$. The entire deficit lives in
 itself, i.e. in `msd`, which at $N=2$ carries a relative standard error of $\sqrt{2/(N-1)}=141\%$.
 $(1+1/N)$ stays dropped, superseded by a derived term rather than by a hand-set one.
 
-**Two earlier drafts of this section were wrong, and §3.1 records why.** The first used
-$\bar\sigma^2_{k^\star_i}$ alone; the second used $\max(s^2,\bar\sigma^2_k)$. Both are dominated by
-the form above on the criterion §6.4 actually reads.
+**§4.3's mechanism was right; its target and its consumer were not.** Shrinking the *variance* is
+necessary — §3.1 measures raw $s^2$ as unusable, not merely miscalibrated. What changes is that the
+pooling target is the level-pooled $\bar\sigma^2_k$ rather than the ancestor chain (one lookup, no
+top-down recursion), and that the mean-uncertainty term is the derived EB one rather than $(1+1/N)$.
+
+**Three earlier drafts of this section were wrong, and §3.1 records why.** They used
+$\bar\sigma^2_k$ alone, then $\max(s^2,\bar\sigma^2_k)$, then $s^2+\hat\tau^2(1-w)$ with no
+shrinkage. The first two destroy ranking by discarding per-class spread; the third leaves the
+unbounded-$z$ tail intact. Each was adopted on a metric too weak to see its failure — see §3.1's
+opening.
 
 **Caveat for $d>1$, and it now bites harder.** `sibling_variance`/`atom_variance` sum over target
 dimensions (deliberately — they feed a scalar weight), while $s^2$ is per-dimension and §6.4 applies
@@ -153,11 +166,18 @@ default attributes, `max_wl_depth=3`, `minimum_support=1`, `pooled`, no shrinkag
 0.01765). Every test atom matched something and only 202 — 0.05% — had NaN-or-zero variance, so
 §2's totality hole is structurally real but empirically negligible on this store.
 
-**`msd` is well calibrated wherever the class has support.** Binning test atoms by their matched
-class's $\sigma=\sqrt{s^2}$, the ratio $\mathbb E|y-\mu| / 0.798\sigma$ (1.0 = Gaussian-calibrated)
-sits at 1.04–1.10 across deciles 2–9 — a tenfold range of $\sigma$, from 0.0089 to 0.068. The
-stored class variance predicts realized error magnitude to within ~5–10% over that whole range.
-The residual excess is as plausibly tail-heaviness as bias.
+**A warning about the metric used in the first three passes of this section.** The ratio
+$\mathbb E|y-\mu|\,/\,0.798\,\mathbb E[\sigma]$ below is a *ratio of means*, not the mean of a
+ratio, and tests only a first moment. It is nearly blind to the failure mode that matters:
+a class whose $s^2$ is spuriously near zero contributes a negligible amount to $\mathbb E[\sigma]$
+while contributing an unbounded $z=(y-\mu)/\sigma$. On $\mathbb E[z^2]$ raw $s$ scores $3.5\times
+10^{25}$; on the ratio metric it scores 1.13. Every decision recorded in earlier revisions of this
+note rested on the weaker statistic. The tables below are kept because they are still true, but
+§3.2 is what the decision now rests on.
+
+**`msd` tracks realized error wherever the class has support.** Binning test atoms by their matched
+class's $\sigma=\sqrt{s^2}$, the ratio sits at 1.04–1.10 across deciles 2–9 — a tenfold range of
+$\sigma$, from 0.0089 to 0.068.
 
 **It fails in exactly one place, and badly.** Binned by support instead:
 
@@ -210,11 +230,9 @@ discarding the signal §6.4 reads. **The floor is dominated**: $\max(s,\bar\sigm
 previous draft adopted, is beaten on both ranking metrics and over-estimates $\sigma$ by ~19% at
 $N\ge100$ (ratio 0.84), because it lifts genuinely homogeneous classes to their level average.
 
-$\sqrt{s^2+\hat\tau^2_{\mathrm{pa}}(1-w)}$ therefore wins ranking outright while staying within 5%
-of calibrated overall. Its one weakness is the $N<5$ bin (1.32); flooring the within-class term as
-well repairs that (0.93) at the cost of ranking and of over-estimating elsewhere. §3 takes the
-unfloored form because §6.4 reads ranking, and records the floored variant as the choice to make
-instead if a calibrated *reported* uncertainty ever becomes the consumer.
+On this metric $\sqrt{s^2+\hat\tau^2_{\mathrm{pa}}(1-w)}$ wins ranking outright while staying within
+5% of calibrated overall, which is why an earlier revision adopted it. §3.2 shows that reading was
+an artifact of the metric.
 
 **Clustering was the obvious suspect and it is not the cause.** A class's $N$ counts conformers,
 and conformers of one molecule are near-replicates, so a low-$N$ class measuring only conformational
@@ -230,7 +248,46 @@ continuation-specific pairing problem, which needs the same measurement under `c
 Reference values for that fit: $\bar\sigma_k=[0.194, 0.066, 0.028, 0.017]$,
 $\hat\tau_k=[0.332, 0.110, 0.034, \mathrm{nan}]$, root $\hat\tau=0.573$.
 
----
+### 3.2 Calibration, tested properly
+
+Same fit, on signed $z=(y-\mu)/\sigma$: $\mathbb E[z^2]$ (1.0 if calibrated) marginally and
+conditionally, Gaussian NLL as a proper score, and within-molecule ranking, all at once.
+
+| $\sigma$ estimator | $\mathbb E[z^2]$ | $N<5$ | $N\ge10^3$ | cov@95 | NLL | within-$r$ | Spearman |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| raw $s$ (today) | $3.5\times10^{25}$ | $5\times10^{26}$ | 1.18 | 0.887 | $1.7\times10^{25}$ | 0.5872 | 0.4657 |
+| $\max(s,\bar\sigma_k)$ + EB | 0.864 | 1.35 | 0.67 | 0.961 | −2.433 | 0.6071 | 0.4955 |
+| $s$ + EB (prior revision) | 1.645 | 3.68 | 1.17 | 0.927 | −2.395 | 0.6081 | 0.5279 |
+| shrunk, $\alpha^v=1$ | 1.465 | 2.23 | 1.17 | 0.933 | −2.459 | 0.6118 | 0.5359 |
+| shrunk, $\alpha^v=3$ | 1.374 | 1.78 | 1.17 | 0.937 | −2.484 | 0.6144 | 0.5362 |
+| **shrunk, $\alpha^v=10$** | 1.293 | 1.57 | 1.17 | 0.941 | **−2.499** | 0.6170 | 0.5334 |
+| shrunk, $\alpha^v=20$ | 1.261 | 1.54 | 1.16 | 0.942 | −2.501 | **0.6182** | 0.5300 |
+
+**Raw $s$ is not miscalibrated, it is unusable.** $\mathbb E[z^2]=3.5\times10^{25}$, kurtosis
+$8\times10^4$: near-zero class variances produce unbounded $z$. For §6.4 that is not a cosmetic
+problem — an atom with $\sigma^2\approx0$ is *pinned* by the solve (§6.4 says so explicitly), so
+a sampling artifact at $N=2$ would freeze an atom and push its share of the residual onto its
+neighbours. This is the strongest argument in the note for changing what §6.4 consumes.
+
+**Shrinkage dominates both knob-free alternatives on every axis at once.** At $\alpha^v=10$ it beats
+the hard floor on NLL (−2.499 vs −2.433) *and* ranking (0.6170/0.5334 vs 0.6071/0.4955), and beats
+the unshrunk EB form on calibration (1.29 vs 1.65) while also ranking better. The knob is flat:
+NLL varies by 0.04 over $\alpha^v\in[1,20]$ and within-$r$ by 0.006. That flatness is why
+reintroducing a knob is acceptable here.
+
+**Nothing on this list is actually well calibrated.** The best row still runs $\mathbb E[z^2]=1.57$
+at $N<5$ down to 1.17 at $N\ge10^3$, and by matched level from 2.4 at level 0 to 0.8 at level 3 —
+a systematic trend, not noise, so marginal $\mathbb E[z^2]\approx1.3$ is an average of over- and
+under-dispersion. By element it ranges from 1.23 (H) to 2.06 (N) to 3.03 (S), with sulfur the worst
+— the same chemistry §4.4's sulfonyl example names.
+
+**The Gaussian family itself is the bigger approximation.** Standardized residuals have skew 2–3 and
+kurtosis 80–140 against a Gaussian's 3, and coverage is too *wide* in the centre and too *narrow* in
+the tails (for the floored EB form: 68.3% actual at nominal 50%, but 98.3% at nominal 99%). §4.3
+flags Student-$t$ as a "stated approximation" taken to preserve §6.4's closed form; the size of that
+approximation is now measured, and it is large. It does not invalidate the σ² weighting — §6.4 needs
+relative scale, not a density — but any *interval* reported from these numbers would be wrong, and
+that is the use for which conformal prediction, not a variance, is the right tool.
 
 ## 4. Consequence for §13 item 8, and for equal weighting
 
