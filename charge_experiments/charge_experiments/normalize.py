@@ -7,6 +7,10 @@ Every entry in ``NORMALIZERS`` shares one signature, ``(raw_charge, raw_std,
 net_charge, mol_id, n_conformers) -> atom_charge``, even though
 ``equal_weighted_normalize`` ignores ``raw_std`` entirely -- this lets
 calling code stay normalization-agnostic.
+
+The three schemes differ in exponent, not in kind -- the residual is spread
+proportional to sigma^0, sigma^1, sigma^2 respectively -- which is the
+comparison design.md 13 item 8 asks for and design-update-v2.md 4.1 reports.
 """
 
 from __future__ import annotations
@@ -53,6 +57,48 @@ def std_weighted_normalize(
     return raw_charge + (residual[mol_id] * effective_std / tot_std_tree[mol_id])
 
 
+def variance_weighted_normalize(
+    raw_charge: NDArray[np.floating],
+    raw_std: NDArray[np.floating],
+    net_charge: NDArray[np.floating],
+    mol_id: NDArray[np.int64],
+    n_conformers: int,
+) -> NDArray[np.float64]:
+    """Spread the residual proportional to ``raw_std ** 2`` -- design.md 6.4's
+    closed-form constrained MLE, the third arm of design.md 13 item 8.
+
+    The three registered schemes differ in exponent, not in kind: the
+    correction is spread proportional to sigma^0 (``equal_weighted``),
+    sigma^1 (``std_weighted``), sigma^2 (here). Only sigma^2 has a
+    derivation, and design-update-v2.md 1 records that the derivation holds
+    only under ``class_estimator="pooled"`` -- while 4.1 measures sigma^2 to
+    be empirically optimal anyway (best gamma 1.85; sigma^2 within 0.000006
+    MAE of it).
+
+    Floors a non-positive or NaN ``raw_std`` to ``std_weighted_normalize``'s
+    own ``default_std_value`` (0.1), deliberately reusing that convention
+    rather than inventing a second one: this function implements a weighting,
+    not a variance model. Supplying a variance that is total and not
+    artefactually zero is the *predictor's* job -- see design-update-v2.md 2
+    (sieve's stored variance is NaN at N==1 and can be a sampling-artefact
+    zero) and 3 (the estimator that fixes it). Feeding this arm a raw
+    per-class std makes an atom with sigma^2 ~ 0 absorb none of the residual,
+    which 6.4 calls "pinned at its mean" and design-update-v2.md 3.2 shows is
+    an artefact rather than certainty.
+
+    A NaN ``raw_charge`` propagates to that whole conformer via
+    ``molecule_sum``, exactly as in the other two schemes.
+    """
+    raw_charge = np.asarray(raw_charge, dtype=np.float64)
+    raw_std = np.asarray(raw_std, dtype=np.float64)
+    effective_std = np.where(raw_std > 0, raw_std, _DEFAULT_STD_VALUE)
+    weight = effective_std * effective_std
+    tot_charge_tree = molecule_sum(raw_charge, mol_id, n_conformers)
+    tot_weight = molecule_sum(weight, mol_id, n_conformers)
+    residual = np.asarray(net_charge, dtype=np.float64) - tot_charge_tree
+    return raw_charge + (residual[mol_id] * weight / tot_weight[mol_id])
+
+
 def equal_weighted_normalize(
     raw_charge: NDArray[np.floating],
     raw_std: NDArray[np.floating],
@@ -89,5 +135,6 @@ NORMALIZERS: dict[
     ],
 ] = {
     "std_weighted": std_weighted_normalize,
+    "variance_weighted": variance_weighted_normalize,
     "equal_weighted": equal_weighted_normalize,
 }

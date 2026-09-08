@@ -1379,7 +1379,14 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    lifecycle entirely to the caller. Measured: a persistent worker pool pays off and a per-call pool
    does not, so an API that quietly creates one pool per `fit()` call would be actively harmful — if
    this is ever exposed, the pool's lifetime needs to be a caller-visible decision, not an implicit one.
-8. **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
+8. **ANSWERED — see design-update-v2.md §4.1.** Measured on `dash-molecules-10fold-1`: the whole
+   weighting question is worth 0.00059 MAE (3.3%), of which the choice of $\sigma$ estimator accounts
+   for 0.2%; $\gamma=2$ is empirically optimal (0.017194 against 0.017188 at the fitted $\gamma=1.85$),
+   so this section's exponent survives even though §1 of that note shows its derivation does not; and
+   `equal_weighted` is *worse* than not normalizing at all (0.017780 vs 0.017653). The third arm is
+   now implemented as `NORMALIZERS["variance_weighted"]`. Original text follows.
+
+   **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
    post-normalization MAE against equal-weighted spreading and DASH's own std-weighted eq 4. Note
    the three differ in exponent, not in kind: the correction is spread $\propto\sigma^0$,
    $\sigma^1$, $\sigma^2$ respectively, and only $\sigma^2$ has a derivation behind it. Variance
