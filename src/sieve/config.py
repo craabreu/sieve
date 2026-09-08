@@ -120,6 +120,7 @@ class SieveConfig:
     shrinkage_strength: float | None = None
     class_estimator: str = CLASS_ESTIMATOR_POOLED
     shrinkage_weight: str | None = None
+    predictive_variance: bool = False
     chunk_size: int | None = None
 
     def __post_init__(self) -> None:
@@ -366,13 +367,14 @@ class SieveConfig:
         """Digest over everything that changes what a class means (design.md 9.2).
 
         ``minimum_support``, ``shrinkage_strength``, ``class_estimator``,
-        ``shrinkage_weight`` and ``chunk_size`` are deliberately excluded:
-        they are read at prediction time and do not invalidate fitted
-        statistics. ``class_estimator``/``shrinkage_weight`` belong here
-        rather than in the digest because they only change which stored
-        numbers an estimate is *read from*, and how they are combined -- the
-        classes themselves, and every count and mean in them, are identical
-        either way.
+        ``shrinkage_weight``, ``predictive_variance`` and ``chunk_size`` are
+        deliberately excluded: they are read at prediction time and do not
+        invalidate fitted statistics.
+        ``class_estimator``/``shrinkage_weight``/``predictive_variance``
+        belong here rather than in the digest because they only change which
+        stored numbers an estimate is *read from*, and how they are combined
+        -- the classes themselves, and every count and mean in them, are
+        identical either way.
         """
         payload = {
             "target_dim": self.target_dim,
