@@ -46,6 +46,12 @@ class Predictions:
     threshold_bound: np.ndarray  # (n,) stopped by minimum_support rather than by OOV
     raw_value: np.ndarray | None = None
     shrinkage_weight: np.ndarray | None = None
+    # (n, d) sigma^2_pred, present only under cfg.predictive_variance. Unlike
+    # `variance` this is a usable uncertainty -- total, never NaN, never zero
+    # (sieve.uncertainty, design-update-v2.md 3). `variance` is left exactly
+    # as it was: a diagnostic reporting the matched class's own stored s^2.
+    # Like `variance`, it is *not* LOO-adjusted under predict_loo.
+    predictive_variance: np.ndarray | None = None
 
 
 def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predictions:
@@ -171,6 +177,20 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     def _matched_out(matched: np.ndarray) -> np.ndarray:
         return np.where(matched >= 0, backoff_pos[matched], -1)
 
+    pred_var: np.ndarray | None = None
+    if cfg.predictive_variance:
+        from sieve.uncertainty import predictive_variance
+
+        # global_msd for a node that matched nothing: there is no class row to
+        # index, exactly as `value` falls back to global_mean. Every matched
+        # node gets a finite, strictly positive entry from the table itself.
+        table = predictive_variance(model)
+        pred_var = np.broadcast_to(model.global_msd, (n, d)).astype(np.float64).copy()
+        for k in backoff_path:
+            sel = matched == k
+            if sel.any():
+                pred_var[sel] = table[k][class_id[sel]]
+
     if cfg.applies_shrinkage:
         from sieve.shrinkage import empirical_bayes_weights, shrunk_means
 
@@ -242,10 +262,17 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
             threshold,
             raw_value=raw,
             shrinkage_weight=weight,
+            predictive_variance=pred_var,
         )
 
     return Predictions(
-        value, _matched_out(matched), class_id, support, variance, threshold
+        value,
+        _matched_out(matched),
+        class_id,
+        support,
+        variance,
+        threshold,
+        predictive_variance=pred_var,
     )
 
 

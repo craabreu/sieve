@@ -186,6 +186,56 @@ def sibling_variance(model) -> list[float]:
     return out
 
 
+def class_sibling_variance(model) -> list[np.ndarray]:
+    r"""Per-**class** $\tau^2_c$: how much *this* class's own children's means
+    vary about their common mean, debiased for the children's sampling noise.
+
+    The per-class counterpart of ``sibling_variance``, which pools the same
+    quantity across every class at a level. Both exist because they answer
+    different questions: the pooled form feeds a shrinkage weight, where a
+    1-2 degree-of-freedom per-class estimate would be mostly noise; this form
+    feeds ``uncertainty.predictive_variance``, which shrinks it toward the
+    pooled value rather than trusting it raw, and so can use the extra
+    resolution without inheriting the noise.
+
+    Same estimator as ``sibling_variance`` -- the within-parent mean square of
+    the child means, minus the mean of $\sigma^2_j/N$ over those children --
+    but evaluated per parent instead of summed over the level, and clamped at
+    zero for the same reason. Summed over target dimensions to match
+    ``sibling_variance``'s scale.
+
+    ``nan`` where a class has fewer than two children, which includes every
+    class at the deepest backoff level and at any level off the path. Callers
+    must treat that as "no estimate", not as zero.
+    """
+    child_of = _child_of_level(model.config)
+    out: list[np.ndarray] = []
+    for k, lvl in enumerate(model.levels):
+        npar = len(lvl.mean)
+        c = child_of[k]
+        if c < 0:
+            out.append(np.full(npar, np.nan))
+            continue
+        child = model.levels[c]
+        par = child.parent
+        C = np.bincount(par, minlength=npar).astype(np.float64)
+        inv_n = 1.0 / np.maximum(child.count, 1)
+        total = np.zeros(npar)
+        for j in range(lvl.mean.shape[1]):
+            cm = child.mean[:, j]
+            s1 = np.bincount(par, weights=cm, minlength=npar)
+            s2 = np.bincount(par, weights=cm * cm, minlength=npar)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ss = s2 - s1 * s1 / np.maximum(C, 1)
+                msw = ss / np.maximum(C - 1, 1)
+            noise = np.bincount(
+                par, weights=child.msd[:, j] * inv_n, minlength=npar
+            ) / np.maximum(C, 1)
+            total += np.maximum(0.0, msw - noise)
+        out.append(np.where(C >= 2, total, np.nan))
+    return out
+
+
 def root_variance(model) -> float:
     r"""$\hat\tau^2$ one level above level 0 -- the spread of the level-0
     class means about the global mean, debiased the same way and summed over
