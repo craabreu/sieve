@@ -195,7 +195,9 @@ $\sigma$, from 0.0089 to 0.068.
 | 300–999 | 57503 | 0.02242 | 0.01775 | 0.99 |
 | 1000+ | 166590 | 0.01975 | 0.01666 | 1.06 |
 
-`msd` becomes trustworthy around $N\approx20$–50 and is essentially exact by $N\ge100$.
+`msd` becomes trustworthy around $N\approx20$–50 and is essentially exact by $N\ge100$ — but $N$
+counts *conformers*, roughly 3 per independent unit on this store, so read those thresholds as
+$\approx7$–17 and $\approx33$ independent units. See the clustering correction below.
 
 **This inverts §13 item 8's stated worry.** That item feared σ² weighting would concentrate
 residual on high-variance nodes, "which, after §4.3's $(1+1/N)$ inflation, are disproportionately
@@ -236,14 +238,47 @@ On this metric $\sqrt{s^2+\hat\tau^2_{\mathrm{pa}}(1-w)}$ wins ranking outright 
 5% of calibrated overall, which is why an earlier revision adopted it. §3.2 shows that reading was
 an artifact of the metric.
 
-**Clustering was the obvious suspect and it is not the cause.** A class's $N$ counts conformers,
-and conformers of one molecule are near-replicates, so a low-$N$ class measuring only conformational
-jitter would explain the collapse with no new mechanism. It does not hold: distinct training
-molecules per class give mean $M/N=1.000$ at $N=2$, 0.997 at $N=3$–4, and 0.935 at $N=5$–9 — no
-pseudo-replication at all at the low end. Recalibrating by $M$ instead of $N$ moves the bottom bin
-only from 3.40 to 3.20. Replication does appear in the large classes ($M/N=0.636$ at $N\ge50$), but
-those are the well-calibrated ones. The deficit is small-sample noise in $s^2$, exactly as the
-$\sqrt{2/(N-1)}$ relative standard error predicts.
+**Clustering *is* a cause, and an earlier revision of this section said otherwise on a broken
+statistic.** That revision reported "mean $M/N=1.000$ at $N=2$ — no pseudo-replication at all" and
+concluded the deficit was ordinary small-sample noise. The $M$ there came from `atom_mol_id`, which
+indexes **conformers**, not molecules. Distinct conformers per class is ≈1 by construction — an atom
+appears once per conformer — so that measurement could not test the hypothesis it was cited against.
+The conclusion drawn from it was wrong and is withdrawn.
+
+Measured properly, with the molecule key coalesced from `chembl_id`/`dash_id` (the store carries two
+complementary record schemas), on `dash-molecules-10fold-1`: **95% of molecules have exactly 3
+conformers and 5% have 2**, splits are by molecule, and $N/M$ per matched class has median 3.38.
+So a class with $N=3$ holds **one molecule**, and 7.8% of test atoms match a single-molecule class.
+Calibration re-binned by $M$:
+
+| $M$ (molecules) | 1 | 2 | 3–4 | 5–9 | 10–19 | 20–49 |
+|---|---:|---:|---:|---:|---:|---:|
+| ratio | **2.71** | 1.58 | 1.29 | 1.16 | 1.06 | 0.99 |
+
+The collapse sits exactly where a class holds one or two molecules, so $s^2$ there is measuring the
+*conformational* spread of a single molecule's atom while the test atom comes from a different
+molecule entirely. §3.1's "trustworthy around $N\approx20$–50" is better read as $M\approx20$
+molecules.
+
+**But the unit is $N/3$, not $M$.** Conformers cap at 3, so $N/M>3.5$ cannot mean "more conformers"
+— it means one molecule contributing several *distinct* atoms (the six aromatic CH's of a ring). The
+cross-tab separates the two: at fixed $M$, moving right along $N/M$ improves calibration (3.40 →
+1.51 at $M=1$), so extra atom-orbits carry real information while extra conformers do not. Rank
+correlations against $|z|$ bear it out — $M$ −0.2184, $N$ −0.2201, $N/M$ −0.1219 — with $N$
+fractionally *better* than $M$, because dividing all the way to molecules over-corrects. Divide by
+conformers-per-molecule and stop.
+
+**Two consequences, one of which is not an improvement.** `minimum_support` counts conformers, so
+`minimum_support=1` cannot gate anything — the smallest possible class is 3 — and `design.md` open
+item 1 asks for an empirical default in a unit that cannot express the intended quantity. The
+tempting follow-on, dividing $N$ by 3 in the shrinkage weight, is **not** supported: for the swept
+count rule $\frac{N/3}{N/3+\alpha}=\frac{N}{N+3\alpha}$ exactly, so a swept $\alpha$ already absorbs
+it, and the `shrinkage-d6` sweep degrades monotonically with $\alpha$ (0.016046 at 0.5 → 0.024110 at
+100), i.e. the optimum is at the *weakest* shrinkage tried. Under `empirical_bayes` $\alpha$ is
+estimated rather than swept so the absorption does not happen automatically — yet EB still beats the
+best swept count rule on the same batch (0.015799 vs 0.015816). If the deepest-level weight is
+inflated, it is not costing measurable accuracy, and an "unbiased" version that shrank three times
+harder would plausibly be worse.
 
 **Scope.** One fold, one config, `class_estimator="pooled"`. It says nothing about §1's
 continuation-specific pairing problem, which needs the same measurement under `continuation`.
