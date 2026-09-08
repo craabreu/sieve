@@ -105,23 +105,25 @@ poses.
 **The estimator.** Take
 
 $$
-\sigma^2_i=\underbrace{\frac{(N_c-1)\,s^2_{k^\star_i,c_i}+\alpha^v\,\bar\sigma^2_{k^\star_i}}
-                            {(N_c-1)+\alpha^v}}_{\text{shrunk within-class}}
-+\underbrace{\hat\tau^2_{\mathrm{pa}(k^\star_i)}\left(1-w_{c_i}\right)}
-        _{\text{posterior variance of the class mean}},
-\qquad
-\sigma^2_i=\sigma^2_{\text{global}}\ \text{ where }\ k^\star_i=-1
+\sigma^2_i=\underbrace{\frac{(N_c-1)\,s^2_c+\alpha^v\,\bar\sigma^2_k}{(N_c-1)+\alpha^v}}
+        _{\text{within-class, shrunk}}
+\;+\;a\underbrace{\frac{(C_c-1)\,\tau^2_c+\alpha^t\,\hat\tau^2_k}{(C_c-1)+\alpha^t}}
+        _{\text{selection, support-independent}}
+\;+\;\underbrace{\hat\tau^2_{\mathrm{pa}(k)}\left(1-w_c\right)}
+        _{\text{mean estimation}}
 $$
 
-with $w_c$ the empirical-Bayes weight `shrinkage.empirical_bayes_weights` already returns,
-$\hat\tau^2_k$ the sibling variance from `continuation.sibling_variance` (`root_variance` at level
-0), $\bar\sigma^2_k$ the level-pooled `continuation.atom_variance`, and $\sigma^2_{\text{global}}$
-the stored `global_msd`. Nothing new is stored and nothing new is estimated.
+with $\sigma^2_i=\sigma^2_{\text{global}}$ where $k^\star_i=-1$, and the middle term **zero at the
+deepest level** — no children, and it is read on an exact match, so there is no selection to correct.
+$w_c$ is the empirical-Bayes weight `shrinkage.empirical_bayes_weights` already returns,
+$\hat\tau^2_k$ the level-pooled `continuation.sibling_variance` (`root_variance` at level 0),
+$\bar\sigma^2_k$ the level-pooled `continuation.atom_variance`, $\sigma^2_{\text{global}}$ the
+stored `global_msd`, and $\tau^2_c$ a class's **own** children's mean-variance — the only new
+quantity, one `bincount` from the stored arrays.
 
-**$\alpha^v\approx10$**, and it is the one knob here — reintroduced deliberately after §3.1 showed
-the knob-free alternatives are both worse. Performance is flat over $\alpha^v\in[5,20]$ (§3.1), so
-it is not a delicate choice; §13 item 9's calibration route ($\mathrm{Var}(z)=1$) remains the way to
-set it properly.
+**$\alpha^v=30$, $\alpha^t=1$, $a=0.5$**, selected on the val split by Gaussian NLL over a 200-point
+grid (§3.3), never on test. Every parameter is flat: the top five val configs differ by 0.0012 in
+NLL, and the val-selected point achieves the *best achievable* test NLL to four decimals.
 
 **This is not an approximation — it is the posterior predictive variance of the model §4.4 already
 fits.** Writing the normal–normal model Sieve assumes,
@@ -289,6 +291,92 @@ approximation is now measured, and it is large. It does not invalidate the σ² 
 relative scale, not a density — but any *interval* reported from these numbers would be wrong, and
 that is the use for which conformal prediction, not a variance, is the right tool.
 
+### 3.3 The search that fixed §3's form, and how it was selected
+
+200 configurations of the three-term form, scored on the val split by Gaussian NLL and reported on
+test. Val picks $\alpha^v=30,\ \alpha^t=1,\ a=0.5,\ b=1$; the test-selected optimum differs only in
+$\alpha^t$ (3 rather than 1) and **both reach test NLL −2.5130, gap +0.0000**. The surface is flat
+enough that honest selection costs nothing, which is the only reason the two extra knobs are
+tolerable.
+
+Test metrics at the val-selected point: NLL −2.5130, $\mathbb E[z^2]=1.145$, median-scale 0.79,
+coverage at $\pm1.96\sigma$ **0.9508**, per-level $\mathbb E[z^2]$ = 1.44 / 1.13 / 1.00 / 1.18,
+within-molecule $r=0.6305$, Spearman 0.5302, post-normalization MAE 0.017199.
+
+**Three findings the grid settles.**
+
+*The selection term must be support-independent.* This is the one component that does not vanish as
+$N\to\infty$, and it is what the regressogram framing predicts: a wide bin is read **only** by
+queries whose narrow bin was empty (§2.2's prefix property), so the population reading a coarse class
+is a biased sample of it — selection bias, not approximation bias. The control settles it: multiplying
+the term by $(1-w)$ so that it *does* vanish reproduces having no term at all (NLL −2.5106 vs
+−2.5099, level trend 2.71/1.87/1.42 vs 2.85/1.88/1.45). No parameter sweep would have found this;
+only the structural argument did.
+
+*The per-class $\tau^2_c$ beats the level-pooled $\hat\tau^2_k$.* Every top-12 config has finite
+$\alpha^t$; the pooled variant is 0.0025 worse in NLL and 0.006 worse in within-$r$. §4.4's objection
+to per-class variances ("at $C=2$–3 a per-class variance carries 1–2 degrees of freedom and is mostly
+noise") is answered by *shrinking* them toward the pooled value, not by discarding them — and
+$\alpha^t$ is insensitive (1, 3, 10 within 0.0002).
+
+*The criteria still disagree, and the disagreement is now bounded.* NLL wants
+$(30,1,0.5,1)$; within-molecule $r$ wants $(3,10,1.5,1)$ at 0.6354; post-normalization MAE wants
+$a=b=0$ at 0.017177. The spread is 4% in ranking and 0.13% in MAE. §3 selects on NLL because the
+question is which *uncertainty* estimator is best; this is explicitly **not** the best normalizer,
+and §4's measurement of the prize (3.3% total) is why that costs nothing worth having.
+
+**And $a$ is settled by atom counts, not by fit.** $a=1$ nails levels 0–1 (1.01, 0.82) and
+over-corrects level 2 (0.78); $a=0.5$ nails level 2 (1.00) and under-corrects level 0 (1.44). Level 2
+holds 76,117 atoms against level 0's **251**, so $a=0.5$ is right and level 0's calibration is noise.
+
+### 3.4 Higher moments: merge verified, diagnostic negative — do not build it
+
+§3.2's sulfur anomaly ($\mathbb E[z^2]=3.03$ against 1.03 for chlorine) suggested multimodal classes
+— thiol vs sulfonyl vs thioether — which no within-class variance can express. §3.3's $\tau^2_c$
+cannot test that at the deepest level, where 78.8% of atoms match and there are no children. The
+route that reaches it is 3rd and 4th central moments per class. Prototyped; **not adopted.**
+
+**The merge extension is real.** Pébay's pairwise formulas extend §5.2's law-of-total-variance
+identity to arbitrary order,
+
+$$
+M_3 = M_{3A}+M_{3B}+\delta^3\frac{n_An_B(n_A-n_B)}{n^2}
+      +3\delta\frac{n_AM_{2B}-n_BM_{2A}}{n}
+$$
+
+plus the four-term $M_4$ analogue. Verified over 400 random splits with adversarial mixed scales and
+offsets: max relative error $4.4\times10^{-14}$ (mean), $5.3\times10^{-14}$ ($M_2$),
+$1.6\times10^{-11}$ ($M_3$), $1.4\times10^{-13}$ ($M_4$); order-independence to $1.4\times10^{-14}$
+over three-way merges in both associativity orders. Per-class $M_2/N$ reproduces the stored `msd`
+to **exactly** 0.0 at all four levels. So the "one more term per moment, $O(1)$ storage" claim holds
+and this stays available at any time.
+
+**But the classes are leptokurtic, not bimodal.** At the deepest level with $N\ge20$ (271,400 atoms,
+80.5% of deepest), median Sarle $BC$ runs 0.18–0.49 — mostly *below* the 0.556 threshold — while
+median $b_2$ runs 4.2 to **29.0** (39.9 for hydrogen at $N\ge100$) against a Gaussian's 3.
+Bimodality's signature is $b_2<3$; nothing here is close. Depth-3 refinement apparently already
+separates the sulfur environments, leaving unimodal classes with outliers.
+
+**$BC$ does not predict miscalibration.** $\mathbb E[z^2]$ by $BC$ quintile: 1.05, 1.06, 1.01,
+**1.32**, 1.06 — non-monotone, and the same at $N\ge100$ (1.02, 1.02, 1.04, 1.35, 1.00). It does
+track error *magnitude* (mean $|$err$|$ 0.0071 → 0.0128 across quintiles), but §3's σ already absorbs
+that, which is the better outcome. Identical pattern to the ICC diagnostic, which saturated near 1
+for 84–92% of classes at every element and was undefined for the 78.8% at the deepest level.
+
+**Two things this does explain.** The class-level $b_2\approx6$–40 is the *source* of the kurtosis-182
+in standardized residuals, so §3.2's "no single Gaussian scale satisfies both $\mathbb E[z^2]=1$ and
+median-$|z|=1$" is a property of the data, not a defect in the estimator. And sulfur relocates: at the
+deepest level with $N\ge20$ it is $\mathbb E[z^2]=1.18$, i.e. fine, so its anomaly lives in backed-off
+or low-support classes — neither reachable by a 4th moment, which needs support to mean anything.
+
+**A structural constraint worth recording.** The principled response to leptokurtic classes is a
+*robust* scale — MAD, trimmed variance — or a Student-$t$ likelihood. But Sieve's architecture
+requires statistics that merge exactly, and moments are precisely the family that merges exactly
+while being maximally sensitive to the tails that are the problem. Quantiles and MAD do not merge
+exactly at all. Heavy tails are therefore hard for Sieve *by construction*, and the only route is an
+approximate mergeable sketch (t-digest, KLL) — a far bigger change than one term, and worth naming as
+such rather than rediscovering later.
+
 ## 4. Consequence for §13 item 8, and for equal weighting
 
 Item 8 frames the three schemes as differing "in exponent, not in kind" — residual spread
@@ -316,10 +404,38 @@ add coherently across a molecule while estimator variance partly cancels, so $|X
 should fall. Measuring that under `pooled` vs `continuation` needs no new fit and no normalizer at
 all, and it bounds how much the three-way comparison can possibly show.
 
-**No normalization outcome here is measured** — §3.1 measures the variance the schemes would
-consume, not what any of them does to MAE. `NORMALIZERS` has no σ² entry; `sieve_predictor`'s own
-docstring
-records that `std_weighted` was deliberately deferred "for a follow-up once this `atom_std` has
-been checked against real data"; and the only normalization numbers in the repo are DASH's own
-baseline (test MAE 0.0190 unnormalized → 0.0193 under `std_weighted`, buying exact charge
-conservation). A theoretical ranking is not a predicted outcome.
+### 4.1 Item 8, answered — and the prize is 3.3%
+
+Post-normalization error needs no refit and no `NORMALIZERS` entry to score: with weights
+$p_i\propto\sigma_i^\gamma$ normalised within a molecule and $R=X-\sum_j\mu_j$, the error is
+$p_iR-r_i$ with $r_i=y_i-\mu_i$, and $R=\sum_j r_j$ identically. Closed form, from arrays a fit
+already produces.
+
+| σ source | $\gamma=0$ | 0.5 | 1 | 1.5 | 2 | 3 |
+|---|---:|---:|---:|---:|---:|---:|
+| raw $s$ | 0.017780 | 0.017474 | 0.017262 | **0.017174** | 0.017196 | 0.017450 |
+| shrunk + EB | 0.017780 | 0.017509 | 0.017312 | 0.017208 | 0.017194 | 0.017390 |
+
+Unnormalized MAE 0.017653; best $\gamma=1.85$ at 0.017188. $\gamma=0,1,2$ are `equal_weighted`,
+DASH's eq 4, and the §6.4 MLE.
+
+**The whole weighting question is worth 0.00059 MAE — 3.3%. The choice of σ estimator is worth 0.2%
+of that**: every candidate at a sensible $\gamma$ lands within 0.00003 of every other, and raw $s$ —
+which §3.2 shows is unusable *as an uncertainty* — ties the carefully shrunk version here. The
+exponent matters roughly thirty times more than the estimator.
+
+**$\gamma=2$ is empirically optimal, so §6.4's exponent survives even though its derivation does
+not.** 0.017194 at $\gamma=2$ against 0.017188 at the fitted optimum. Every assumption behind the
+MLE is violated — non-Gaussian (§3.4: class $b_2$ up to 40), non-independent ($J_{ij}\neq0$, §13
+item 10), variances conditionally miscalibrated (§3.2) — and the exponent it prescribes is still
+right to three decimals. Report that as an empirical finding, not as vindication of the derivation.
+
+**`equal_weighted` is worse than not normalizing at all** (0.017780 vs 0.017653), so enforcing
+conservation by equal spreading costs accuracy — matching the direction of DASH's own baseline
+(0.0190 → 0.0193 under `std_weighted`). Any σ-weighting with $\gamma\ge1$ reverses that and comes out
+ahead of the unnormalized prediction.
+
+**The sequencing lesson, recorded because it cost four revisions of §3.** This calculation was
+available from the first fit, needs no normalizer, and bounds everything §3 was optimizing. Measuring
+the objective before refining the estimator would have shown immediately that the estimator is not
+rate-limiting. §3.2's own warning about a too-weak metric is the same mistake one level down.
