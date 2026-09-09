@@ -33,7 +33,7 @@ def test_build_parity_panels_includes_atom_charge():
         "charge_conservation/r2": 1.0,
     }
 
-    panels = _build_parity_panels(ms, pred, run_metrics)
+    panels = _build_parity_panels(ms, pred, run_metrics, label="charge")
 
     np.testing.assert_array_equal(panels[0]["y_true"], ms.atom_target)
     np.testing.assert_array_equal(panels[0]["y_pred"], pred.atom_value)
@@ -53,7 +53,7 @@ def test_build_parity_panels_omits_conservation_panel_when_exactly_conserved():
     ms = synthetic_molecule_set(n_mol=6, seed=0)
     pred = Prediction(atom_value=ms.atom_target)  # perfect predictions
 
-    panels = _build_parity_panels(ms, pred, {})
+    panels = _build_parity_panels(ms, pred, {}, label="charge")
 
     assert _panel_titles(panels) == ["atom charge"]
 
@@ -71,7 +71,7 @@ def test_build_parity_panels_conservation_panel_is_the_residual_histogram():
     atom_charge_pred = ms.atom_target + noise
     pred = Prediction(atom_value=atom_charge_pred)
 
-    panels = _build_parity_panels(ms, pred, {})
+    panels = _build_parity_panels(ms, pred, {}, label="charge")
 
     pred_net_charge = molecule_sum(atom_charge_pred, ms.atom_mol_id, ms.n_conformers)
     expected_residual = pred_net_charge - ms.molecule_value
@@ -91,10 +91,42 @@ def test_build_parity_panels_conservation_panel_drops_nan_residuals():
     atom_charge_pred[0] = np.nan  # poisons the whole first conformer's sum
     pred = Prediction(atom_value=atom_charge_pred)
 
-    panels = _build_parity_panels(ms, pred, {})
+    panels = _build_parity_panels(ms, pred, {}, label="charge")
 
     assert panels[1]["values"].shape[0] == ms.n_conformers - 1
     assert not np.any(np.isnan(panels[1]["values"]))
+
+
+def test_panels_use_the_configured_label():
+    from experiments.predictors.base import Prediction
+    from experiments.runner import _build_parity_panels
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6)
+    pred = Prediction(atom_value=mset.atom_target + 0.01)
+
+    panels = _build_parity_panels(mset, pred, {"mae": 0.01}, label="alpha (a.u.)")
+
+    assert panels[0]["quantity"] == "alpha (a.u.)"
+    assert panels[0]["title"] == "atom alpha (a.u.)"
+
+
+def test_no_residual_panel_without_a_molecule_total():
+    from experiments.data import MoleculeSet
+    from experiments.predictors.base import Prediction
+    from experiments.runner import _build_parity_panels
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6)
+    bare = MoleculeSet(mols=mset.mols, atom_property=mset.atom_property)
+    pred = Prediction(atom_value=bare.atom_target + 0.5)
+
+    panels = _build_parity_panels(bare, pred, {"mae": 0.5}, label="charge (e)")
+
+    assert len(panels) == 1
+    assert all(p.get("kind") != "histogram" for p in panels)
 
 
 def test_parity_panel_writes_a_png_file(tmp_path):

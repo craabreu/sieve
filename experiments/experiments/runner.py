@@ -288,19 +288,23 @@ def _finite_pair(
 
 
 def _build_parity_panels(
-    test: MoleculeSet, pred: Prediction, run_metrics: dict[str, float]
+    test: MoleculeSet,
+    pred: Prediction,
+    run_metrics: dict[str, float],
+    *,
+    label: str,
 ) -> list[dict[str, Any]]:
-    """Which panels a run's ``parity_panel.png`` gets: atom charge always
-    (the primary prediction target, a hexbin parity plot -- ``test`` is
-    assumed non-empty, ``_write_plots`` checks that before calling this);
-    molecule charge conservation as a secondary diagnostic -- a 1-D
-    histogram of the per-conformer residual (predicted
-    atom charges summed, minus the conformer's own real ``net_charge``),
-    not a parity scatter, since a residual is one number per conformer, not
-    a true/predicted pair. The same residual ``metrics.
-    charge_conservation_metrics`` already scores (its own ``err = y_pred -
-    y_true`` is this exact quantity). Pure numpy -- no matplotlib -- so
-    this is testable independent of ``plots.py`` actually rendering
+    """Which panels a run's ``parity_panel.png`` gets: the per-atom target
+    always (a hexbin parity plot -- ``test`` is assumed non-empty,
+    ``_write_plots`` checks that before calling this); the sum-constraint
+    residual as a secondary diagnostic, when the run has a per-molecule
+    total to compare against -- a 1-D histogram of the per-conformer
+    residual (predicted atom values summed, minus the molecule's own
+    ``molecule_value``), not a parity scatter, since a residual is one
+    number per conformer, not a true/predicted pair. The same residual
+    ``metrics.sum_constraint_metrics`` already scores (its own ``err =
+    y_pred - y_true`` is this exact quantity). Pure numpy -- no matplotlib
+    -- so this is testable independent of ``plots.py`` actually rendering
     anything."""
     panels: list[dict[str, Any]] = []
 
@@ -312,43 +316,40 @@ def _build_parity_panels(
             {
                 "y_true": atom_true,
                 "y_pred": atom_pred,
-                "quantity": "charge (e)",
-                "title": "atom charge",
+                "quantity": label,
+                "title": f"atom {label}",
                 "metrics": {
                     k: v for k, v in run_metrics.items() if k in ("mae", "rmse", "r2")
                 },
             }
         )
 
-    # No per-molecule total to check against when target.molecule_property
-    # is unset -- test.molecule_value is None (see MoleculeSet, Task 3),
-    # so there is nothing to build this diagnostic panel from.
-    if test.molecule_value is not None:
-        pred_net_charge = molecule_sum(
-            pred.atom_value, test.atom_mol_id, test.n_conformers
+    if test.molecule_value is None:
+        return panels
+
+    pred_total = molecule_sum(pred.atom_value, test.atom_mol_id, test.n_conformers)
+    residual = pred_total - test.molecule_value
+    residual = residual[~np.isnan(residual)]
+    # A predictor whose own normalization already satisfies the constraint
+    # exactly (e.g. std_weighted/equal_weighted -- residuals at float
+    # round-off, ~1e-16) has nothing worth plotting here: a histogram of
+    # that is a single spike carrying no information, not a diagnostic.
+    # Same threshold plots._histogram_subplot's own degenerate-bin-count
+    # guard uses, kept in sync deliberately.
+    if residual.size and np.max(np.abs(residual)) >= 1e-6:
+        panels.append(
+            {
+                "kind": "histogram",
+                "values": residual,
+                "xlabel": f"molecule {label} residual",
+                "title": "sum constraint",
+                "metrics": {
+                    k.removeprefix("sum_constraint/"): v
+                    for k, v in run_metrics.items()
+                    if k.startswith("sum_constraint/")
+                },
+            }
         )
-        residual = pred_net_charge - test.molecule_value
-        residual = residual[~np.isnan(residual)]
-        # A predictor whose own normalization already conserves charge
-        # exactly (e.g. std_weighted/equal_weighted -- residuals at float
-        # round-off, ~1e-16) has nothing worth plotting here: a histogram
-        # of that is a single spike carrying no information, not a
-        # diagnostic. Same threshold plots._histogram_subplot's own
-        # degenerate-bin-count guard uses, kept in sync deliberately.
-        if residual.size and np.max(np.abs(residual)) >= 1e-6:
-            panels.append(
-                {
-                    "kind": "histogram",
-                    "values": residual,
-                    "xlabel": "molecule charge residual (e)",
-                    "title": "molecule charge conservation",
-                    "metrics": {
-                        k.removeprefix("charge_conservation/"): v
-                        for k, v in run_metrics.items()
-                        if k.startswith("charge_conservation/")
-                    },
-                }
-            )
     return panels
 
 
@@ -363,7 +364,9 @@ def _write_plots(
         return  # nothing to plot on an empty eval split (e.g. a small
         # --limit run whose split happens to land entirely in train)
     try:
-        panels = _build_parity_panels(test, pred, run_metrics)
+        panels = _build_parity_panels(
+            test, pred, run_metrics, label=cfg.target.axis_label
+        )
         plots.parity_panel(
             panels,
             run_dir / "parity_panel.png",
