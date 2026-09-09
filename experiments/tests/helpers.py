@@ -43,7 +43,7 @@ def synthetic_molecule_set(
     chembl_id: list[str | None] = [
         f"CHEMBL{1000 + i // 2}" for i in range(n_mol)
     ]  # 2 conformers/id
-    conf_id = [f"conf_{i % 2:02d}" for i in range(n_mol)]
+    conf_id: list[str | None] = [f"conf_{i % 2:02d}" for i in range(n_mol)]
 
     return MoleculeSet(
         mols=mols,

@@ -126,12 +126,12 @@ invalid-argument-type = "ignore"
 #   Mol.__init__ overloads only declare pklString: str, not bytes, even
 #   though passing the bytes ToBinary() produces is correct, documented
 #   rdkit usage.
-# - AllChem.GetMorganFingerprintAsBitVect (prepare_store.py's clustering
+# - AllChem.GetMorganFingerprintAsBitVect (prepare_dash.py's clustering
 #   fingerprint step) -- a real, long-standing AllChem function the stubs
 #   simply omit.
 include = [
     "experiments/experiments/data.py",
-    "experiments/experiments/prepare_store.py",
+    "experiments/experiments/prepare_dash.py",
     # Same Chem.Mol(bytes) gap: _deserialize_mol's own worker-side
     # blob -> Mol reconstruction for parallel featurization (n_jobs).
     "src/sieve/io/rdkit_adapter.py",

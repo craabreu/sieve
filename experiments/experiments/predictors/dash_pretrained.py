@@ -205,6 +205,17 @@ class DASHPretrainedChargePredictor:
         return RawPrediction(atom_value=raw_charge, atom_std=raw_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:
+        # Unconditional, unlike runner._normalize's opt-in normalization --
+        # this predictor always applies DASH's own std_weighted scheme (see
+        # class docstring), so it needs a per-molecule total regardless of
+        # whether the run's config set `normalization`. config._build has
+        # no way to enforce that (it only guards `normalization` against a
+        # missing `target.molecule_property`), so this predictor enforces
+        # it directly rather than crashing inside std_weighted_normalize's
+        # own arithmetic with a confusing error.
+        assert test.molecule_value is not None, (
+            "dash_pretrained requires target.molecule_property to be set"
+        )
         raw = self.predict_raw(test)
         atom_value = std_weighted_normalize(
             raw.atom_value,
