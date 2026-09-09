@@ -1,14 +1,22 @@
 # experiments
 
-A second, independent experiment series: predicting DASH's MBIS atomic
-partial charges (the `MBIScharge` SDF property) on DASH's own published
-training data (`dashMoleculesSDF_v2.sdf`, ETH Research Collection).
+A node-level regression harness for molecular stores: a run names an atomic
+property, fits a predictor on the train split, and scores per-atom
+predictions against it. Nothing in the harness is specific to one dataset --
+a dataset arrives as a data-preparation script that writes the store format
+below, plus a config naming its property.
+
+DASH's MBIS atomic partial charges (`MBIScharge`, from
+`dashMoleculesSDF_v2.sdf`) are the series this harness was built for, and
+`prepare_dash.py` is its prep script; `docs/dash_molecules_sdf.md` records
+what running it against the real published SDF turned up.
 
 Fully independent of `cosmo_experiments` (sigma-profile prediction) at the
 harness level -- no shared package, only the core `sieve` dependency in
 common. See
 `docs/superpowers/specs/2026-08-26-dash-charges-experiment-series-design.md`
-for the full design and `docs/dash_molecules_sdf.md` for findings from
+and `docs/superpowers/specs/2026-09-09-experiments-generalization-design.md`
+for the full design; `docs/dash_molecules_sdf.md` covers findings from
 actually running `prepare-store` against the real published SDF (a download
 gotcha, a property-serialization bug, and the discovery that the file holds
 two distinct record schemas).
@@ -18,6 +26,29 @@ describes an earlier nested-run orchestration (a parent run doing
 `fit()`+raw-predict, one MLflow child run per normalization scheme) that has
 since been replaced by the flat run's own `normalization` config key --
 superseded, kept for history.
+
+## Adding a dataset
+
+1. Write `experiments/<dataset>_prep.py` producing
+   `stores/<name>/molecules.parquet` with:
+   - `mol` -- `data.mol_to_blob(mol)` bytes, one conformer per row, its
+     atoms carrying your target property (`atom.SetDoubleProp`);
+   - `split` -- `"train"` / `"val"` / `"test"` per row;
+   - optionally a per-molecule column your atoms' values should sum to;
+   - any further columns, carried through as per-conformer identifiers.
+2. Name it in a config:
+   ```yaml
+   target:
+     atom_property: my_property
+     molecule_property: my_total   # omit if there is no sum constraint
+     label: my property (units)    # optional, plot axes
+   ```
+3. Everything else already works: `store_ops.py`'s subsample / partition /
+   united-atom commands, every predictor, the metrics, the plots.
+
+Omitting `molecule_property` disables the `sum_constraint/*` metrics, the
+residual panel, and the `normalization` key -- a config that sets
+`normalization` without it is rejected at load.
 
 ## Usage
 
