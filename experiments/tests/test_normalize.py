@@ -153,6 +153,16 @@ def test_equal_weighted_normalize_propagates_nan_charge_to_whole_conformer():
     assert np.all(np.isnan(out))
 
 
+def test_equal_weighted_hits_the_requested_total_for_any_quantity():
+    from experiments.normalize import equal_weighted_normalize
+
+    raw = np.array([1.0, 2.0, 3.0])  # sums to 6.0
+    mol_id = np.array([0, 0, 0])
+    total = np.array([9.0])  # nothing charge-like about it
+    out = equal_weighted_normalize(raw, np.ones(3), total, mol_id, 1)
+    assert out.sum() == pytest.approx(9.0)
+
+
 def test_normalizers_registry_has_both_schemes():
     from experiments.normalize import (
         NORMALIZERS,

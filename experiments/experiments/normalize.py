@@ -1,10 +1,17 @@
-"""Normalization schemes applied to a DASH-tree predictor's raw, unnormalized
-per-atom charge walk -- kept independent of any predictor so a run can apply
-one to an already-computed raw prediction without re-matching or re-fitting
-anything (see ``config.ExperimentCfg.normalization`` and ``runner._predict``).
+"""Sum-constraint schemes: redistribute a predictor's raw, unnormalized
+per-atom values so each molecule's atoms sum to a known per-molecule total
+(``config.TargetCfg.molecule_property``). Kept independent of any predictor
+so a run can apply one to an already-computed raw prediction without
+re-matching or re-fitting anything (see ``config.ExperimentCfg.
+normalization`` and ``runner._predict``).
 
-Every entry in ``NORMALIZERS`` shares one signature, ``(raw_charge, raw_std,
-net_charge, mol_id, n_conformers) -> atom_value``, even though
+Both schemes come from DASH's own post-hoc charge conservation (the paper's
+eq. 4 and ``get_molecules_partial_charges``'s ``symmetric`` branch), but
+neither is charge-specific: they need only a per-atom value, a per-atom
+std, and a per-molecule total.
+
+Every entry in ``NORMALIZERS`` shares one signature, ``(raw_value, raw_std,
+molecule_value, mol_id, n_conformers) -> atom_value``, even though
 ``equal_weighted_normalize`` ignores ``raw_std`` entirely -- this lets
 calling code stay normalization-agnostic.
 """
@@ -25,9 +32,9 @@ _DEFAULT_STD_VALUE = 0.1
 
 
 def std_weighted_normalize(
-    raw_charge: NDArray[np.floating],
+    raw_value: NDArray[np.floating],
     raw_std: NDArray[np.floating],
-    net_charge: NDArray[np.floating],
+    molecule_value: NDArray[np.floating],
     mol_id: NDArray[np.int64],
     n_conformers: int,
 ) -> NDArray[np.float64]:
@@ -40,39 +47,39 @@ def std_weighted_normalize(
     A non-positive (including NaN) entry in ``raw_std`` is floored to
     ``get_molecules_partial_charges``'s own ``default_std_value`` (0.1) --
     the authors' own published fallback for *that* quantity. A NaN entry in
-    ``raw_charge`` is not floored or substituted: it propagates through
+    ``raw_value`` is not floored or substituted: it propagates through
     ``molecule_sum`` into that whole conformer's residual, so every atom in
-    a conformer with even one unmatched raw charge ends up NaN.
+    a conformer with even one unmatched raw value ends up NaN.
     """
-    raw_charge = np.asarray(raw_charge, dtype=np.float64)
+    raw_value = np.asarray(raw_value, dtype=np.float64)
     raw_std = np.asarray(raw_std, dtype=np.float64)
     effective_std = np.where(raw_std > 0, raw_std, _DEFAULT_STD_VALUE)
-    tot_charge_tree = molecule_sum(raw_charge, mol_id, n_conformers)
+    tot_value_tree = molecule_sum(raw_value, mol_id, n_conformers)
     tot_std_tree = molecule_sum(effective_std, mol_id, n_conformers)
-    residual = np.asarray(net_charge, dtype=np.float64) - tot_charge_tree
-    return raw_charge + (residual[mol_id] * effective_std / tot_std_tree[mol_id])
+    residual = np.asarray(molecule_value, dtype=np.float64) - tot_value_tree
+    return raw_value + (residual[mol_id] * effective_std / tot_std_tree[mol_id])
 
 
 def equal_weighted_normalize(
-    raw_charge: NDArray[np.floating],
+    raw_value: NDArray[np.floating],
     raw_std: NDArray[np.floating],
-    net_charge: NDArray[np.floating],
+    molecule_value: NDArray[np.floating],
     mol_id: NDArray[np.int64],
     n_conformers: int,
 ) -> NDArray[np.float64]:
-    """A simpler charge-conservation scheme: spread each conformer's
+    """A simpler sum-constraint scheme: spread each conformer's
     residual equally across its own atoms, ignoring ``raw_std`` entirely
     (accepted only for signature parity with ``std_weighted_normalize`` --
-    see module docstring). A NaN ``raw_charge`` on any atom propagates to
+    see module docstring). A NaN ``raw_value`` on any atom propagates to
     the whole conformer the same way ``std_weighted_normalize``'s does, via
     ``molecule_sum``.
     """
     del raw_std
-    raw_charge = np.asarray(raw_charge, dtype=np.float64)
-    tot_charge_tree = molecule_sum(raw_charge, mol_id, n_conformers)
-    residual = np.asarray(net_charge, dtype=np.float64) - tot_charge_tree
-    n_atoms_per_mol = molecule_sum(np.ones_like(raw_charge), mol_id, n_conformers)
-    return raw_charge + residual[mol_id] / n_atoms_per_mol[mol_id]
+    raw_value = np.asarray(raw_value, dtype=np.float64)
+    tot_value_tree = molecule_sum(raw_value, mol_id, n_conformers)
+    residual = np.asarray(molecule_value, dtype=np.float64) - tot_value_tree
+    n_atoms_per_mol = molecule_sum(np.ones_like(raw_value), mol_id, n_conformers)
+    return raw_value + residual[mol_id] / n_atoms_per_mol[mol_id]
 
 
 NORMALIZERS: dict[

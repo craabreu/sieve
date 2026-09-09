@@ -206,8 +206,10 @@ def execute(
 def _normalize(raw: Any, mset: MoleculeSet, *, normalization: str) -> Prediction:
     """Apply ``normalize.NORMALIZERS[normalization]`` to a predictor's raw
     walk output (``predictors.base.RawPrediction``, from ``predict_raw``/
-    ``predict_loo_raw``) -- the same call shape the old nested_runner.py
-    used, now reachable from a flat run's ``normalization`` config key."""
+    ``predict_loo_raw``). Requires ``mset.molecule_value``; ``config``
+    already refuses a ``normalization`` without ``target.molecule_property``,
+    so this is an invariant, not a user-facing error."""
+    assert mset.molecule_value is not None
     atom_value = NORMALIZERS[normalization](
         raw.atom_value,
         raw.atom_std,
