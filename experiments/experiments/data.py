@@ -41,7 +41,7 @@ DEFAULT_CACHE_DIR = REPO_ROOT / "experiments" / "cache"
 # *empty* prop dict for such names, no error). MBIScharge survives without
 # this flag only because its name happens not to start with "_"; RDKit's
 # own CIP labels (``_CIPCode`` and friends) and this codebase's own
-# ``_sieve_rigorous_cip_labeled`` marker (see prepare_store.py /
+# ``_sieve_rigorous_cip_labeled`` marker (see prepare_dash.py /
 # sieve.io.rdkit_adapter.CIP_LABELED_PROP) both need it.
 
 
