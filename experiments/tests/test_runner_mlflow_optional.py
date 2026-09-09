@@ -281,7 +281,13 @@ def test_execute_logs_batch_id_as_an_mlflow_tag(tmp_path):
 
     import mlflow
     import numpy as np
-    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg, TargetCfg
+    from experiments.config import (
+        DataCfg,
+        ExperimentCfg,
+        PredictorCfg,
+        RunCfg,
+        TargetCfg,
+    )
     from experiments.runner import execute
 
     from experiments.tests.helpers import synthetic_molecule_set

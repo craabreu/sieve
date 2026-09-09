@@ -16,7 +16,13 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_sieve_charge_predictor_runs_end_to_end_via_run(tmp_path):
-    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg, TargetCfg
+    from experiments.config import (
+        DataCfg,
+        ExperimentCfg,
+        PredictorCfg,
+        RunCfg,
+        TargetCfg,
+    )
     from experiments.runner import run
 
     cfg = ExperimentCfg(
