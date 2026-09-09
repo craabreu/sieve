@@ -42,18 +42,17 @@ fi
 # One fit + one tree-matching walk per fold (at the deepest depth
 # requested), with every shallower depth's own metrics derived from the
 # already-walked paths instead of re-walking from scratch -- ~10 fits
-# total instead of ~80 independent ones. See
+# total instead of ~90 independent ones. See
 # experiments/experiments/dash_depth_sweep.py's own module docstring for
-# why this is exact, not an approximation. Idempotent per fold (skip once
-# every depth's own run directory already has a metrics.json) -- safe to
-# interrupt and resume by running this script again. Untracked by MLflow
-# (the default; no --track).
-#
-# Starts at depth 2, not 1: DASH-tree's own match_new_atom redirects a
-# hydrogen atom to its heavy neighbor and pre-consumes one depth unit, so
-# depth 1 and depth 2 are identical for every H atom anyway -- dropping 1
-# loses no real resolution here (dash_depth_sweep.py still runs it for
-# real, correctly, if a future config asks for it explicitly).
+# why this is exact, not an approximation (and for the one genuine
+# exception: depth 1 is always run for real, never derived, because
+# DASH-tree's own match_new_atom redirects a hydrogen atom to its heavy
+# neighbor and pre-consumes one depth unit -- confirmed correct against
+# the real store and DASH-tree clone, bit-for-bit against an independent
+# run, before this default depths list was trusted with it). Idempotent
+# per fold (skip once every depth's own run directory already has a
+# metrics.json) -- safe to interrupt and resume by running this script
+# again. Untracked by MLflow (the default; no --track).
 #
 # Read the resulting curve with:
 #   "$PYTHON" -m experiments sweep --experiment dash-depth-sweep \
@@ -62,5 +61,5 @@ fi
   --config experiments/configs/dash-charge-example.yaml \
   --store-prefix dash-molecules-10fold \
   --n-folds 10 \
-  --depths 2,4,6,8,10,12,14,16 \
+  --depths 1,2,4,6,8,10,12,14,16 \
   --experiment dash-depth-sweep
