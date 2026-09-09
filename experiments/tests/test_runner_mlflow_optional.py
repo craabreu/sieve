@@ -1,6 +1,6 @@
 """MLflow-dependent tests for runner._ensure_experiment's retry-on-race
 behavior and runner.promote_run. Skipped when mlflow is absent -- same
-convention as test_charge_aggregate_optional.py."""
+convention as test_aggregate_optional.py."""
 
 from __future__ import annotations
 

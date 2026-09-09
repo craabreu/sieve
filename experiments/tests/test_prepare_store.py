@@ -1,6 +1,6 @@
 """Fast-suite tests for prepare_store.py's pure-logic pieces -- no download,
 no real 8.3GB SDF needed. The real end-to-end parse/cluster/split path is
-covered by test_charge_prepare_store_optional.py, gated on that file's
+covered by test_prepare_store_optional.py, gated on that file's
 presence."""
 
 from __future__ import annotations

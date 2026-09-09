@@ -1,6 +1,6 @@
 """Pure-numpy/pandas tests for tree_artifact.py -- a fake tree-like object
 stands in for a real DASHTree (same pattern as
-test_charge_predictor_dash.py's own _FakeTree), so these need no rdkit and
+test_predictor_dash.py's own _FakeTree), so these need no rdkit and
 no DASH-tree clone."""
 
 from __future__ import annotations

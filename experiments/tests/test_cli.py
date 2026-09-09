@@ -1,6 +1,6 @@
 """Argparse-level tests for cli.py -- verifies flags parse and route to the
 right handler function, not end-to-end execution (that's
-test_charge_smoke.py's job)."""
+test_smoke.py's job)."""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 ``MoleculeSet``, ``molecule_sum``, ``mol_to_blob``/``blob_to_mol`` are pure
 rdkit + numpy -- no pandas, no network -- so they are importable and
 testable without touching the real (8.3GB source / parsed parquet) store.
-See experiments/tests/test_charge_data.py and the
+See experiments/tests/test_data.py and the
 ``synthetic_molecule_set`` fixture in experiments/tests/helpers.py.
 
 Unlike cosmo_experiments' MoleculeSet, there is no SMILES field anywhere: a

@@ -14,7 +14,7 @@ def test_butina_cluster_matches_upstream_doctest_example():
     # `charges` extra (used for prepare-store's real progress bars), not in
     # CI's `[dev,chem]` install, matching this repo's own convention of
     # not installing heavy/optional extras in CI (see e.g.
-    # test_charge_prepare_store_optional.py's pandas/pyarrow guards).
+    # test_prepare_store_optional.py's pandas/pyarrow guards).
     pytest.importorskip("tqdm")
     from experiments._chalcedon.butina_cluster import butina_cluster
 

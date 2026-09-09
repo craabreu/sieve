@@ -1,4 +1,4 @@
-# experiments/tests/test_charge_smoke.py
+# experiments/tests/test_smoke.py
 """End-to-end smoke test on a synthetic store -- no download, no network,
 no mlflow required (tracking=None)."""
 

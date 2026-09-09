@@ -9,9 +9,9 @@ and to this series' Mol-blob store (no atom-map-order/SMILES bookkeeping:
 order, so tree-matching iterates them directly).
 
 Two layers, deliberately split so the algorithm is testable without either
-optional dependency (see experiments/tests/test_charge_predictor_dash.py
+optional dependency (see experiments/tests/test_predictor_dash.py
 for the pure-logic layer; the real-tree/real-rdkit layer is
-_optional-tested only, in test_charge_predictor_dash_optional.py):
+_optional-tested only, in test_predictor_dash_optional.py):
 
 - ``populate_tree_with_charge_property``/``predict_via_data_storage_walk``
   -- pure numpy + pandas over pre-computed tree paths and an already-loaded

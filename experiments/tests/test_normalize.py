@@ -1,6 +1,6 @@
 """Fast-suite tests for normalize.py's pure-numpy normalization schemes --
 no real DASH-tree clone needed. Moved here from
-test_charge_predictor_dash_pretrained.py (std_weighted_normalize's own
+test_predictor_dash_pretrained_optional.py (std_weighted_normalize's own
 implementation moved from predictors/dash_pretrained.py to normalize.py --
 see docs/superpowers/specs/2026-08-27-dash-charges-nested-runs-design.md)."""
 
