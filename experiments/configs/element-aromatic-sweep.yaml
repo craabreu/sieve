@@ -1,0 +1,26 @@
+# element-aromatic_element-aromatic_none, graded levels, no neighbor_depth
+# (so neighbours see both attributes -- the batch_id's second slot).
+# Matches the sieve-charges-sweep convention: seed 0, minimum_support 1,
+# no edge attributes, no normalization.
+#
+# Store and depth are overridden per run with --set.
+run:
+  experiment: sieve-charges-sweep
+  batch_id: element-aromatic_element-aromatic_none
+  seed: 0
+data:
+  store: dash-molecules-10fold-1
+  split_column: split
+target:
+  atom_property: MBIScharge
+  molecule_property: net_charge
+  label: charge (e)
+predictor:
+  name: sieve
+  params:
+    attribute_levels:
+      - [element]
+      - [aromatic]
+    edge_attributes: []
+    max_wl_depth: 6
+    minimum_support: 1

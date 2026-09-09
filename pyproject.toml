@@ -12,17 +12,17 @@ dev = [
     "ruff>=0.16",
     "ty==0.0.72",
     "scikit-learn>=1.3",
-    # Lightweight (no torch chain) and needed to even load a charge_experiments
+    # Lightweight (no torch chain) and needed to even load an experiments
     # config, so it lives in dev, not in the heavier `charges` extra below --
     # CI syncs [dev,chem] and must be able to run the fast experiment tests
     # (config/metrics/data/smoke) without that heavier extra.
     "pyyaml>=6",
 ]
-# The charge_experiments series' own runtime deps, kept out of `dev`/`chem`
+# The experiments series' own runtime deps, kept out of `dev`/`chem`
 # so a plain `pip install sieve` stays light. tables/tqdm/pillow are runtime
 # deps of the pinned rinikerlab/DASH-tree clone
-# (charge_experiments/predictors/dash.py), added to sys.path rather than
-# pip-installed -- see charge_experiments/pins.toml. matplotlib backs
+# (experiments/predictors/dash.py), added to sys.path rather than
+# pip-installed -- see experiments/pins.toml. matplotlib backs
 # plots.py's parity_panel, imported lazily there so its absence only skips
 # plotting, never fails a run.
 charges = [
@@ -41,27 +41,27 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src", "charge_experiments"]
+where = ["src", "experiments"]
 
 [tool.uv.workspace]
 # The pinned rinikerlab/DASH-tree checkout lives under
-# charge_experiments/external/ (git-ignored) and ships its own
+# experiments/external/ (git-ignored) and ships its own
 # pyproject.toml. Without this exclusion uv silently treats it as an
 # implicit workspace member and tries to build/install "serenityff" into
 # this project's venv and lockfile -- it's an inert clone used via
 # sys.path (predictors/dash.py), not a dependency of `sieve`.
-exclude = ["charge_experiments/external/*"]
+exclude = ["experiments/external/*"]
 
 [tool.pytest.ini_options]
-# charge_experiments/tests holds every charges-series test, kept contained
-# under charge_experiments/ per the harness's own design.
-testpaths = ["tests", "charge_experiments/tests"]
+# experiments/tests holds every charges-series test, kept contained
+# under experiments/ per the harness's own design.
+testpaths = ["tests", "experiments/tests"]
 filterwarnings = ["error::RuntimeWarning"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-include = ["src/**/*.py", "tests/**/*.py", "charge_experiments/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "experiments/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
@@ -71,13 +71,13 @@ ignore = ["E402"]
 # Vendored verbatim from cosmolayer/chalcedon (see NOTICE in that
 # directory) -- kept byte-for-byte except one import path, including
 # upstream's own line lengths.
-"charge_experiments/charge_experiments/_chalcedon/**" = ["E501"]
+"experiments/experiments/_chalcedon/**" = ["E501"]
 
 [tool.ruff.format]
 # Same vendored-verbatim files as the E501 ignore above -- `ruff format`
 # would rewrap upstream's own (long) lines, breaking "byte-for-byte except
-# one import path" the moment CI's format check covered charge_experiments.
-exclude = ["charge_experiments/charge_experiments/_chalcedon/**"]
+# one import path" the moment CI's format check covered experiments.
+exclude = ["experiments/experiments/_chalcedon/**"]
 
 [tool.ty.analysis]
 # CI's lint job installs [dev,chem] only, not the heavier `charges` extra
@@ -100,12 +100,12 @@ allowed-unresolved-imports = [
     # butina_cluster.py's unconditional `from tqdm.auto import tqdm` --
     # tqdm ships in the `charges` extra (prepare-store's real progress
     # bars), not in CI's [dev,chem] install (see
-    # test_charge_chalcedon.py's matching pytest.importorskip("tqdm")).
+    # test_chalcedon.py's matching pytest.importorskip("tqdm")).
     "tqdm",
     "tqdm.**",
     # rinikerlab/DASH-tree, sys.path-shimmed from
-    # charge_experiments/external/DASH-tree rather than pip-installed --
-    # see charge_experiments/predictors/dash.py.
+    # experiments/external/DASH-tree rather than pip-installed --
+    # see experiments/predictors/dash.py.
     "serenityff",
     "serenityff.**",
 ]
@@ -126,12 +126,12 @@ invalid-argument-type = "ignore"
 #   Mol.__init__ overloads only declare pklString: str, not bytes, even
 #   though passing the bytes ToBinary() produces is correct, documented
 #   rdkit usage.
-# - AllChem.GetMorganFingerprintAsBitVect (prepare_store.py's clustering
+# - AllChem.GetMorganFingerprintAsBitVect (prepare_dash.py's clustering
 #   fingerprint step) -- a real, long-standing AllChem function the stubs
 #   simply omit.
 include = [
-    "charge_experiments/charge_experiments/data.py",
-    "charge_experiments/charge_experiments/prepare_store.py",
+    "experiments/experiments/data.py",
+    "experiments/experiments/prepare_dash.py",
     # Same Chem.Mol(bytes) gap: _deserialize_mol's own worker-side
     # blob -> Mol reconstruction for parallel featurization (n_jobs).
     "src/sieve/io/rdkit_adapter.py",

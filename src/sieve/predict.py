@@ -73,7 +73,7 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     drops out of ``alive``); left out because the continuation experiment
     this exists for does not exercise ``predict_loo``. A caller reaches this
     almost certainly by way of ``report_loo``, which should raise earlier
-    still -- see ``charge_experiments``' ``SievePredictor.__init__``.
+    still -- see ``experiments``' ``SievePredictor.__init__``.
     """
     cfg = model.config
     if loo_y is not None and cfg.class_estimator != CLASS_ESTIMATOR_POOLED:

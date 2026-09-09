@@ -1,0 +1,48 @@
+# element_element_none with the best post-fit strategy.
+#
+# Fit-time shape matches the runs the 4.4 measurements were made on
+# (attributes = element, no edge attributes, depth 6). Everything below
+# `class_estimator` is inference-time, so this whole combination costs one
+# fit -- which is the point of choosing them post-hoc.
+#
+#   class_estimator: continuation      flat, not recursive -- recursive
+#                                      measured at -0.000001 (t=-0.7, 3/10)
+#   shrinkage_weight: empirical_bayes  +0.000105 vs flat continuation
+#                                      unshrunk (t=21.7, 10/10 folds), and
+#                                      estimates its own alpha, so
+#                                      shrinkage_strength must be omitted
+#   predictive_variance: true          total sigma (sieve.uncertainty);
+#                                      without it the normalizer below is
+#                                      fed class s^2, which is NaN at N==1
+#                                      and can be an artefact zero
+#   normalization: variance_weighted   sigma^2, i.e. 6.4's closed form.
+#                                      gamma=2 measured optimal (best 1.85)
+#
+# report_loo is deliberately absent: predict_loo supports neither
+# continuation nor empirical_bayes, and SievePredictor refuses the
+# combination at construction rather than 38% into a run.
+#
+# Store is overridden per fold with --set data.store=dash-molecules-10fold-N.
+run:
+  experiment: sieve-charges-uncertainty
+  batch_id: element_element_none_eb_predvar_varw
+  seed: 0
+data:
+  store: dash-molecules-10fold-1
+  split_column: split
+target:
+  atom_property: MBIScharge
+  molecule_property: net_charge
+  label: charge (e)
+predictor:
+  name: sieve
+  params:
+    attributes: [element]
+    edge_attributes: []
+    max_wl_depth: 6
+    minimum_support: 1
+    class_estimator: continuation
+    shrinkage_weight: empirical_bayes
+    predictive_variance: true
+    n_jobs: 8
+normalization: variance_weighted

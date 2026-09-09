@@ -14,9 +14,9 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev,chem]"
-      - run: ruff check src tests charge_experiments
-      - run: ruff format --check src tests charge_experiments
-      - run: ty check src tests charge_experiments
+      - run: ruff check src tests experiments
+      - run: ruff format --check src tests experiments
+      - run: ty check src tests experiments
 
   test:
     runs-on: ubuntu-latest
