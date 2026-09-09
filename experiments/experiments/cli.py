@@ -58,6 +58,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dash_depth_sweep(args: argparse.Namespace) -> int:
+    from experiments.dash_depth_sweep import run_sweep
+
+    depths = [int(d) for d in args.depths.split(",")]
+    results = run_sweep(
+        config_path=args.config,
+        store_prefix=args.store_prefix,
+        n_folds=args.n_folds,
+        depths=depths,
+        experiment=args.experiment,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+        limit=args.limit,
+    )
+    if not results:
+        print("nothing to do -- every fold already complete for every depth")
+        return 0
+    for result in results:
+        print(f"{result.run_dir}: mae={result.metrics.get('mae')}")
+    return 0
+
+
 def _cmd_promote_run(args: argparse.Namespace) -> int:
     from experiments.runner import promote_run
 
@@ -275,6 +297,45 @@ def build_parser() -> argparse.ArgumentParser:
         "own docstring for why)",
     )
     p_run.set_defaults(func=_cmd_run)
+
+    p_dds = sub.add_parser(
+        "dash-depth-sweep",
+        help="sweep the dash predictor's max_depth across a range of "
+        "already-partitioned fold stores, one fit + one tree-matching "
+        "walk per fold (see experiments.dash_depth_sweep's own docstring "
+        "for why this is far cheaper than one independent run per "
+        "(depth, fold) pair)",
+    )
+    p_dds.add_argument(
+        "--config", required=True, type=Path, help="a dash predictor config"
+    )
+    p_dds.add_argument(
+        "--store-prefix",
+        default="dash-molecules-10fold",
+        help="fold stores are named <prefix>-1 .. <prefix>-n-folds "
+        "(default: dash-molecules-10fold)",
+    )
+    p_dds.add_argument(
+        "--n-folds", type=int, default=10, help="number of fold stores (default: 10)"
+    )
+    p_dds.add_argument(
+        "--depths",
+        default="1,2,4,6,8,10,12,14,16",
+        help="comma-separated max_depth values to sweep "
+        "(default: 1,2,4,6,8,10,12,14,16)",
+    )
+    p_dds.add_argument(
+        "--experiment",
+        default="dash-depth-sweep",
+        help="run.experiment for every written run (default: dash-depth-sweep)",
+    )
+    p_dds.add_argument(
+        "--limit", type=int, default=None, help="use only the first N conformers"
+    )
+    p_dds.add_argument(
+        "--allow-dirty", action="store_true", help="run with an uncommitted git tree"
+    )
+    p_dds.set_defaults(func=_cmd_dash_depth_sweep)
 
     p_promote = sub.add_parser(
         "promote-run",

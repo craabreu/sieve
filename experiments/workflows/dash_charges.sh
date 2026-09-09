@@ -39,50 +39,28 @@ fi
 
 # --- Stage 2: DASH depth sweep --------------------------------------------
 #
-# One `dash` predictor run per (depth, fold) pair -- untracked by MLflow
-# (the default; no --track), all under one run.experiment so `sweep` can
-# read them back as a single curve:
+# One fit + one tree-matching walk per fold (at the deepest depth
+# requested), with every shallower depth's own metrics derived from the
+# already-walked paths instead of re-walking from scratch -- ~10 fits
+# total instead of ~80 independent ones. See
+# experiments/experiments/dash_depth_sweep.py's own module docstring for
+# why this is exact, not an approximation. Idempotent per fold (skip once
+# every depth's own run directory already has a metrics.json) -- safe to
+# interrupt and resume by running this script again. Untracked by MLflow
+# (the default; no --track).
+#
+# Starts at depth 2, not 1: DASH-tree's own match_new_atom redirects a
+# hydrogen atom to its heavy neighbor and pre-consumes one depth unit, so
+# depth 1 and depth 2 are identical for every H atom anyway -- dropping 1
+# loses no real resolution here (dash_depth_sweep.py still runs it for
+# real, correctly, if a future config asks for it explicitly).
+#
+# Read the resulting curve with:
 #   "$PYTHON" -m experiments sweep --experiment dash-depth-sweep \
 #     --x predictor.params.max_depth --metric mae --metric r2
-#
-# ~7 minutes per run on a full, unlimited fold (measured directly, depth
-# 8), single-threaded, ~8GB RSS -- ~90 runs total. Dispatched
-# PARALLEL_JOBS at a time via xargs -P (default 8; override with
-# DASH_DEPTH_SWEEP_JOBS=N), well inside a 64-core/500GB-RAM box's
-# headroom at that width.
-#
-# `experiments run` itself always creates a fresh, timestamped/uuid'd
-# directory, so it is never idempotent on its own; run_one makes the pair
-# idempotent instead: run.batch_id is depth+fold-specific
-# ("d<depth>-f<fold>"), and a directory already matching that batch_id
-# with a metrics.json inside it (a completed run, not a crashed or
-# still-running one) is skipped rather than relaunched -- safe to
-# interrupt (Ctrl-C, a killed process, a crashed run) and resume by just
-# running this script again, including under a different PARALLEL_JOBS.
-EXPERIMENT=dash-depth-sweep
-DEPTHS="1 2 4 6 8 10 12 14 16"
-PARALLEL_JOBS="${DASH_DEPTH_SWEEP_JOBS:-8}"
-
-run_one() {
-  local depth=$1 fold=$2
-  local batch_id="d${depth}-f${fold}"
-  if compgen -G "experiments/runs/$EXPERIMENT/${batch_id}__*/metrics.json" \
-    > /dev/null; then
-    echo "skip $batch_id (already done)"
-    return 0
-  fi
-  "$PYTHON" -m experiments run \
-    --config experiments/configs/dash-charge-example.yaml \
-    --set data.store=dash-molecules-10fold-"$fold" \
-    --set predictor.params.max_depth="$depth" \
-    --set run.experiment="$EXPERIMENT" \
-    --set run.batch_id="$batch_id"
-}
-export -f run_one
-export PYTHON EXPERIMENT
-
-for depth in $DEPTHS; do
-  for fold in $(seq 1 10); do
-    printf '%s %s\n' "$depth" "$fold"
-  done
-done | xargs -P "$PARALLEL_JOBS" -n 2 bash -c 'run_one "$1" "$2"' --
+"$PYTHON" -m experiments dash-depth-sweep \
+  --config experiments/configs/dash-charge-example.yaml \
+  --store-prefix dash-molecules-10fold \
+  --n-folds 10 \
+  --depths 2,4,6,8,10,12,14,16 \
+  --experiment dash-depth-sweep
