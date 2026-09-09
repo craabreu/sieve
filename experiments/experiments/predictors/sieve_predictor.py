@@ -1,6 +1,6 @@
-"""A basic Sieve charge predictor: this project's own hierarchical
-regressogram (``sieve.fit``/``sieve.predict``) wired onto per-atom
-``MBIScharge`` prediction directly via
+"""A basic Sieve predictor: this project's own hierarchical regressogram
+(``sieve.fit``/``sieve.predict``) wired onto per-atom prediction of the
+run's own ``target.atom_property`` directly via
 ``sieve.io.rdkit_adapter.from_rdkit``'s ``y_from_atom_prop`` option -- no
 separate, position-aligned ``y`` array, since the target already rides on
 each conformer's own ``Mol`` (see the design spec's "Sieve's target
@@ -284,8 +284,8 @@ class SievePredictor:
         **Train-only, and not structurally enforceable.** LOO computes
         ``(cnt*mean - y_node) / (cnt - 1)``; for a val or test node that
         subtracts a value which was never in the class mean, so the result is
-        corrupt rather than merely uninformative. Every MoleculeSet in this
-        series carries MBIScharge on its Mols, so a val set would satisfy
+        corrupt rather than merely uninformative. Every MoleculeSet carries
+        its own ``atom_property`` on its Mols, so a val set would satisfy
         ``predict_loo``'s only guard (``batch.y is not None``) and return
         quietly wrong numbers. The parameter is named ``train`` and
         ``runner`` calls this for the train split only.

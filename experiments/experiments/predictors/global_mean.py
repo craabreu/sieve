@@ -1,6 +1,7 @@
-"""The simplest possible baseline: predict the training set's own mean
-MBIScharge for every atom. No optional dependency, so this is the one
-predictor registered eagerly (see predictors/__init__.py)."""
+"""The simplest possible baseline: predict the training set's own mean of
+the run's ``target.atom_property`` for every atom. No optional dependency,
+so this is the one predictor registered eagerly (see
+predictors/__init__.py)."""
 
 from __future__ import annotations
 
