@@ -34,7 +34,7 @@ from numpy.typing import NDArray
 
 from experiments import metrics as metrics_mod
 from experiments import plots
-from experiments.config import ExperimentCfg, to_dict, to_flat_params
+from experiments.config import ExperimentCfg, TargetCfg, to_dict, to_flat_params
 from experiments.data import REPO_ROOT, MoleculeSet, molecule_sum
 from experiments.normalize import NORMALIZERS
 from experiments.predictors import build
@@ -117,24 +117,21 @@ def _run_name(cfg: ExperimentCfg) -> str:
 
 
 def _savez_run(path: Path, test: MoleculeSet, pred: Prediction, /) -> None:
-    np.savez(
-        path,
-        chembl_id=np.array(test.chembl_id),
-        conf_id=np.array(test.conf_id),
-        dash_id=np.array(test.dash_id),
-        num_atoms=test.num_atoms,
-        net_charge=test.net_charge,
-        atom_charge_true=test.atom_charge,
-        atom_charge_pred=pred.atom_charge,
-    )
+    arrays: dict[str, Any] = {k: np.array(v) for k, v in test.ids.items()}
+    arrays["num_atoms"] = test.num_atoms
+    arrays["atom_target_true"] = test.atom_target
+    arrays["atom_target_pred"] = pred.atom_charge  # renamed in Task 4
+    if test.molecule_value is not None:
+        arrays["molecule_value"] = test.molecule_value
+    np.savez(path, **arrays)
 
 
 def _score(test: MoleculeSet, pred: Prediction) -> dict[str, float]:
-    out = metrics_mod.regression_metrics(test.atom_charge, pred.atom_charge)
+    out = metrics_mod.regression_metrics(test.atom_target, pred.atom_charge)
     out["n_test_atoms"] = float(test.n_atoms)
     out["n_test_conformers"] = float(test.n_conformers)
     conservation = metrics_mod.charge_conservation_metrics(
-        pred.atom_charge, test.atom_mol_id, test.net_charge, test.n_conformers
+        pred.atom_charge, test.atom_mol_id, test.molecule_value, test.n_conformers
     )
     out.update({f"charge_conservation/{k}": v for k, v in conservation.items()})
     return out
@@ -213,7 +210,7 @@ def _normalize(raw: Any, mset: MoleculeSet, *, normalization: str) -> Prediction
     atom_charge = NORMALIZERS[normalization](
         raw.atom_charge,
         raw.atom_std,
-        mset.net_charge,
+        mset.molecule_value,
         mset.atom_mol_id,
         mset.n_conformers,
     )
@@ -304,7 +301,7 @@ def _build_parity_panels(
     anything."""
     panels: list[dict[str, Any]] = []
 
-    atom_true, atom_pred = _finite_pair(test.atom_charge, pred.atom_charge)
+    atom_true, atom_pred = _finite_pair(test.atom_target, pred.atom_charge)
     if atom_true.size:  # every atom NaN (e.g. a pretrained baseline that
         # matched nothing in this split) -- an empty hexbin panel would
         # crash on its own .min()/.max() axis limits, so skip it, not fake it
@@ -323,7 +320,7 @@ def _build_parity_panels(
     pred_net_charge = molecule_sum(
         pred.atom_charge, test.atom_mol_id, test.n_conformers
     )
-    residual = pred_net_charge - test.net_charge
+    residual = pred_net_charge - test.molecule_value
     residual = residual[~np.isnan(residual)]
     # A predictor whose own normalization already conserves charge exactly
     # (e.g. std_weighted/equal_weighted -- residuals at float round-off,
@@ -696,30 +693,40 @@ def promote_run(
 def load_molecule_set(
     store_name: str,
     *,
+    target: TargetCfg,
     split_column: str,
     splits: tuple[str, ...] = ("train", "val", "test"),
     limit: int | None = None,
     stores_root: Path | None = None,
 ) -> tuple[MoleculeSet, dict[str, NDArray[np.bool_]]]:
     """Load ``molecules.parquet`` for ``store_name`` into a ``MoleculeSet``
-    plus split masks."""
+    plus split masks. Every column that isn't ``mol``, the split column or
+    ``target.molecule_property`` is carried through as an identifier."""
     import pandas as pd
 
     from experiments.data import DEFAULT_STORES_ROOT, blob_to_mol
 
     root = stores_root if stores_root is not None else DEFAULT_STORES_ROOT
-    store_dir = root / store_name
-    df = pd.read_parquet(store_dir / "molecules.parquet")
+    df = pd.read_parquet(root / store_name / "molecules.parquet")
     if limit is not None:
         df = df.iloc[:limit].reset_index(drop=True)
 
-    mols = [blob_to_mol(b) for b in df["mol"]]
+    mol_prop = target.molecule_property
+    if mol_prop is not None and mol_prop not in df.columns:
+        raise ValueError(
+            f"store {store_name!r} has no column {mol_prop!r} "
+            f"(target.molecule_property); columns: {sorted(df.columns)}"
+        )
+    id_columns = [c for c in df.columns if c not in ("mol", split_column, mol_prop)]
+
     mset = MoleculeSet(
-        chembl_id=list(df["chembl_id"]),
-        conf_id=list(df["conf_id"]),
-        mols=mols,
-        net_charge=df["net_charge"].to_numpy(dtype=np.float64),
-        dash_id=list(df["dash_id"]),
+        mols=[blob_to_mol(b) for b in df["mol"]],
+        atom_property=target.atom_property,
+        molecule_property=mol_prop,
+        molecule_value=(
+            None if mol_prop is None else df[mol_prop].to_numpy(dtype=np.float64)
+        ),
+        ids={c: list(df[c]) for c in id_columns},
         split=list(df[split_column]),
     )
     masks = {name: (df[split_column] == name).to_numpy() for name in splits}
@@ -739,6 +746,7 @@ def run(
     t0 = time.perf_counter()
     mset, masks = load_molecule_set(
         cfg.data.store,
+        target=cfg.target,
         split_column=cfg.data.split_column,
         splits=(cfg.data.train_split, cfg.data.val_split, cfg.data.eval_split),
         limit=limit,

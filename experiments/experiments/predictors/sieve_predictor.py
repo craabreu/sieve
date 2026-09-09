@@ -106,7 +106,12 @@ def _build_config(
 
 
 def _batch_for(
-    mols: list[Any], config: Any, *, with_target: bool, n_jobs: int | None = None
+    mols: list[Any],
+    config: Any,
+    *,
+    atom_property: str,
+    with_target: bool,
+    n_jobs: int | None = None,
 ) -> Any:
     """Build a ``NodeBatch`` for ``mols`` under an already-fitted
     ``config``. ``node_order`` is left ``None``: each ``Mol``'s own atom
@@ -116,7 +121,7 @@ def _batch_for(
     return from_rdkit(
         mols,
         config=config,
-        y_from_atom_prop="MBIScharge" if with_target else None,
+        y_from_atom_prop=atom_property if with_target else None,
         n_jobs=n_jobs,
     )
 
@@ -234,7 +239,11 @@ class SievePredictor:
             n_jobs=self.n_jobs,
         )
         batch = _batch_for(
-            train.mols, self._config, with_target=True, n_jobs=self.n_jobs
+            train.mols,
+            self._config,
+            atom_property=train.atom_property,
+            with_target=True,
+            n_jobs=self.n_jobs,
         )
         self.last_featurize_s += time.perf_counter() - t0
         self._model = sieve.fit(batch, self._config)
@@ -250,7 +259,11 @@ class SievePredictor:
 
         t0 = time.perf_counter()
         batch = _batch_for(
-            test.mols, self._config, with_target=False, n_jobs=self.n_jobs
+            test.mols,
+            self._config,
+            atom_property=test.atom_property,
+            with_target=False,
+            n_jobs=self.n_jobs,
         )
         self.last_featurize_s += time.perf_counter() - t0
         detailed = sieve.predict_detailed(self._model, batch)
@@ -287,7 +300,11 @@ class SievePredictor:
 
         t0 = time.perf_counter()
         batch = _batch_for(
-            train.mols, self._config, with_target=True, n_jobs=self.n_jobs
+            train.mols,
+            self._config,
+            atom_property=train.atom_property,
+            with_target=True,
+            n_jobs=self.n_jobs,
         )
         self.last_featurize_s += time.perf_counter() - t0
         detailed = sieve.predict_loo(self._model, batch)

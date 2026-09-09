@@ -14,7 +14,8 @@ itself -- see the design spec's "Store row format" decision.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -90,41 +91,39 @@ def molecule_sum(
 @dataclass(frozen=True)
 class MoleculeSet:
     """One split's worth of conformers. Each entry in ``mols`` is one
-    conformer's own RDKit ``Mol``, atoms carrying ``MBIScharge`` as a real
-    double property -- there is no separate, position-aligned target array
-    to keep in sync (contrast cosmo_experiments' ``MoleculeSet``, which
-    carries ``mol_profile``/``atom_profile`` as arrays parallel to
-    ``smiles``).
+    conformer's own RDKit ``Mol``, its atoms carrying ``atom_property`` as a
+    real double property -- there is no separate, position-aligned target
+    array to keep in sync.
 
-    Every source-SDF record carries a ``DASH_IDX`` (the universal molecule
-    key, whose prefix encodes source cohort), and the ``QMUGS500_*`` half
-    carries a ``CHEMBL_ID``/``CONF_ID`` pair as well -- see
-    ``prepare_store._parse_one_record``'s docstring. So ``dash_id`` is set
-    for every conformer parsed by a current ``prepare_store``, and
-    ``chembl_id`` for the QMugs-derived subset; a store written before that
-    fix instead has ``dash_id`` ``None`` wherever ``chembl_id`` is set. Both
-    are carried through purely as provenance; nothing in this harness
-    groups/clusters by them at this point (that already happened once, at
-    ``prepare_store`` time, and is baked into ``split``).
+    ``molecule_property``/``molecule_value`` are the optional per-molecule
+    total the atom values should sum to (the DASH series' ``net_charge``);
+    both are ``None`` for a dataset with no such constraint.
+
+    ``ids`` carries every remaining store column as per-conformer
+    provenance -- the DASH stores' ``chembl_id``/``conf_id``/``dash_id``,
+    some other dataset's own keys. Nothing in the harness groups or
+    clusters by them; they are written straight through to
+    ``predictions.npz``.
     """
 
-    chembl_id: list[str | None]
-    conf_id: list[str]
     mols: list[Any]
-    net_charge: NDArray[np.float64]
-    dash_id: list[str | None]
+    atom_property: str
+    molecule_property: str | None = None
+    molecule_value: NDArray[np.float64] | None = None
+    ids: Mapping[str, list[str | None]] = field(default_factory=dict)
     split: list[str] | None = None
 
     def __post_init__(self) -> None:
         n = len(self.mols)
-        if len(self.chembl_id) != n:
-            raise ValueError("chembl_id must have one entry per conformer")
-        if len(self.conf_id) != n:
-            raise ValueError("conf_id must have one entry per conformer")
-        if len(self.net_charge) != n:
-            raise ValueError("net_charge must have one entry per conformer")
-        if len(self.dash_id) != n:
-            raise ValueError("dash_id must have one entry per conformer")
+        if self.molecule_value is not None and len(self.molecule_value) != n:
+            raise ValueError("molecule_value must have one entry per conformer")
+        if (self.molecule_property is None) != (self.molecule_value is None):
+            raise ValueError(
+                "molecule_property and molecule_value must be set together"
+            )
+        for key, values in self.ids.items():
+            if len(values) != n:
+                raise ValueError(f"ids[{key!r}] must have one entry per conformer")
         if self.split is not None and len(self.split) != n:
             raise ValueError("split must have one entry per conformer")
 
@@ -146,20 +145,24 @@ class MoleculeSet:
         return np.repeat(np.arange(self.n_conformers), self.num_atoms)
 
     @property
-    def atom_charge(self) -> NDArray[np.float64]:
-        """Per-atom ``MBIScharge`` ground truth, flattened across every
-        conformer's own atom order."""
+    def atom_target(self) -> NDArray[np.float64]:
+        """Per-atom ground truth for ``atom_property``, flattened across
+        every conformer's own atom order."""
         if not self.mols:
             return np.zeros(0, dtype=np.float64)
-        return np.concatenate(
-            [
-                np.array(
-                    [a.GetDoubleProp("MBIScharge") for a in m.GetAtoms()],
-                    dtype=np.float64,
+        return np.concatenate([self._mol_target(m) for m in self.mols])
+
+    def _mol_target(self, mol: Any) -> NDArray[np.float64]:
+        out = np.empty(mol.GetNumAtoms(), dtype=np.float64)
+        for i, atom in enumerate(mol.GetAtoms()):
+            if not atom.HasProp(self.atom_property):
+                raise KeyError(
+                    f"atom {i} of a stored conformer has no property "
+                    f"{self.atom_property!r} -- the store was prepared for a "
+                    "different target"
                 )
-                for m in self.mols
-            ]
-        )
+            out[i] = atom.GetDoubleProp(self.atom_property)
+        return out
 
     def select(self, mol_mask: NDArray[np.bool_]) -> MoleculeSet:
         """The sub-set of conformers where ``mol_mask`` is True. The only
@@ -167,10 +170,14 @@ class MoleculeSet:
         mol_mask = np.asarray(mol_mask, dtype=bool)
         idx = np.flatnonzero(mol_mask)
         return MoleculeSet(
-            chembl_id=[self.chembl_id[i] for i in idx],
-            conf_id=[self.conf_id[i] for i in idx],
             mols=[self.mols[i] for i in idx],
-            net_charge=np.asarray(self.net_charge)[mol_mask],
-            dash_id=[self.dash_id[i] for i in idx],
+            atom_property=self.atom_property,
+            molecule_property=self.molecule_property,
+            molecule_value=(
+                None
+                if self.molecule_value is None
+                else np.asarray(self.molecule_value)[mol_mask]
+            ),
+            ids={k: [v[i] for i in idx] for k, v in self.ids.items()},
             split=None if self.split is None else [self.split[i] for i in idx],
         )

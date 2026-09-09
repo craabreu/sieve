@@ -25,7 +25,7 @@ class GlobalMeanPredictor:
         del val, rng
         if train.n_conformers == 0:
             raise ValueError("global_mean requires a non-empty train split")
-        self._mean = float(np.mean(train.atom_charge))
+        self._mean = float(np.mean(train.atom_target))
 
     def predict(self, test: MoleculeSet) -> Prediction:
         if self._mean is None:

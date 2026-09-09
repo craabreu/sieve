@@ -49,9 +49,11 @@ def test_batch_for_reads_mbis_charge_directly_off_the_mols():
         minimum_support=1,
         shrinkage_strength=None,
     )
-    batch = _batch_for(mset.mols, config, with_target=True)
+    batch = _batch_for(
+        mset.mols, config, atom_property=mset.atom_property, with_target=True
+    )
     assert batch.n_nodes == mset.n_atoms
-    np.testing.assert_allclose(batch.y[:, 0], mset.atom_charge)
+    np.testing.assert_allclose(batch.y[:, 0], mset.atom_target)
 
 
 def test_build_config_defaults_to_a_single_attribute_level():
@@ -332,8 +334,8 @@ def test_predict_loo_raw_backs_off_instead_of_recalling_the_node():
     in_sample = p.predict_raw(mset).atom_charge
     loo = p.predict_loo_raw(mset).atom_charge
 
-    in_sample_mae = float(np.nanmean(np.abs(in_sample - mset.atom_charge)))
-    loo_mae = float(np.nanmean(np.abs(loo - mset.atom_charge)))
+    in_sample_mae = float(np.nanmean(np.abs(in_sample - mset.atom_target)))
+    loo_mae = float(np.nanmean(np.abs(loo - mset.atom_target)))
     assert loo_mae > in_sample_mae
 
 

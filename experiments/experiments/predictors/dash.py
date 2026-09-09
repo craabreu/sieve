@@ -230,7 +230,7 @@ class DASHChargePredictor:
     ) -> None:
         del val, rng
         paths = self._paths_for(train, split="train")
-        self._stats = compute_node_stats(paths, train.atom_charge)
+        self._stats = compute_node_stats(paths, train.atom_target)
         self._mean_props, self._std_props = apply_node_stats(self._tree, self._stats)
 
     def predict_raw(self, test: MoleculeSet) -> RawPrediction:

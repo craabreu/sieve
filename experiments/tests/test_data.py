@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from experiments.data import MoleculeSet
+
+from experiments.tests.helpers import synthetic_molecule_set
 
 pytest.importorskip("rdkit")
 
@@ -70,8 +73,6 @@ def test_mol_to_blob_round_trip_preserves_bond_cip_codes():
 
 
 def test_synthetic_molecule_set_select_preserves_alignment():
-    from experiments.tests.helpers import synthetic_molecule_set
-
     mset = synthetic_molecule_set(n_mol=8, seed=0)
     assert mset.n_conformers == 8
     assert mset.n_atoms == int(mset.num_atoms.sum())
@@ -79,11 +80,66 @@ def test_synthetic_molecule_set_select_preserves_alignment():
     mask = np.array([True, False, True, False, True, False, True, False])
     sub = mset.select(mask)
     assert sub.n_conformers == 4
-    assert sub.chembl_id == [mset.chembl_id[i] for i in range(8) if mask[i]]
-    assert sub.dash_id == [mset.dash_id[i] for i in range(8) if mask[i]]
-    np.testing.assert_array_equal(sub.net_charge, mset.net_charge[mask])
-    # atom_charge stays consistent with net_charge after selection
+    assert sub.ids["chembl_id"] == [
+        mset.ids["chembl_id"][i] for i in range(8) if mask[i]
+    ]
+    assert sub.ids["dash_id"] == [mset.ids["dash_id"][i] for i in range(8) if mask[i]]
+    np.testing.assert_array_equal(sub.molecule_value, mset.molecule_value[mask])
+    # atom_target stays consistent with molecule_value after selection
     from experiments.data import molecule_sum
 
-    resummed = molecule_sum(sub.atom_charge, sub.atom_mol_id, sub.n_conformers)
-    np.testing.assert_allclose(resummed, sub.net_charge, atol=1e-8)
+    resummed = molecule_sum(sub.atom_target, sub.atom_mol_id, sub.n_conformers)
+    np.testing.assert_allclose(resummed, sub.molecule_value, atol=1e-8)
+
+
+def test_atom_target_reads_the_configured_property():
+    from experiments.data import MoleculeSet
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles("CO")
+    for i, atom in enumerate(mol.GetAtoms()):
+        atom.SetDoubleProp("alpha", float(i))
+    mset = MoleculeSet(mols=[mol], atom_property="alpha")
+    assert mset.atom_target.tolist() == [0.0, 1.0]
+
+
+def test_missing_atom_property_raises_naming_it():
+    from experiments.data import MoleculeSet
+    from rdkit import Chem
+
+    mset = MoleculeSet(mols=[Chem.MolFromSmiles("CO")], atom_property="alpha")
+    with pytest.raises(KeyError, match="alpha"):
+        _ = mset.atom_target
+
+
+def test_molecule_value_is_none_when_unconfigured():
+    mset = synthetic_molecule_set(n_mol=4)
+    bare = MoleculeSet(mols=mset.mols, atom_property=mset.atom_property)
+    assert bare.molecule_value is None
+    assert bare.molecule_property is None
+
+
+def test_ids_are_carried_and_subset_by_select():
+    mset = synthetic_molecule_set(n_mol=4)
+    assert set(mset.ids) == {"chembl_id", "conf_id", "dash_id"}
+    sub = mset.select(np.array([True, False, True, False]))
+    assert sub.n_conformers == 2
+    assert sub.ids["conf_id"] == [mset.ids["conf_id"][0], mset.ids["conf_id"][2]]
+    assert sub.atom_property == mset.atom_property
+    assert sub.molecule_property == mset.molecule_property
+
+
+def test_select_keeps_molecule_value_none_when_unset():
+    mset = synthetic_molecule_set(n_mol=4)
+    bare = MoleculeSet(mols=mset.mols, atom_property=mset.atom_property)
+    assert bare.select(np.array([True, False, True, False])).molecule_value is None
+
+
+def test_ids_length_mismatch_raises():
+    mset = synthetic_molecule_set(n_mol=4)
+    with pytest.raises(ValueError, match="conf_id"):
+        MoleculeSet(
+            mols=mset.mols,
+            atom_property=mset.atom_property,
+            ids={"conf_id": ["a", "b"]},
+        )

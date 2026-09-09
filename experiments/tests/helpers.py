@@ -5,12 +5,14 @@ from __future__ import annotations
 import numpy as np
 
 
-def synthetic_molecule_set(n_mol: int = 8, seed: int = 0):
+def synthetic_molecule_set(
+    n_mol: int = 8, seed: int = 0, atom_property: str = "MBIScharge"
+):
     """A small, fully-populated ``MoleculeSet`` for fast harness tests --
     real RDKit ``Mol`` objects (small alkanes/alcohols), each atom carrying a
-    fabricated but deterministic ``MBIScharge``, net_charge computed to be
-    exactly consistent with it (sum of atom charges), so both the input and
-    any rollup can be checked exactly."""
+    fabricated but deterministic value of ``atom_property``, with
+    ``molecule_value`` computed to be exactly its per-molecule sum, so both
+    the input and any rollup can be checked exactly."""
     from experiments.data import MoleculeSet, molecule_sum
     from rdkit import Chem
 
@@ -28,12 +30,12 @@ def synthetic_molecule_set(n_mol: int = 8, seed: int = 0):
         n_atoms = mol.GetNumAtoms()
         charges = rng.normal(scale=0.2, size=n_atoms)
         for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
-            atom.SetDoubleProp("MBIScharge", float(charge))
+            atom.SetDoubleProp(atom_property, float(charge))
         mols.append(mol)
         num_atoms.append(n_atoms)
 
     atom_charge = np.concatenate(
-        [np.array([a.GetDoubleProp("MBIScharge") for a in m.GetAtoms()]) for m in mols]
+        [np.array([a.GetDoubleProp(atom_property) for a in m.GetAtoms()]) for m in mols]
     )
     mol_id = np.repeat(np.arange(n_mol), num_atoms)
     net_charge = molecule_sum(atom_charge, mol_id, n_mol)
@@ -44,9 +46,13 @@ def synthetic_molecule_set(n_mol: int = 8, seed: int = 0):
     conf_id = [f"conf_{i % 2:02d}" for i in range(n_mol)]
 
     return MoleculeSet(
-        chembl_id=chembl_id,
-        conf_id=conf_id,
         mols=mols,
-        net_charge=net_charge,
-        dash_id=[None] * n_mol,  # every row is chembl_id-schema in this fixture
+        atom_property=atom_property,
+        molecule_property="net_charge",
+        molecule_value=net_charge,
+        ids={
+            "chembl_id": chembl_id,
+            "conf_id": conf_id,
+            "dash_id": [None] * n_mol,
+        },
     )
