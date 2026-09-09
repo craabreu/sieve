@@ -210,6 +210,17 @@ def test_build_parser_to_united_atom_defaults():
     args = parser.parse_args(["to-united-atom", "my-ua-store"])
     assert args.dest == "my-ua-store"
     assert args.source == "dash-molecules"
+    assert args.atom_property == "MBIScharge"
+
+
+def test_build_parser_to_united_atom_accepts_atom_property_flag():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["to-united-atom", "my-ua-store", "--atom-property", "alpha"]
+    )
+    assert args.atom_property == "alpha"
 
 
 def test_build_parser_to_united_atom_accepts_source_flag():

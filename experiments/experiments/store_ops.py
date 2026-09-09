@@ -307,15 +307,21 @@ def _write_subsample(
     return summary_text
 
 
-def _to_united_atom(mol: Any) -> tuple[Any, int, int]:
+def _to_united_atom(
+    mol: Any, *, atom_property: str = "MBIScharge"
+) -> tuple[Any, int, int]:
     """Remove ``mol``'s own hydrogens via ``Chem.RemoveHs`` (rdkit's own
     default judgment of which H's are safe to strip -- see module docstring
     for what "safe" means: not stereo-defining, no isotope/query, not
-    bridging, ...), adding each actually-removed H's own ``MBIScharge`` onto
-    the single heavy atom it was bonded to. An H rdkit declines to remove is
-    left in place, its own charge untouched -- never forced out. Total
-    charge is conserved exactly: every removed H's charge lands on exactly
-    one heavy atom, never dropped.
+    bridging, ...), adding each actually-removed H's own value of
+    ``atom_property`` onto the single heavy atom it was bonded to. An H
+    rdkit declines to remove is left in place, its own value untouched --
+    never forced out. The total is conserved exactly: every removed H's
+    value lands on exactly one heavy atom, never dropped. ``atom_property``
+    defaults to ``MBIScharge`` (this series' original, still most common,
+    target) but works identically for any run's own configured
+    ``target.atom_property`` -- the redistribution rule has nothing
+    charge-specific about it.
 
     Uses a scratch atom-map-number tag (cleared again before returning) to
     recover, for every atom surviving ``RemoveHs``, which original atom
@@ -329,12 +335,12 @@ def _to_united_atom(mol: Any) -> tuple[Any, int, int]:
     for atom in work.GetAtoms():
         atom.SetAtomMapNum(atom.GetIdx() + 1)  # 0 means "unset" in rdkit
 
-    h_charge: dict[int, float] = {}
+    h_value: dict[int, float] = {}
     h_heavy_neighbor: dict[int, int] = {}
     for atom in work.GetAtoms():
         if atom.GetAtomicNum() == 1:
             idx = atom.GetIdx()
-            h_charge[idx] = atom.GetDoubleProp("MBIScharge")
+            h_value[idx] = atom.GetDoubleProp(atom_property)
             neighbors = atom.GetNeighbors()
             if len(neighbors) == 1:
                 h_heavy_neighbor[idx] = neighbors[0].GetIdx()
@@ -349,7 +355,7 @@ def _to_united_atom(mol: Any) -> tuple[Any, int, int]:
     bonus: dict[int, float] = {}
     n_removed = 0
     n_kept = 0
-    for h_idx, charge in h_charge.items():
+    for h_idx, value in h_value.items():
         if h_idx in surviving_orig:
             n_kept += 1
             continue
@@ -358,33 +364,41 @@ def _to_united_atom(mol: Any) -> tuple[Any, int, int]:
             # No single heavy neighbor (a bridging or isolated H) -- rdkit
             # does not remove these by default, so this branch should be
             # unreachable, but treat it as "kept" defensively rather than
-            # silently drop a charge with nowhere documented to go.
+            # silently drop a value with nowhere documented to go.
             n_kept += 1
             continue
-        bonus[heavy_idx] = bonus.get(heavy_idx, 0.0) + charge
+        bonus[heavy_idx] = bonus.get(heavy_idx, 0.0) + value
         n_removed += 1
 
     for atom in ua_mol.GetAtoms():
         atom.SetAtomMapNum(0)
         add = bonus.get(surviving_orig_by_new_idx[atom.GetIdx()])
         if add:
-            atom.SetDoubleProp("MBIScharge", atom.GetDoubleProp("MBIScharge") + add)
+            atom.SetDoubleProp(atom_property, atom.GetDoubleProp(atom_property) + add)
 
     return ua_mol, n_removed, n_kept
 
 
 def to_united_atom_store(
-    source_store: str, dest_store: str, *, stores_root: Path
+    source_store: str,
+    dest_store: str,
+    *,
+    stores_root: Path,
+    atom_property: str = "MBIScharge",
 ) -> None:
     """Build a united-atom (heavy-atom-only, where rdkit allows it) version
     of an already-prepared ``source_store``: every conformer's ``Mol`` goes
-    through ``_to_united_atom`` (see its own docstring for the redistribution
-    rule and rdkit's "refuses to remove" cases). ``chembl_id``/``conf_id``/
-    ``dash_id``/``net_charge``/``split`` are copied through unchanged --
-    this is a different chemical representation of the exact same
-    conformers, not a re-split or re-sample, so a molecule's split
-    assignment is untouched. ``net_charge`` (a molblock-level ``M CHG`` sum,
-    not an atom-level quantity) needs no adjustment either.
+    through ``_to_united_atom`` (see its own docstring for the
+    redistribution rule and rdkit's "refuses to remove" cases), folding each
+    removed H's own value of ``atom_property`` onto its heavy-atom neighbor.
+    ``atom_property`` defaults to ``MBIScharge`` -- pass a different name to
+    match another dataset's own ``target.atom_property``. Every other
+    column (``chembl_id``/``conf_id``/``dash_id``/``net_charge``/``split``,
+    plus any dataset-specific identifier column) is copied through
+    unchanged -- this is a different chemical representation of the exact
+    same conformers, not a re-split or re-sample, so a molecule's split
+    assignment is untouched, and a molecule-level column like ``net_charge``
+    (not an atom-level quantity) needs no adjustment either.
 
     Streams the source parquet in ``PARQUET_BATCH_SIZE``-row batches (read
     and write both), so peak memory stays bounded regardless of the source
@@ -415,7 +429,9 @@ def to_united_atom_store(
             out_rows = []
             for row in record_batch.to_pylist():
                 mol = blob_to_mol(row["mol"])
-                ua_mol, removed, kept = _to_united_atom(mol)
+                ua_mol, removed, kept = _to_united_atom(
+                    mol, atom_property=atom_property
+                )
                 n_h_removed += removed
                 n_h_kept += kept
                 row = dict(row)

@@ -136,7 +136,12 @@ def _cmd_partition_store(args: argparse.Namespace) -> int:
 def _cmd_to_united_atom(args: argparse.Namespace) -> int:
     from experiments.store_ops import to_united_atom_store
 
-    to_united_atom_store(args.source, args.dest, stores_root=DEFAULT_STORES_ROOT)
+    to_united_atom_store(
+        args.source,
+        args.dest,
+        stores_root=DEFAULT_STORES_ROOT,
+        atom_property=args.atom_property,
+    )
     print(f"wrote {args.dest!r} (united-atom version of {args.source!r})")
     return 0
 
@@ -370,13 +375,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_ua = sub.add_parser(
         "to-united-atom",
         help="build a united-atom (hydrogens removed, folded into their "
-        "heavy-atom neighbor's charge) version of an already-prepared store",
+        "heavy-atom neighbor's own atom property) version of an "
+        "already-prepared store",
     )
     p_ua.add_argument("dest", help="name of the new, united-atom store")
     p_ua.add_argument(
         "--source",
         default="dash-molecules",
         help="name of the already-prepared source store (default: dash-molecules)",
+    )
+    p_ua.add_argument(
+        "--atom-property",
+        default="MBIScharge",
+        help="atom property to fold from a removed H onto its heavy-atom "
+        "neighbor (default: MBIScharge)",
     )
     p_ua.set_defaults(func=_cmd_to_united_atom)
 

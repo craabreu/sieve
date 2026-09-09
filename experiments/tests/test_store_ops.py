@@ -532,9 +532,11 @@ def test_partition_store_raises_without_a_split_column(tmp_path):
         partition_store("unsplit-store", "part", stores_root=tmp_path, n_stores=2)
 
 
-def _ua_test_mol(smiles, *, add_hs=True, charges=None, isotope_h_idx=None):
-    """A small rdkit Mol with a fabricated MBIScharge on every atom, for
-    _to_united_atom's own unit tests."""
+def _ua_test_mol(
+    smiles, *, add_hs=True, charges=None, isotope_h_idx=None, atom_property="MBIScharge"
+):
+    """A small rdkit Mol with a fabricated value of ``atom_property`` on
+    every atom, for _to_united_atom's own unit tests."""
     from rdkit import Chem
 
     mol = Chem.MolFromSmiles(smiles)
@@ -546,7 +548,7 @@ def _ua_test_mol(smiles, *, add_hs=True, charges=None, isotope_h_idx=None):
     if charges is None:
         charges = [0.1 * (i + 1) for i in range(mol.GetNumAtoms())]
     for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
-        atom.SetDoubleProp("MBIScharge", charge)
+        atom.SetDoubleProp(atom_property, charge)
     return mol
 
 
@@ -639,6 +641,35 @@ def test_to_united_atom_heavy_atom_charge_is_original_plus_its_hs():
     assert total == pytest.approx(sum(charges))
 
 
+def test_to_united_atom_redistributes_a_configured_non_charge_property():
+    """_to_united_atom must not be MBIScharge-specific: any atom property a
+    run's config names should redistribute the same way when its atoms are
+    dropped."""
+    from experiments.store_ops import _to_united_atom
+
+    mol = _ua_test_mol("CO", atom_property="alpha")
+    total_before = sum(a.GetDoubleProp("alpha") for a in mol.GetAtoms())
+
+    ua_mol, n_removed, n_kept = _to_united_atom(mol, atom_property="alpha")
+
+    assert ua_mol.GetNumAtoms() == 2  # just C and O
+    assert n_kept == 0
+    assert n_removed == mol.GetNumAtoms() - 2
+    total_after = sum(a.GetDoubleProp("alpha") for a in ua_mol.GetAtoms())
+    assert total_after == pytest.approx(total_before)
+
+
+def test_to_united_atom_defaults_to_mbischarge():
+    """The default keeps every existing DASH-charge caller (the CLI, older
+    scripts) working unchanged."""
+    from experiments.store_ops import _to_united_atom
+
+    mol = _ua_test_mol("CO")
+    ua_mol, _n_removed, _n_kept = _to_united_atom(mol)
+
+    assert all(a.HasProp("MBIScharge") for a in ua_mol.GetAtoms())
+
+
 def test_to_united_atom_store_transforms_every_row_and_preserves_other_columns(
     tmp_path,
 ):
@@ -672,3 +703,40 @@ def test_to_united_atom_store_transforms_every_row_and_preserves_other_columns(
     source_total = sum(a.GetDoubleProp("MBIScharge") for a in source_mol.GetAtoms())
     ua_total = sum(a.GetDoubleProp("MBIScharge") for a in ua_mol.GetAtoms())
     assert ua_total == pytest.approx(source_total)
+
+
+def test_to_united_atom_store_accepts_a_configured_atom_property(tmp_path):
+    """A store built for a non-charge dataset must not be MBIScharge-locked
+    -- to_united_atom_store's own atom_property parameter, not
+    parse_dash_molecules, is what generalizes this operation."""
+    import pandas as pd
+    from experiments.data import mol_to_blob
+    from experiments.store_ops import to_united_atom_store
+
+    mol = _ua_test_mol("CO", atom_property="alpha")
+    df = pd.DataFrame(
+        [
+            {
+                "chembl_id": "MOL1",
+                "conf_id": "conf_00",
+                "dash_id": None,
+                "mol": mol_to_blob(mol),
+                "net_charge": 0.0,
+                "split": "train",
+            }
+        ]
+    )
+    store_dir = tmp_path / "source-store"
+    store_dir.mkdir()
+    df.to_parquet(store_dir / "molecules.parquet")
+
+    to_united_atom_store(
+        "source-store", "ua-store", stores_root=tmp_path, atom_property="alpha"
+    )
+
+    from experiments.data import blob_to_mol
+
+    ua = pd.read_parquet(tmp_path / "ua-store" / "molecules.parquet")
+    ua_mol = blob_to_mol(ua["mol"].iloc[0])
+    assert ua_mol.GetNumAtoms() == 2  # just C and O
+    assert all(a.HasProp("alpha") for a in ua_mol.GetAtoms())

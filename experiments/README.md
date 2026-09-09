@@ -98,8 +98,9 @@ unlimited.
 
 To also get a united-atom (heavy-atom-only) version of a store -- every
 conformer's hydrogens removed via rdkit's own `Chem.RemoveHs`, each removed
-H's charge folded onto the heavy atom it was bonded to, any H rdkit itself
-declines to remove left untouched:
+H's own atom property (`--atom-property`, default `MBIScharge`) folded onto
+the heavy atom it was bonded to, any H rdkit itself declines to remove left
+untouched:
 
     uv run python -m experiments to-united-atom dash-molecules-50k-ua --source dash-molecules-50k
 
