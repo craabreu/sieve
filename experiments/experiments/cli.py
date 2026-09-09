@@ -84,14 +84,14 @@ def _cmd_promote_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_prepare_store(args: argparse.Namespace) -> int:
-    from experiments.prepare_store import prepare_store
+    from experiments.prepare_dash import prepare_store
 
     prepare_store(args.store, stores_root=DEFAULT_STORES_ROOT, sdf_path=args.sdf_path)
     return 0
 
 
 def _cmd_subsample_store(args: argparse.Namespace) -> int:
-    from experiments.prepare_store import subsample_store
+    from experiments.store_ops import subsample_store
 
     result = subsample_store(
         args.source,
@@ -113,7 +113,7 @@ def _cmd_subsample_store(args: argparse.Namespace) -> int:
 
 
 def _cmd_partition_store(args: argparse.Namespace) -> int:
-    from experiments.prepare_store import partition_store
+    from experiments.store_ops import partition_store
 
     result = partition_store(
         args.source,
@@ -134,7 +134,7 @@ def _cmd_partition_store(args: argparse.Namespace) -> int:
 
 
 def _cmd_to_united_atom(args: argparse.Namespace) -> int:
-    from experiments.prepare_store import to_united_atom_store
+    from experiments.store_ops import to_united_atom_store
 
     to_united_atom_store(args.source, args.dest, stores_root=DEFAULT_STORES_ROOT)
     print(f"wrote {args.dest!r} (united-atom version of {args.source!r})")
