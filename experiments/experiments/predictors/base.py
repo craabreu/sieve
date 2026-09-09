@@ -3,9 +3,10 @@
 Unlike cosmo_experiments' base.py, there is no AtomPredictor/
 MoleculePredictor split and no profile/area/charge rollup machinery: every
 predictor in this series predicts one scalar per atom (the run's own
-``target.atom_property``) directly, and the molecule-level
-charge-conservation check (metrics.charge_conservation_metrics) is
-computed by the caller (runner.py), not by the predictor.
+``target.atom_property``) directly, and the molecule-level sum-constraint
+check (metrics.sum_constraint_metrics, computed only when
+``target.molecule_property`` is set) is computed by the caller
+(runner.py), not by the predictor.
 """
 
 from __future__ import annotations

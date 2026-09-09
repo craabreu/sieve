@@ -4,10 +4,11 @@ Pure numpy: no rdkit, no pandas, no mlflow -- unit-testable with hand
 computed numbers (see experiments/tests/test_metrics.py).
 
 Unlike cosmo_experiments' ``charge_metrics`` (MAE/RMSE/max_abs_residual, no
-R2 -- net *molecular* charge clusters near zero, destabilizing ss_tot), this
-series' primary target is per-atom ``MBIScharge``, which has real spread, so
-R2 is informative and reported; ``max_abs_residual`` is dropped. See the
-design spec's Metrics decision.
+R2 -- net *molecular* charge clusters near zero, destabilizing ss_tot, the
+same reason ``sum_constraint_metrics`` below reuses ``regression_metrics``
+rather than dropping R2 itself), this series' primary target is per-atom
+``MBIScharge``, which has real spread, so R2 is informative and reported;
+``max_abs_residual`` is dropped. See the design spec's Metrics decision.
 """
 
 from __future__ import annotations
@@ -58,17 +59,19 @@ def regression_metrics(
     }
 
 
-def charge_conservation_metrics(
-    atom_charge_pred: NDArray[np.floating],
+def sum_constraint_metrics(
+    atom_value_pred: NDArray[np.floating],
     mol_id: NDArray[np.int64],
-    net_charge_true: NDArray[np.floating],
+    molecule_value_true: NDArray[np.floating],
     n_molecules: int,
 ) -> dict[str, float]:
-    """Secondary diagnostic: how well each conformer's summed predicted atom
-    charges reproduce its own molblock ``M CHG`` total (``net_charge`` --
-    unlike cosmo_experiments' sigma-derived "charge", there is no sign flip
-    here: ``MBIScharge`` is a real atomic partial charge, and a conformer's
-    atoms should sum to its own formal charge directly).
+    """Secondary diagnostic, for a dataset whose per-atom values are
+    expected to sum to a known per-molecule total (``target.
+    molecule_property``): how well each molecule's summed predictions
+    reproduce it. For the DASH charge series that total is the conformer's
+    own molblock ``M CHG`` sum, and there is no sign flip -- ``MBIScharge``
+    is a real atomic partial charge, and a conformer's atoms should sum to
+    its formal charge directly.
     """
-    pred_sum = molecule_sum(atom_charge_pred, mol_id, n_molecules)
-    return regression_metrics(net_charge_true, pred_sum)
+    pred_sum = molecule_sum(atom_value_pred, mol_id, n_molecules)
+    return regression_metrics(molecule_value_true, pred_sum)

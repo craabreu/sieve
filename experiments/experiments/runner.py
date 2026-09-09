@@ -130,10 +130,11 @@ def _score(test: MoleculeSet, pred: Prediction) -> dict[str, float]:
     out = metrics_mod.regression_metrics(test.atom_target, pred.atom_value)
     out["n_test_atoms"] = float(test.n_atoms)
     out["n_test_conformers"] = float(test.n_conformers)
-    conservation = metrics_mod.charge_conservation_metrics(
-        pred.atom_value, test.atom_mol_id, test.molecule_value, test.n_conformers
-    )
-    out.update({f"charge_conservation/{k}": v for k, v in conservation.items()})
+    if test.molecule_value is not None:
+        constraint = metrics_mod.sum_constraint_metrics(
+            pred.atom_value, test.atom_mol_id, test.molecule_value, test.n_conformers
+        )
+        out.update({f"sum_constraint/{k}": v for k, v in constraint.items()})
     return out
 
 
@@ -317,29 +318,35 @@ def _build_parity_panels(
             }
         )
 
-    pred_net_charge = molecule_sum(pred.atom_value, test.atom_mol_id, test.n_conformers)
-    residual = pred_net_charge - test.molecule_value
-    residual = residual[~np.isnan(residual)]
-    # A predictor whose own normalization already conserves charge exactly
-    # (e.g. std_weighted/equal_weighted -- residuals at float round-off,
-    # ~1e-16) has nothing worth plotting here: a histogram of that is a
-    # single spike carrying no information, not a diagnostic. Same
-    # threshold plots._histogram_subplot's own degenerate-bin-count guard
-    # uses, kept in sync deliberately.
-    if residual.size and np.max(np.abs(residual)) >= 1e-6:
-        panels.append(
-            {
-                "kind": "histogram",
-                "values": residual,
-                "xlabel": "molecule charge residual (e)",
-                "title": "molecule charge conservation",
-                "metrics": {
-                    k.removeprefix("charge_conservation/"): v
-                    for k, v in run_metrics.items()
-                    if k.startswith("charge_conservation/")
-                },
-            }
+    # No per-molecule total to check against when target.molecule_property
+    # is unset -- test.molecule_value is None (see MoleculeSet, Task 3),
+    # so there is nothing to build this diagnostic panel from.
+    if test.molecule_value is not None:
+        pred_net_charge = molecule_sum(
+            pred.atom_value, test.atom_mol_id, test.n_conformers
         )
+        residual = pred_net_charge - test.molecule_value
+        residual = residual[~np.isnan(residual)]
+        # A predictor whose own normalization already conserves charge
+        # exactly (e.g. std_weighted/equal_weighted -- residuals at float
+        # round-off, ~1e-16) has nothing worth plotting here: a histogram
+        # of that is a single spike carrying no information, not a
+        # diagnostic. Same threshold plots._histogram_subplot's own
+        # degenerate-bin-count guard uses, kept in sync deliberately.
+        if residual.size and np.max(np.abs(residual)) >= 1e-6:
+            panels.append(
+                {
+                    "kind": "histogram",
+                    "values": residual,
+                    "xlabel": "molecule charge residual (e)",
+                    "title": "molecule charge conservation",
+                    "metrics": {
+                        k.removeprefix("charge_conservation/"): v
+                        for k, v in run_metrics.items()
+                        if k.startswith("charge_conservation/")
+                    },
+                }
+            )
     return panels
 
 

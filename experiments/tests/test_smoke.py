@@ -101,7 +101,7 @@ def test_no_batch_id_leaves_run_directory_naming_unchanged(tmp_path):
     )
 
 
-def test_smoke_metrics_include_r2_and_charge_conservation(tmp_path):
+def test_smoke_metrics_include_r2_and_sum_constraint(tmp_path):
     mset = synthetic_molecule_set(n_mol=20, seed=0)
     masks = _synthetic_masks(20, seed=1)
     cfg = _tiny_cfg()
@@ -113,8 +113,27 @@ def test_smoke_metrics_include_r2_and_charge_conservation(tmp_path):
     assert np.isfinite(result.metrics["mae"])
     assert np.isfinite(result.metrics["rmse"])
     assert "r2" in result.metrics
-    assert "charge_conservation/mae" in result.metrics
+    assert "sum_constraint/mae" in result.metrics
     assert "max_abs_residual" not in result.metrics
+
+
+def test_no_sum_constraint_metrics_without_a_molecule_property(tmp_path):
+    from dataclasses import replace
+
+    from experiments.config import TargetCfg
+    from experiments.data import MoleculeSet
+
+    full = synthetic_molecule_set(n_mol=20, seed=0)
+    mset = MoleculeSet(mols=full.mols, atom_property=full.atom_property, ids=full.ids)
+    masks = _synthetic_masks(20, seed=1)
+    cfg = replace(_tiny_cfg(), target=TargetCfg(atom_property="MBIScharge"))
+
+    result = execute(
+        cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
+    )
+
+    assert np.isfinite(result.metrics["mae"])
+    assert not any(k.startswith("sum_constraint/") for k in result.metrics)
 
 
 def test_smoke_reports_featurize_time_for_sieve_predictor(tmp_path):
@@ -374,7 +393,7 @@ def test_tree_stats_load_path_rejects_a_predictor_without_load_model_state(tmp_p
 def test_normalization_conserves_charge_on_every_split(tmp_path):
     """With normalization set, predict_raw's output is renormalized before
     scoring -- test/train/val/LOO should all come out charge-conserving
-    (charge_conservation/mae ~ 0), which plain predict() does not
+    (sum_constraint/mae ~ 0), which plain predict() does not
     guarantee (see sieve_predictor.py's own docstring)."""
     import pytest
 
@@ -387,10 +406,10 @@ def test_normalization_conserves_charge_on_every_split(tmp_path):
     result = execute(
         cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None
     )
-    assert result.metrics["charge_conservation/mae"] < 1e-8
-    assert result.metrics["train/charge_conservation/mae"] < 1e-8
-    assert result.metrics["val/charge_conservation/mae"] < 1e-8
-    assert result.metrics["train_loo/charge_conservation/mae"] < 1e-8
+    assert result.metrics["sum_constraint/mae"] < 1e-8
+    assert result.metrics["train/sum_constraint/mae"] < 1e-8
+    assert result.metrics["val/sum_constraint/mae"] < 1e-8
+    assert result.metrics["train_loo/sum_constraint/mae"] < 1e-8
 
 
 def test_normalization_none_matches_plain_predict(tmp_path):

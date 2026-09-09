@@ -78,27 +78,39 @@ def test_regression_metrics_no_nan_reports_zero():
     assert out["n_nan"] == pytest.approx(0.0)
 
 
-def test_charge_conservation_metrics_sums_atoms_per_conformer():
-    from experiments.metrics import charge_conservation_metrics
+def test_sum_constraint_metrics_sums_atoms_per_conformer():
+    from experiments.metrics import sum_constraint_metrics
 
     # Two conformers: atoms [0,0,1,1,1] -> conformer 0 has 2 atoms, conformer 1 has 3.
     mol_id = np.array([0, 0, 1, 1, 1])
-    atom_charge_pred = np.array([0.2, -0.1, 0.05, 0.05, -0.2])
-    net_charge_true = np.array([0.0, 0.0])
+    atom_value_pred = np.array([0.2, -0.1, 0.05, 0.05, -0.2])
+    molecule_value_true = np.array([0.0, 0.0])
 
-    out = charge_conservation_metrics(atom_charge_pred, mol_id, net_charge_true, 2)
+    out = sum_constraint_metrics(atom_value_pred, mol_id, molecule_value_true, 2)
     pred_sums = np.array([0.1, -0.1])
-    expected_mae = float(np.mean(np.abs(pred_sums - net_charge_true)))
+    expected_mae = float(np.mean(np.abs(pred_sums - molecule_value_true)))
     assert out["mae"] == pytest.approx(expected_mae)
 
 
-def test_charge_conservation_metrics_perfect_conservation_is_zero_error():
-    from experiments.metrics import charge_conservation_metrics
+def test_sum_constraint_metrics_perfect_conservation_is_zero_error():
+    from experiments.metrics import sum_constraint_metrics
 
     mol_id = np.array([0, 0, 1])
-    atom_charge_pred = np.array([0.5, -0.5, 1.0])
-    net_charge_true = np.array([0.0, 1.0])
+    atom_value_pred = np.array([0.5, -0.5, 1.0])
+    molecule_value_true = np.array([0.0, 1.0])
 
-    out = charge_conservation_metrics(atom_charge_pred, mol_id, net_charge_true, 2)
+    out = sum_constraint_metrics(atom_value_pred, mol_id, molecule_value_true, 2)
     assert out["mae"] == pytest.approx(0.0)
     assert out["rmse"] == pytest.approx(0.0)
+
+
+def test_sum_constraint_metrics_against_hand_computed_numbers():
+    from experiments.metrics import sum_constraint_metrics
+
+    # two molecules, 2 atoms each; predicted sums 1.0 and 4.0 vs true 1.5, 3.0
+    pred = np.array([0.4, 0.6, 2.0, 2.0])
+    mol_id = np.array([0, 0, 1, 1])
+    true = np.array([1.5, 3.0])
+    out = sum_constraint_metrics(pred, mol_id, true, 2)
+    assert out["mae"] == pytest.approx(0.75)
+    assert out["rmse"] == pytest.approx(np.sqrt((0.5**2 + 1.0**2) / 2))

@@ -236,14 +236,14 @@ def test_summarize_renders_a_non_finite_metric_as_empty(tmp_path, monkeypatch):
     run_dir.mkdir(parents=True)
     (run_dir / "manifest.json").write_text(json.dumps({"config": {}}))
     (run_dir / "metrics.json").write_text(
-        json.dumps({"mae": 0.1, "charge_conservation/r2": float("nan")})
+        json.dumps({"mae": 0.1, "sum_constraint/r2": float("nan")})
     )
     monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", tmp_path / "runs")
     assert cli.main(["summarize"]) == 0
 
     row = next(iter(csv.DictReader((tmp_path / "results" / "summary.csv").open())))
     assert row["mae"] == "0.1"
-    assert row["charge_conservation/r2"] == ""
+    assert row["sum_constraint/r2"] == ""
 
 
 def _sweep_tree(root):
