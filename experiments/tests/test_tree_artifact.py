@@ -26,9 +26,9 @@ def test_compute_node_stats_computes_mean_std_count():
 
     # Node (0, 1): charges 0.2, 0.4, 0.6 -> mean 0.4.
     paths = [[(0, 1)], [(0, 1)], [(0, 1)]]
-    atom_charge = np.array([0.2, 0.4, 0.6])
+    atom_value = np.array([0.2, 0.4, 0.6])
 
-    stats = compute_node_stats(paths, atom_charge)
+    stats = compute_node_stats(paths, atom_value)
 
     assert stats.branch_idx.tolist() == [0]
     assert stats.node_id.tolist() == [1]
@@ -41,9 +41,9 @@ def test_compute_node_stats_std_zero_for_singleton_node():
     from experiments.tree_artifact import compute_node_stats
 
     paths = [[(0, 1)]]
-    atom_charge = np.array([0.7])
+    atom_value = np.array([0.7])
 
-    stats = compute_node_stats(paths, atom_charge)
+    stats = compute_node_stats(paths, atom_value)
 
     np.testing.assert_allclose(stats.std, [0.0])
 
@@ -54,9 +54,9 @@ def test_compute_node_stats_aggregates_a_node_visited_via_multiple_paths():
     from experiments.tree_artifact import compute_node_stats
 
     paths = [[(0, 1)], [(0, 1), (0, 2)]]
-    atom_charge = np.array([0.2, 0.4])
+    atom_value = np.array([0.2, 0.4])
 
-    stats = compute_node_stats(paths, atom_charge)
+    stats = compute_node_stats(paths, atom_value)
 
     idx = stats.node_id.tolist().index(1)
     assert stats.count[idx] == 2
@@ -209,8 +209,8 @@ def test_apply_node_stats_writes_mean_and_std_columns():
 
     tree = _FakeTree({0: 3})
     paths = [[(0, 1)], [(0, 1)]]
-    atom_charge = np.array([0.2, 0.4])
-    stats = compute_node_stats(paths, atom_charge)
+    atom_value = np.array([0.2, 0.4])
+    stats = compute_node_stats(paths, atom_value)
 
     mean_props, std_props = apply_node_stats(tree, stats)
 
@@ -232,8 +232,8 @@ def test_save_and_load_node_stats_round_trips(tmp_path):
     )
 
     paths = [[(0, 1)], [(0, 1), (1, 3)]]
-    atom_charge = np.array([0.2, 0.4])
-    stats = compute_node_stats(paths, atom_charge)
+    atom_value = np.array([0.2, 0.4])
+    stats = compute_node_stats(paths, atom_value)
 
     path = tmp_path / "stats.npz"
     save_node_stats(stats, path)
@@ -255,8 +255,8 @@ def test_apply_node_stats_from_loaded_stats_matches_direct_apply(tmp_path):
     )
 
     paths = [[(0, 1)], [(0, 1), (0, 2)]]
-    atom_charge = np.array([0.2, 0.5])
-    stats = compute_node_stats(paths, atom_charge)
+    atom_value = np.array([0.2, 0.5])
+    stats = compute_node_stats(paths, atom_value)
 
     tree_direct = _FakeTree({0: 3})
     direct_mean_props, _ = apply_node_stats(tree_direct, stats)

@@ -55,22 +55,22 @@ class TreeNodeStats:
 
 
 def compute_node_stats(
-    paths: list[NodePath], atom_charge: NDArray[np.floating]
+    paths: list[NodePath], atom_value: NDArray[np.floating]
 ) -> TreeNodeStats:
-    """Two-pass (sum, sum-of-squares, count) aggregation of ``atom_charge``
+    """Two-pass (sum, sum-of-squares, count) aggregation of ``atom_value``
     over every node on every atom's own matched path -- pure numpy/python,
     no tree object needed, so this is testable without a real ``DASHTree``.
     A node with only one matching atom gets ``std=0.0`` (population std,
     ``ddof=0`` -- consistent with a single observation having no spread).
     """
-    if len(paths) != len(atom_charge):
-        raise ValueError("paths and atom_charge must have the same length")
-    atom_charge = np.asarray(atom_charge, dtype=np.float64)
+    if len(paths) != len(atom_value):
+        raise ValueError("paths and atom_value must have the same length")
+    atom_value = np.asarray(atom_value, dtype=np.float64)
 
     charge_sum: dict[PathKey, float] = {}
     charge_sumsq: dict[PathKey, float] = {}
     count: dict[PathKey, int] = {}
-    for path, charge in zip(paths, atom_charge, strict=True):
+    for path, charge in zip(paths, atom_value, strict=True):
         for key in path:
             charge_sum[key] = charge_sum.get(key, 0.0) + float(charge)
             charge_sumsq[key] = charge_sumsq.get(key, 0.0) + float(charge) ** 2

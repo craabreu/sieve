@@ -58,7 +58,7 @@ if _DASH_TREE_ROOT.exists() and str(_DASH_TREE_ROOT) not in sys.path:
 
 
 def populate_tree_with_charge_property(
-    tree: Any, paths: list[NodePath], atom_charge: NDArray[np.floating]
+    tree: Any, paths: list[NodePath], atom_value: NDArray[np.floating]
 ) -> LiteralTreeChargeProperties:
     """Populate an already-loaded ``DASHTree``'s own storage with our own
     per-node mean/std ``MBIScharge`` over every node on every atom's path --
@@ -68,7 +68,7 @@ def populate_tree_with_charge_property(
     ``tree.data_storage``, just not returned here -- ``DASHChargePredictor.
     fit()`` below calls ``compute_node_stats``/``apply_node_stats`` directly
     instead, to keep both)."""
-    stats = compute_node_stats(paths, atom_charge)
+    stats = compute_node_stats(paths, atom_value)
     mean_props, _std_props = apply_node_stats(tree, stats)
     return mean_props
 
@@ -239,7 +239,7 @@ class DASHChargePredictor:
                 "fit (or load_model_state) must be called before predict_raw"
             )
         paths = self._paths_for(test, split="test")
-        atom_charge = predict_via_data_storage_walk(self._tree, paths, self._mean_props)
+        atom_value = predict_via_data_storage_walk(self._tree, paths, self._mean_props)
         atom_std = predict_via_data_storage_walk(self._tree, paths, self._std_props)
 
         # match_stats' own n_unmatched_atoms (set in _paths_for) only counts
@@ -251,7 +251,7 @@ class DASHChargePredictor:
         # match_stats -- the one place a run's manifest.json reports
         # coverage -- reflects the true final NaN rate, mirroring
         # predictors/dash_pretrained.py's own convention.
-        n_final_nan_atoms = int(np.isnan(atom_charge).sum())
+        n_final_nan_atoms = int(np.isnan(atom_value).sum())
         stats = self.match_stats["test"]
         stats["n_final_nan_atoms"] = n_final_nan_atoms
         if n_final_nan_atoms:
@@ -264,13 +264,13 @@ class DASHChargePredictor:
                 stats["n_unmatched_atoms"],
                 n_final_nan_atoms - stats["n_unmatched_atoms"],
             )
-        return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
+        return RawPrediction(atom_value=atom_value, atom_std=atom_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:
-        return Prediction(atom_charge=self.predict_raw(test).atom_charge)
+        return Prediction(atom_value=self.predict_raw(test).atom_value)
 
     def save_model_state(self, path: str | Path) -> None:
-        """See ``NormalizableChargePredictor``'s own docstring
+        """See ``NormalizablePredictor``'s own docstring
         (predictors/base.py) for why this method name is predictor-agnostic
         rather than ``save_tree_stats``."""
         if self._stats is None:

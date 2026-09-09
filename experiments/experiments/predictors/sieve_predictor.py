@@ -14,7 +14,7 @@ predictors/dash.py's docstring and cosmo_experiments' own precedent),
 tuned -- see the design spec's "Out of scope" list.
 
 ``predict_raw``/``save_model_state``/``load_model_state`` mirror
-predictors/dash.py's own ``NormalizableChargePredictor`` support (see
+predictors/dash.py's own ``NormalizablePredictor`` support (see
 ``config.ExperimentCfg.normalization``): ``predict_raw`` uses
 ``sieve.predict_detailed`` rather than the plain ``sieve.predict`` wrapper
 -- the two compute identically (``predict`` is literally
@@ -267,9 +267,9 @@ class SievePredictor:
         )
         self.last_featurize_s += time.perf_counter() - t0
         detailed = sieve.predict_detailed(self._model, batch)
-        atom_charge = np.asarray(detailed.value, dtype=np.float64)[:, 0]
+        atom_value = np.asarray(detailed.value, dtype=np.float64)[:, 0]
         atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
-        return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
+        return RawPrediction(atom_value=atom_value, atom_std=atom_std)
 
     def predict_loo_raw(self, train: MoleculeSet) -> RawPrediction:
         """Leave-one-out prediction for the *training* split (design.md 10.3).
@@ -308,12 +308,12 @@ class SievePredictor:
         )
         self.last_featurize_s += time.perf_counter() - t0
         detailed = sieve.predict_loo(self._model, batch)
-        atom_charge = np.asarray(detailed.value, dtype=np.float64)[:, 0]
+        atom_value = np.asarray(detailed.value, dtype=np.float64)[:, 0]
         atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
-        return RawPrediction(atom_charge=atom_charge, atom_std=atom_std)
+        return RawPrediction(atom_value=atom_value, atom_std=atom_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:
-        return Prediction(atom_charge=self.predict_raw(test).atom_charge)
+        return Prediction(atom_value=self.predict_raw(test).atom_value)
 
     def save_model_state(self, path: str | Path) -> None:
         if self._model is None:

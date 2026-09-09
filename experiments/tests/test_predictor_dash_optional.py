@@ -28,15 +28,15 @@ def test_dash_charge_predictor_fits_and_predicts_on_synthetic_molecules():
     predictor.fit(mset, mset, rng=rng)
     pred = predictor.predict(mset)
 
-    assert pred.atom_charge.shape == (mset.n_atoms,)
-    assert np.all(np.isfinite(pred.atom_charge))
+    assert pred.atom_value.shape == (mset.n_atoms,)
+    assert np.all(np.isfinite(pred.atom_value))
     assert "train" in predictor.match_stats
     assert predictor.match_stats["train"]["n_conformers"] == mset.n_conformers
 
 
 def test_dash_charge_predictor_predict_equals_predict_raw_atom_charge():
     """predict() must stay behavior-identical to today: unnormalized, i.e.
-    exactly predict_raw(...).atom_charge."""
+    exactly predict_raw(...).atom_value."""
     from experiments.predictors.dash import DASHChargePredictor
 
     from experiments.tests.helpers import synthetic_molecule_set
@@ -49,8 +49,8 @@ def test_dash_charge_predictor_predict_equals_predict_raw_atom_charge():
     raw = predictor.predict_raw(mset)
     pred = predictor.predict(mset)
 
-    np.testing.assert_array_equal(pred.atom_charge, raw.atom_charge)
-    assert raw.atom_std.shape == raw.atom_charge.shape
+    np.testing.assert_array_equal(pred.atom_value, raw.atom_value)
+    assert raw.atom_std.shape == raw.atom_value.shape
 
 
 def test_dash_charge_predictor_save_and_load_model_state_round_trips(tmp_path):
@@ -75,7 +75,7 @@ def test_dash_charge_predictor_save_and_load_model_state_round_trips(tmp_path):
     loaded.load_model_state(stats_path)
     loaded_pred = loaded.predict(test)
 
-    np.testing.assert_array_equal(loaded_pred.atom_charge, fitted_pred.atom_charge)
+    np.testing.assert_array_equal(loaded_pred.atom_value, fitted_pred.atom_value)
 
 
 def test_dash_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch):
@@ -102,4 +102,4 @@ def test_dash_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch)
     monkeypatch.setattr(loaded, "fit", _boom)
     loaded.load_model_state(stats_path)  # must not raise
     pred = loaded.predict(test)
-    assert pred.atom_charge.shape == (test.n_atoms,)
+    assert pred.atom_value.shape == (test.n_atoms,)

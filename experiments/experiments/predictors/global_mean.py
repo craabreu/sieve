@@ -30,5 +30,5 @@ class GlobalMeanPredictor:
     def predict(self, test: MoleculeSet) -> Prediction:
         if self._mean is None:
             raise RuntimeError("fit must be called before predict")
-        atom_charge: NDArray[np.float64] = np.full(test.n_atoms, self._mean)
-        return Prediction(atom_charge=atom_charge)
+        atom_value: NDArray[np.float64] = np.full(test.n_atoms, self._mean)
+        return Prediction(atom_value=atom_value)

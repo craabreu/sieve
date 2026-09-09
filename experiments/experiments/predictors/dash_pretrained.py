@@ -49,7 +49,7 @@ pointed at the tree's own pre-existing ``default_value_column`` instead of
 a freshly-populated one, with ``fallback_charge=nan`` -- i.e. genuinely no
 substitution at all when nothing along a path is populated, matching
 ``get_property_noNAN``'s own *documented* (if buggy-in-practice) intent.
-An unmatched atom's ``atom_charge`` entry is ``float("nan")``, never a
+An unmatched atom's ``atom_value`` entry is ``float("nan")``, never a
 value we chose on DASH's behalf. ``metrics.regression_metrics`` is
 NaN-aware precisely so this predictor's own faithfulness doesn't silently
 poison a whole run's aggregate MAE/RMSE/R2 -- see that module's own
@@ -60,7 +60,7 @@ from, not just the first: ``n_unmatched_atoms``/``n_unmatched_molecules``
 (from ``_atom_paths`` -- path-matching itself failed); ``n_walk_nan_atoms``
 (``raw_charge`` came back NaN -- a strict superset of the above, since it
 also covers a successfully matched path with no populated node anywhere
-along it); ``n_final_nan_atoms`` (``atom_charge`` after
+along it); ``n_final_nan_atoms`` (``atom_value`` after
 ``std_weighted_normalize`` -- a further superset again, since one NaN
 ``raw_charge`` in a conformer propagates to every atom in it). Each is
 bookkeeping about coverage, not a predicted value.
@@ -202,12 +202,12 @@ class DASHPretrainedChargePredictor:
         )
         raw_charge = predict_via_data_storage_walk(tree, paths, value_props)
         raw_std = predict_via_data_storage_walk(tree, paths, std_props)
-        return RawPrediction(atom_charge=raw_charge, atom_std=raw_std)
+        return RawPrediction(atom_value=raw_charge, atom_std=raw_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:
         raw = self.predict_raw(test)
-        atom_charge = std_weighted_normalize(
-            raw.atom_charge,
+        atom_value = std_weighted_normalize(
+            raw.atom_value,
             raw.atom_std,
             test.molecule_value,
             test.atom_mol_id,
@@ -217,14 +217,14 @@ class DASHPretrainedChargePredictor:
         # match_stats' own n_unmatched_atoms (set in predict_raw) only
         # counts atoms whose path-matching itself failed -- a strict
         # undercount of the real NaN rate: raw_charge is also NaN for a
-        # matched-but-nothing-populated path, and atom_charge is NaN for
+        # matched-but-nothing-populated path, and atom_value is NaN for
         # every atom in a conformer where even one other atom's raw_charge
         # was NaN (see std_weighted_normalize's own docstring). Tracked here
         # so match_stats -- the one place a run's manifest.json reports
         # coverage -- reflects the true, final NaN rate, not just its
         # path-matching-failure subset.
-        n_walk_nan_atoms = int(np.isnan(raw.atom_charge).sum())
-        n_final_nan_atoms = int(np.isnan(atom_charge).sum())
+        n_walk_nan_atoms = int(np.isnan(raw.atom_value).sum())
+        n_final_nan_atoms = int(np.isnan(atom_value).sum())
         self.match_stats["n_walk_nan_atoms"] = n_walk_nan_atoms
         self.match_stats["n_final_nan_atoms"] = n_final_nan_atoms
         if n_final_nan_atoms:
@@ -238,7 +238,7 @@ class DASHPretrainedChargePredictor:
                 self.match_stats["n_unmatched_atoms"],
                 n_walk_nan_atoms - self.match_stats["n_unmatched_atoms"],
             )
-        return Prediction(atom_charge=atom_charge)
+        return Prediction(atom_value=atom_value)
 
 
 def _build(params: Mapping[str, Any]) -> DASHPretrainedChargePredictor:

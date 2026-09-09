@@ -34,11 +34,11 @@ def synthetic_molecule_set(
         mols.append(mol)
         num_atoms.append(n_atoms)
 
-    atom_charge = np.concatenate(
+    atom_value = np.concatenate(
         [np.array([a.GetDoubleProp(atom_property) for a in m.GetAtoms()]) for m in mols]
     )
     mol_id = np.repeat(np.arange(n_mol), num_atoms)
-    net_charge = molecule_sum(atom_charge, mol_id, n_mol)
+    net_charge = molecule_sum(atom_value, mol_id, n_mol)
 
     chembl_id: list[str | None] = [
         f"CHEMBL{1000 + i // 2}" for i in range(n_mol)

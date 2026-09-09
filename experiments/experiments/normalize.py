@@ -4,7 +4,7 @@ one to an already-computed raw prediction without re-matching or re-fitting
 anything (see ``config.ExperimentCfg.normalization`` and ``runner._predict``).
 
 Every entry in ``NORMALIZERS`` shares one signature, ``(raw_charge, raw_std,
-net_charge, mol_id, n_conformers) -> atom_charge``, even though
+net_charge, mol_id, n_conformers) -> atom_value``, even though
 ``equal_weighted_normalize`` ignores ``raw_std`` entirely -- this lets
 calling code stay normalization-agnostic.
 """

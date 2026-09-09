@@ -120,18 +120,18 @@ def _savez_run(path: Path, test: MoleculeSet, pred: Prediction, /) -> None:
     arrays: dict[str, Any] = {k: np.array(v) for k, v in test.ids.items()}
     arrays["num_atoms"] = test.num_atoms
     arrays["atom_target_true"] = test.atom_target
-    arrays["atom_target_pred"] = pred.atom_charge  # renamed in Task 4
+    arrays["atom_target_pred"] = pred.atom_value  # renamed in Task 4
     if test.molecule_value is not None:
         arrays["molecule_value"] = test.molecule_value
     np.savez(path, **arrays)
 
 
 def _score(test: MoleculeSet, pred: Prediction) -> dict[str, float]:
-    out = metrics_mod.regression_metrics(test.atom_target, pred.atom_charge)
+    out = metrics_mod.regression_metrics(test.atom_target, pred.atom_value)
     out["n_test_atoms"] = float(test.n_atoms)
     out["n_test_conformers"] = float(test.n_conformers)
     conservation = metrics_mod.charge_conservation_metrics(
-        pred.atom_charge, test.atom_mol_id, test.molecule_value, test.n_conformers
+        pred.atom_value, test.atom_mol_id, test.molecule_value, test.n_conformers
     )
     out.update({f"charge_conservation/{k}": v for k, v in conservation.items()})
     return out
@@ -207,14 +207,14 @@ def _normalize(raw: Any, mset: MoleculeSet, *, normalization: str) -> Prediction
     walk output (``predictors.base.RawPrediction``, from ``predict_raw``/
     ``predict_loo_raw``) -- the same call shape the old nested_runner.py
     used, now reachable from a flat run's ``normalization`` config key."""
-    atom_charge = NORMALIZERS[normalization](
-        raw.atom_charge,
+    atom_value = NORMALIZERS[normalization](
+        raw.atom_value,
         raw.atom_std,
         mset.molecule_value,
         mset.atom_mol_id,
         mset.n_conformers,
     )
-    return Prediction(atom_charge=atom_charge)
+    return Prediction(atom_value=atom_value)
 
 
 def _predict(predictor: Any, mset: MoleculeSet, *, cfg: ExperimentCfg) -> Prediction:
@@ -265,7 +265,7 @@ def _score_loo(
     pred = (
         _normalize(raw, train, normalization=cfg.normalization)
         if cfg.normalization is not None
-        else Prediction(atom_charge=raw.atom_charge)
+        else Prediction(atom_value=raw.atom_value)
     )
     score = _score(train, pred)
     return {f"train_loo/{k}": v for k, v in score.items()}
@@ -301,7 +301,7 @@ def _build_parity_panels(
     anything."""
     panels: list[dict[str, Any]] = []
 
-    atom_true, atom_pred = _finite_pair(test.atom_target, pred.atom_charge)
+    atom_true, atom_pred = _finite_pair(test.atom_target, pred.atom_value)
     if atom_true.size:  # every atom NaN (e.g. a pretrained baseline that
         # matched nothing in this split) -- an empty hexbin panel would
         # crash on its own .min()/.max() axis limits, so skip it, not fake it
@@ -317,9 +317,7 @@ def _build_parity_panels(
             }
         )
 
-    pred_net_charge = molecule_sum(
-        pred.atom_charge, test.atom_mol_id, test.n_conformers
-    )
+    pred_net_charge = molecule_sum(pred.atom_value, test.atom_mol_id, test.n_conformers)
     residual = pred_net_charge - test.molecule_value
     residual = residual[~np.isnan(residual)]
     # A predictor whose own normalization already conserves charge exactly

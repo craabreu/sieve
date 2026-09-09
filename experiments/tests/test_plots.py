@@ -23,7 +23,7 @@ def test_build_parity_panels_includes_atom_charge():
     from experiments.tests.helpers import synthetic_molecule_set
 
     ms = synthetic_molecule_set(n_mol=6, seed=0)
-    pred = Prediction(atom_charge=ms.atom_target)  # perfect predictions
+    pred = Prediction(atom_value=ms.atom_target)  # perfect predictions
     run_metrics = {
         "mae": 0.0,
         "rmse": 0.0,
@@ -36,7 +36,7 @@ def test_build_parity_panels_includes_atom_charge():
     panels = _build_parity_panels(ms, pred, run_metrics)
 
     np.testing.assert_array_equal(panels[0]["y_true"], ms.atom_target)
-    np.testing.assert_array_equal(panels[0]["y_pred"], pred.atom_charge)
+    np.testing.assert_array_equal(panels[0]["y_pred"], pred.atom_value)
     assert panels[0]["metrics"] == {"mae": 0.0, "rmse": 0.0, "r2": 1.0}
 
 
@@ -51,7 +51,7 @@ def test_build_parity_panels_omits_conservation_panel_when_exactly_conserved():
     from experiments.tests.helpers import synthetic_molecule_set
 
     ms = synthetic_molecule_set(n_mol=6, seed=0)
-    pred = Prediction(atom_charge=ms.atom_target)  # perfect predictions
+    pred = Prediction(atom_value=ms.atom_target)  # perfect predictions
 
     panels = _build_parity_panels(ms, pred, {})
 
@@ -69,7 +69,7 @@ def test_build_parity_panels_conservation_panel_is_the_residual_histogram():
     rng = np.random.default_rng(2)
     noise = rng.normal(scale=0.05, size=ms.atom_target.shape)
     atom_charge_pred = ms.atom_target + noise
-    pred = Prediction(atom_charge=atom_charge_pred)
+    pred = Prediction(atom_value=atom_charge_pred)
 
     panels = _build_parity_panels(ms, pred, {})
 
@@ -89,7 +89,7 @@ def test_build_parity_panels_conservation_panel_drops_nan_residuals():
     noise = rng.normal(scale=0.05, size=ms.atom_target.shape)
     atom_charge_pred = ms.atom_target + noise  # real residual spread, not exact
     atom_charge_pred[0] = np.nan  # poisons the whole first conformer's sum
-    pred = Prediction(atom_charge=atom_charge_pred)
+    pred = Prediction(atom_value=atom_charge_pred)
 
     panels = _build_parity_panels(ms, pred, {})
 

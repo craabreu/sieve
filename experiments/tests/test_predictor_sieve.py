@@ -159,7 +159,7 @@ def test_sieve_charge_predictor_accepts_edge_attributes_end_to_end():
     assert predictor._config.edge_codes == {}
     assert predictor._config.attribute_codes.keys() == {"element"}
     pred = predictor.predict(train)
-    assert pred.atom_charge.shape == (train.n_atoms,)
+    assert pred.atom_value.shape == (train.n_atoms,)
 
 
 def test_sieve_charge_predictor_n_jobs_matches_sequential():
@@ -179,7 +179,7 @@ def test_sieve_charge_predictor_n_jobs_matches_sequential():
     par.fit(mset, mset, rng=np.random.default_rng(0))
     par_pred = par.predict(mset)
 
-    np.testing.assert_array_equal(par_pred.atom_charge, seq_pred.atom_charge)
+    np.testing.assert_array_equal(par_pred.atom_value, seq_pred.atom_value)
 
 
 def test_sieve_charge_predictor_fits_with_neighbor_depth_end_to_end():
@@ -200,8 +200,8 @@ def test_sieve_charge_predictor_fits_with_neighbor_depth_end_to_end():
     predictor.fit(mset, mset, rng=rng)
     pred = predictor.predict(mset)
 
-    assert pred.atom_charge.shape == (mset.n_atoms,)
-    assert np.all(np.isfinite(pred.atom_charge))
+    assert pred.atom_value.shape == (mset.n_atoms,)
+    assert np.all(np.isfinite(pred.atom_value))
     assert predictor._config.neighbor_depth == 1
 
 
@@ -226,7 +226,7 @@ def test_sieve_charge_predictor_save_load_round_trips_neighbor_depth(tmp_path):
     loaded.load_model_state(path)
     assert loaded._config.neighbor_depth == 1
     np.testing.assert_allclose(
-        fitted.predict(mset).atom_charge, loaded.predict(mset).atom_charge
+        fitted.predict(mset).atom_value, loaded.predict(mset).atom_value
     )
 
 
@@ -241,13 +241,13 @@ def test_sieve_charge_predictor_fits_and_predicts_end_to_end():
     predictor.fit(mset, mset, rng=rng)
     pred = predictor.predict(mset)
 
-    assert pred.atom_charge.shape == (mset.n_atoms,)
-    assert np.all(np.isfinite(pred.atom_charge))
+    assert pred.atom_value.shape == (mset.n_atoms,)
+    assert np.all(np.isfinite(pred.atom_value))
 
 
 def test_sieve_charge_predictor_predict_equals_predict_raw_atom_charge():
     """predict() must stay behavior-identical: exactly
-    predict_raw(...).atom_charge, since sieve.predict is itself just
+    predict_raw(...).atom_value, since sieve.predict is itself just
     sieve.predict_detailed(...).value."""
     from experiments.predictors.sieve_predictor import SievePredictor
 
@@ -261,8 +261,8 @@ def test_sieve_charge_predictor_predict_equals_predict_raw_atom_charge():
     raw = predictor.predict_raw(mset)
     pred = predictor.predict(mset)
 
-    np.testing.assert_array_equal(pred.atom_charge, raw.atom_charge)
-    assert raw.atom_std.shape == raw.atom_charge.shape
+    np.testing.assert_array_equal(pred.atom_value, raw.atom_value)
+    assert raw.atom_std.shape == raw.atom_value.shape
 
 
 def test_sieve_charge_predictor_save_and_load_model_state_round_trips(tmp_path):
@@ -287,7 +287,7 @@ def test_sieve_charge_predictor_save_and_load_model_state_round_trips(tmp_path):
     loaded.load_model_state(model_path)
     loaded_pred = loaded.predict(test)
 
-    np.testing.assert_array_equal(loaded_pred.atom_charge, fitted_pred.atom_charge)
+    np.testing.assert_array_equal(loaded_pred.atom_value, fitted_pred.atom_value)
 
 
 def test_sieve_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch):
@@ -314,7 +314,7 @@ def test_sieve_charge_predictor_load_model_state_skips_fit(tmp_path, monkeypatch
     monkeypatch.setattr(loaded, "fit", _boom)
     loaded.load_model_state(model_path)  # must not raise
     pred = loaded.predict(test)
-    assert pred.atom_charge.shape == (test.n_atoms,)
+    assert pred.atom_value.shape == (test.n_atoms,)
 
 
 def test_predict_loo_raw_backs_off_instead_of_recalling_the_node():
@@ -331,8 +331,8 @@ def test_predict_loo_raw_backs_off_instead_of_recalling_the_node():
     p = SievePredictor(max_wl_depth=3, minimum_support=1, report_loo=True)
     p.fit(mset, mset, rng=np.random.default_rng(0))
 
-    in_sample = p.predict_raw(mset).atom_charge
-    loo = p.predict_loo_raw(mset).atom_charge
+    in_sample = p.predict_raw(mset).atom_value
+    loo = p.predict_loo_raw(mset).atom_value
 
     in_sample_mae = float(np.nanmean(np.abs(in_sample - mset.atom_target)))
     loo_mae = float(np.nanmean(np.abs(loo - mset.atom_target)))
@@ -354,3 +354,16 @@ def test_report_loo_defaults_off_and_is_recorded_on_the_predictor():
 
     assert SievePredictor().report_loo is False
     assert SievePredictor(report_loo=True).report_loo is True
+
+
+def test_sieve_fits_a_non_charge_property():
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=8, atom_property="alpha")
+    predictor = SievePredictor(max_wl_depth=1, minimum_support=1)
+    predictor.fit(mset, mset, rng=np.random.default_rng(0))
+    pred = predictor.predict(mset)
+    assert pred.atom_value.shape == (mset.n_atoms,)
+    assert np.isfinite(pred.atom_value).all()

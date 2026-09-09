@@ -31,9 +31,9 @@ def test_populate_tree_with_charge_property_writes_node_means():
     tree = _FakeTree({0: 3})
     # Two atoms both matched at path [(0, 1)] (root only); charges 0.2 and 0.4.
     paths = [[(0, 1)], [(0, 1)]]
-    atom_charge = np.array([0.2, 0.4])
+    atom_value = np.array([0.2, 0.4])
 
-    props = populate_tree_with_charge_property(tree, paths, atom_charge)
+    props = populate_tree_with_charge_property(tree, paths, atom_value)
 
     df = tree.data_storage[0]
     assert df.loc[1, props.charge_column] == pytest.approx(0.3)
@@ -53,8 +53,8 @@ def test_predict_via_data_storage_walk_prefers_deepest_populated_node():
     tree = _FakeTree({0: 4})
     # atom0: shallow only; atom1: shallow+deep
     train_paths = [[(0, 1)], [(0, 1), (0, 2)]]
-    atom_charge = np.array([0.1, 0.5])
-    props = populate_tree_with_charge_property(tree, train_paths, atom_charge)
+    atom_value = np.array([0.1, 0.5])
+    props = populate_tree_with_charge_property(tree, train_paths, atom_value)
 
     # Predict for an atom matched at both node 1 (populated) and node 2
     # (also populated, deepest) -> should use node 2's own mean (0.5), not
@@ -72,8 +72,8 @@ def test_predict_via_data_storage_walk_backs_off_to_shallower_node():
 
     tree = _FakeTree({0: 4})
     train_paths = [[(0, 1)]]
-    atom_charge = np.array([0.7])
-    props = populate_tree_with_charge_property(tree, train_paths, atom_charge)
+    atom_value = np.array([0.7])
+    props = populate_tree_with_charge_property(tree, train_paths, atom_value)
 
     # Deepest node (3) was never populated at train time -> back off to node 1.
     test_paths = [[(0, 1), (0, 3)]]
@@ -93,8 +93,8 @@ def test_predict_via_data_storage_walk_is_nan_for_unmatched_atom():
 
     tree = _FakeTree({0: 2})
     train_paths = [[(0, 1)], [(0, 1)]]
-    atom_charge = np.array([0.2, 0.6])
-    props = populate_tree_with_charge_property(tree, train_paths, atom_charge)
+    atom_value = np.array([0.2, 0.6])
+    props = populate_tree_with_charge_property(tree, train_paths, atom_value)
 
     predicted = predict_via_data_storage_walk(tree, [[]], props)
     assert np.isnan(predicted[0])

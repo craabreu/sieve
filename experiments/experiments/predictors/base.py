@@ -2,10 +2,10 @@
 
 Unlike cosmo_experiments' base.py, there is no AtomPredictor/
 MoleculePredictor split and no profile/area/charge rollup machinery: every
-predictor in this series predicts one scalar (MBIScharge) per atom
-directly, and the molecule-level charge-conservation check
-(metrics.charge_conservation_metrics) is computed by the caller
-(runner.py), not by the predictor.
+predictor in this series predicts one scalar per atom (the run's own
+``target.atom_property``) directly, and the molecule-level
+charge-conservation check (metrics.charge_conservation_metrics) is
+computed by the caller (runner.py), not by the predictor.
 """
 
 from __future__ import annotations
@@ -21,10 +21,11 @@ from experiments.data import MoleculeSet
 
 @dataclass(frozen=True)
 class Prediction:
-    """What every predictor returns: one predicted ``MBIScharge`` per atom,
-    in ``test``'s own atom order (``test.atom_mol_id``-aligned)."""
+    """What every predictor returns: one predicted value of the run's own
+    ``target.atom_property`` per atom, in ``test``'s own atom order
+    (``test.atom_mol_id``-aligned)."""
 
-    atom_charge: NDArray[np.float64]
+    atom_value: NDArray[np.float64]
 
 
 class Predictor(Protocol):
@@ -44,12 +45,12 @@ class RawPrediction:
     ``normalize.std_weighted_normalize``) -- both required before any
     function in ``normalize.NORMALIZERS`` can be applied."""
 
-    atom_charge: NDArray[np.float64]
+    atom_value: NDArray[np.float64]
     atom_std: NDArray[np.float64]
 
 
 @runtime_checkable
-class NormalizableChargePredictor(Predictor, Protocol):
+class NormalizablePredictor(Predictor, Protocol):
     """A ``Predictor`` that can also return its raw, unnormalized walk
     output separately -- ``predictors/dash.py``'s ``DASHChargePredictor``,
     ``predictors/dash_pretrained.py``'s ``DASHPretrainedChargePredictor``,

@@ -44,7 +44,7 @@ def test_dash_pretrained_predictor_ignores_the_train_set_entirely():
     predictor_b.fit(train_b, train_b, rng=rng)
     pred_b = predictor_b.predict(test)
 
-    np.testing.assert_array_equal(pred_a.atom_charge, pred_b.atom_charge)
+    np.testing.assert_array_equal(pred_a.atom_value, pred_b.atom_value)
 
 
 def test_dash_pretrained_predictor_runs_without_crashing_and_reports_coverage():
@@ -67,7 +67,7 @@ def test_dash_pretrained_predictor_runs_without_crashing_and_reports_coverage():
     predictor.fit(mset, mset, rng=rng)
     pred = predictor.predict(mset)
 
-    assert pred.atom_charge.shape == (mset.n_atoms,)
+    assert pred.atom_value.shape == (mset.n_atoms,)
     assert predictor.match_stats["n_atoms"] == mset.n_atoms
     assert predictor.match_stats["n_conformers"] == mset.n_conformers
 
@@ -76,9 +76,9 @@ def test_dash_pretrained_predictor_runs_without_crashing_and_reports_coverage():
     # a superset of the one before it: n_unmatched_atoms (path-matching
     # itself failed) <= n_walk_nan_atoms (raw_charge came back NaN, also
     # covers a matched-but-nothing-populated path) <= n_final_nan_atoms
-    # (atom_charge after std_weighted_normalize, also covers NaN
+    # (atom_value after std_weighted_normalize, also covers NaN
     # propagating to every other atom in a conformer with one bad atom).
-    n_nan = int(np.isnan(pred.atom_charge).sum())
+    n_nan = int(np.isnan(pred.atom_value).sum())
     assert predictor.match_stats["n_final_nan_atoms"] == n_nan
     assert (
         predictor.match_stats["n_unmatched_atoms"]
@@ -138,13 +138,13 @@ def test_dash_pretrained_predict_raw_matches_predict_before_normalization():
     pred = predictor.predict(mset)
 
     expected = std_weighted_normalize(
-        raw.atom_charge,
+        raw.atom_value,
         raw.atom_std,
         mset.molecule_value,
         mset.atom_mol_id,
         mset.n_conformers,
     )
-    np.testing.assert_array_equal(pred.atom_charge, expected)
+    np.testing.assert_array_equal(pred.atom_value, expected)
     assert predictor.match_stats["n_final_nan_atoms"] == int(
-        np.isnan(pred.atom_charge).sum()
+        np.isnan(pred.atom_value).sum()
     )
