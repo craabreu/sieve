@@ -1,0 +1,25 @@
+# element-formalcharge_element-formalcharge_none, depth 6.
+#
+# Mirrors the sieve-charges-sweep convention exactly (seed 0,
+# minimum_support 1, no edge attributes, no normalization, no
+# neighbor_depth -- so neighbours see the full attribute set, which is
+# what the batch_id's second slot records) so the numbers are directly
+# comparable to element-aromatic_element-aromatic_none et al.
+#
+# Store is overridden per fold with --set data.store=dash-molecules-10fold-N.
+run:
+  experiment: sieve-charges-sweep
+  batch_id: element-formalcharge_element-formalcharge_none
+  seed: 0
+data:
+  store: dash-molecules-10fold-1
+  split_column: split
+predictor:
+  name: sieve
+  params:
+    attribute_levels:
+      - [element]
+      - [formal_charge]
+    edge_attributes: []
+    max_wl_depth: 6
+    minimum_support: 1
