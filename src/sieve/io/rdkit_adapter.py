@@ -341,8 +341,9 @@ def _serialize_mol(mol) -> bytes:
     arguments) silently drops every atom/mol property. ``MBIScharge``-style
     ``y_from_atom_prop`` targets would fail loudly on the worker side
     (``GetDoubleProp`` raises on a missing prop); a mol pre-labeled by
-    ``prepare_store.py`` would fail *silently* -- its ``CIP_LABELED_PROP``
-    marker and rigorous ``_CIPCode`` props would vanish, so ``_chirality``'s
+    ``experiments``' own ``prepare_dash.py`` would fail *silently* -- its
+    ``CIP_LABELED_PROP`` marker and rigorous ``_CIPCode`` props would
+    vanish, so ``_chirality``'s
     ``_ensure_cip_labels`` call would recompute on the worker (correct
     result, wasted work) rather than short-circuit. ``AllProps`` (rather than
     naming ``AtomProps``/``MolProps``/``PrivateProps`` individually) is used
@@ -385,7 +386,7 @@ def _chunk_boundaries_by_atom_count(mols: list, n_chunks: int) -> list[tuple[int
 
 
 # Public so a caller that pre-computes CIP labels itself (e.g.
-# charge_experiments' own prepare_store.py, at data-prep time) can set the
+# experiments' own prepare_dash.py, at data-prep time) can set the
 # same marker and skip _ensure_cip_labels' own recomputation -- the whole
 # point of storing labels ahead of time.
 CIP_LABELED_PROP = "_sieve_rigorous_cip_labeled"
@@ -394,8 +395,8 @@ CIP_LABELED_PROP = "_sieve_rigorous_cip_labeled"
 def _ensure_cip_labels(mol) -> None:
     """Fallback for a ``Mol`` that reaches ``from_rdkit`` without
     pre-computed, *rigorous* ``_CIPCode`` atom props (e.g. built via
-    ``from_smiles``, or from any caller other than ``charge_experiments``'s
-    own ``prepare_store.py``, which sets these once at data-prep time).
+    ``from_smiles``, or from any caller other than ``experiments``' own
+    ``prepare_dash.py``, which sets these once at data-prep time).
 
     Gated on a dedicated mol-level marker, not on ``atom.HasProp("_CIPCode")``
     -- ``Chem.MolFromSmiles``'s own default sanitization already sets a
@@ -412,7 +413,7 @@ def _ensure_cip_labels(mol) -> None:
     copy and never returns to the caller's original ``Mol`` -- correct (the
     worker's own featurization still sees the labels), just double work if
     the same corpus is featurized again without having been pre-labeled by
-    ``prepare_store.py``.
+    ``prepare_dash.py``.
     """
     if mol.HasProp(CIP_LABELED_PROP):
         return

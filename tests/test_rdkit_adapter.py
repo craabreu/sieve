@@ -453,9 +453,9 @@ def test_chirality_attribute_falls_back_when_not_rigorously_labeled():
 
 def test_chirality_attribute_matches_between_prepped_and_unprepped_input():
     """The actual property that matters: a mol pre-labeled and marked the
-    way charge_experiments' own prepare_store.py does, and the same mol
-    left unprepped (triggering from_rdkit's fallback), must produce the
-    same attribute code."""
+    way experiments' own prepare_dash.py does, and the same mol left
+    unprepped (triggering from_rdkit's fallback), must produce the same
+    attribute code."""
     from rdkit.Chem import rdCIPLabeler
 
     from sieve.io.rdkit_adapter import CIP_LABELED_PROP, from_rdkit

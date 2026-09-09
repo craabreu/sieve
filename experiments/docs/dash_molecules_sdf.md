@@ -2,7 +2,7 @@
 
 Working notes from actually running `prepare-store` against the real,
 8.3GB published SDF for the first time (2026-08-27). Kept here as a
-standing record for whoever next touches `prepare_store.py` or reruns the
+standing record for whoever next touches `prepare_dash.py` or reruns the
 full pipeline -- everything below was found empirically, against the real
 file, not assumed from the spec.
 
@@ -12,7 +12,7 @@ file, not assumed from the spec.
 **403 Forbidden** from the ETH Research Collection server -- it rejects
 urllib's default User-Agent (`python-urllib/x.y`). The original
 `download_dash_molecules.sh` bash script already worked around this
-(`UA='Mozilla/5.0 ...'`); `prepare_store.py` didn't port that part over.
+(`UA='Mozilla/5.0 ...'`); `prepare_dash.py` didn't port that part over.
 Fixed by sending the same UA string via `urllib.request.Request(url,
 headers={"User-Agent": ...})` -- verified with a live request (`status:
 200`) before touching the real 8.3GB download.
@@ -204,7 +204,7 @@ span two splits, in either identity scheme (see
 `test_assign_splits_never_splits_a_chembl_id_across_splits`/
 `..._never_splits_a_dash_id_across_splits`/
 `..._handles_a_mixed_store_of_both_schemas` in
-`experiments/tests/test_prepare_store.py`).
+`experiments/tests/test_prepare_dash.py`).
 
 ## Different conformers of the same molecule really do get different stereochemistry
 
