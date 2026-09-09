@@ -28,10 +28,12 @@ VALID_SPLIT_COLUMNS = ("split",)
 
 _RUN_KEYS = {"experiment", "seed", "tags", "batch_id"}
 _DATA_KEYS = {"store", "split_column", "train_split", "val_split", "eval_split"}
+_TARGET_KEYS = {"atom_property", "molecule_property", "label"}
 _PREDICTOR_KEYS = {"name", "params"}
 _TOP_KEYS = {
     "run",
     "data",
+    "target",
     "predictor",
     "normalization",
     "tree_stats_load_path",
@@ -73,6 +75,29 @@ class DataCfg:
 
 
 @dataclass(frozen=True)
+class TargetCfg:
+    """What this run predicts. ``atom_property`` is the name of the per-atom
+    property carried on each stored ``Mol`` (the DASH series' own
+    ``MBIScharge``, some other dataset's own scalar) -- it is read as the
+    training target and predicted per atom.
+
+    ``molecule_property`` names a per-molecule column of the store's parquet
+    holding the value each molecule's atom values should sum to (the DASH
+    series' ``net_charge``). Optional: when omitted the run has no sum
+    constraint, so no ``sum_constraint/*`` metrics, no residual panel, and
+    no ``normalization``. ``label`` is plot-axis text only, defaulting to
+    ``atom_property``."""
+
+    atom_property: str
+    molecule_property: str | None = None
+    label: str | None = None
+
+    @property
+    def axis_label(self) -> str:
+        return self.label if self.label is not None else self.atom_property
+
+
+@dataclass(frozen=True)
 class PredictorCfg:
     name: str
     params: Mapping[str, Any] = field(default_factory=dict)
@@ -82,6 +107,7 @@ class PredictorCfg:
 class ExperimentCfg:
     run: RunCfg
     data: DataCfg
+    target: TargetCfg
     predictor: PredictorCfg
     normalization: str | None = None
     """A key into ``normalize.NORMALIZERS`` -- when set, the run predicts via
@@ -149,7 +175,7 @@ def apply_overrides(raw: Mapping[str, Any], overrides: Sequence[str]) -> dict[st
 
 def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
     _check_keys(raw, _TOP_KEYS, "config")
-    for section in ("run", "data", "predictor"):
+    for section in ("run", "data", "target", "predictor"):
         if section not in raw:
             raise ValueError(f"config is missing required section {section!r}")
 
@@ -174,6 +200,16 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
         },
     )
 
+    target_raw = raw["target"]
+    _check_keys(target_raw, _TARGET_KEYS, "target")
+    if "atom_property" not in target_raw:
+        raise ValueError("target.atom_property is required")
+    target = TargetCfg(
+        atom_property=target_raw["atom_property"],
+        molecule_property=target_raw.get("molecule_property"),
+        label=target_raw.get("label"),
+    )
+
     predictor_raw = raw["predictor"]
     _check_keys(predictor_raw, _PREDICTOR_KEYS, "predictor")
     predictor = PredictorCfg(
@@ -186,6 +222,11 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
             f"normalization must be one of {sorted(NORMALIZERS)} or omitted, "
             f"got {normalization!r}"
         )
+    if normalization is not None and target.molecule_property is None:
+        raise ValueError(
+            f"normalization={normalization!r} needs a per-molecule total to "
+            "redistribute against; set target.molecule_property"
+        )
 
     tree_stats_load_path = raw.get("tree_stats_load_path")
     save_tree_stats = bool(raw.get("save_tree_stats", False))
@@ -193,6 +234,7 @@ def _build(raw: Mapping[str, Any]) -> ExperimentCfg:
     return ExperimentCfg(
         run=run,
         data=data,
+        target=target,
         predictor=predictor,
         normalization=normalization,
         tree_stats_load_path=tree_stats_load_path,
@@ -233,6 +275,11 @@ def to_dict(cfg: ExperimentCfg) -> dict[str, Any]:
             "val_split": cfg.data.val_split,
             "eval_split": cfg.data.eval_split,
         },
+        "target": {
+            "atom_property": cfg.target.atom_property,
+            "molecule_property": cfg.target.molecule_property,
+            "label": cfg.target.label,
+        },
         "predictor": {"name": cfg.predictor.name, "params": dict(cfg.predictor.params)},
         "normalization": cfg.normalization,
         "tree_stats_load_path": cfg.tree_stats_load_path,
@@ -255,6 +302,15 @@ def to_flat_params(cfg: ExperimentCfg) -> dict[str, str]:
             "train_split": cfg.data.train_split,
             "val_split": cfg.data.val_split,
             "eval_split": cfg.data.eval_split,
+        },
+        out,
+    )
+    _flatten(
+        "target",
+        {
+            "atom_property": cfg.target.atom_property,
+            "molecule_property": cfg.target.molecule_property,
+            "label": cfg.target.label,
         },
         out,
     )

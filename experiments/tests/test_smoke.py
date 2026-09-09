@@ -8,7 +8,7 @@ import json
 from dataclasses import replace
 
 import numpy as np
-from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
+from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg, TargetCfg
 from experiments.runner import execute
 
 from experiments.tests.helpers import synthetic_molecule_set
@@ -24,6 +24,7 @@ def _tiny_cfg() -> ExperimentCfg:
             val_split="val",
             eval_split="test",
         ),
+        target=TargetCfg(atom_property="MBIScharge", molecule_property="net_charge"),
         predictor=PredictorCfg(name="global_mean", params={}),
     )
 
@@ -132,6 +133,7 @@ def test_smoke_reports_featurize_time_for_sieve_predictor(tmp_path):
     cfg = cfg.__class__(
         run=cfg.run,
         data=cfg.data,
+        target=cfg.target,
         predictor=PredictorCfg(name="sieve", params={"max_wl_depth": 2}),
     )
 
@@ -219,6 +221,7 @@ def _sieve_cfg(**params):
     return cfg.__class__(
         run=cfg.run,
         data=cfg.data,
+        target=cfg.target,
         predictor=PredictorCfg(name="sieve", params={"max_wl_depth": 2, **params}),
     )
 

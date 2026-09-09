@@ -77,6 +77,11 @@ def test_promote_run_cli_backfills_and_reports(tmp_path, monkeypatch, capsys):
             "val_split": "val",
             "eval_split": "test",
         },
+        "target": {
+            "atom_property": "MBIScharge",
+            "molecule_property": "net_charge",
+            "label": None,
+        },
         "predictor": {"name": "global_mean", "params": {}},
         "normalization": None,
         "tree_stats_load_path": None,

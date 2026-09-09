@@ -27,6 +27,11 @@ def _write_completed_run(run_dir, *, experiment="exp", store="synthetic"):
             "val_split": "val",
             "eval_split": "test",
         },
+        "target": {
+            "atom_property": "MBIScharge",
+            "molecule_property": "net_charge",
+            "label": None,
+        },
         "predictor": {"name": "global_mean", "params": {}},
         "normalization": None,
         "tree_stats_load_path": None,
@@ -276,7 +281,7 @@ def test_execute_logs_batch_id_as_an_mlflow_tag(tmp_path):
 
     import mlflow
     import numpy as np
-    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
+    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg, TargetCfg
     from experiments.runner import execute
 
     from experiments.tests.helpers import synthetic_molecule_set
@@ -285,6 +290,7 @@ def test_execute_logs_batch_id_as_an_mlflow_tag(tmp_path):
     cfg = ExperimentCfg(
         run=RunCfg(experiment="exp", seed=0, batch_id="10fold-2026"),
         data=DataCfg(store="synthetic", split_column="split"),
+        target=TargetCfg(atom_property="MBIScharge", molecule_property="net_charge"),
         predictor=PredictorCfg(name="global_mean", params={}),
     )
     mset = synthetic_molecule_set(n_mol=20, seed=0)

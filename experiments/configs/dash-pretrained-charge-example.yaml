@@ -4,6 +4,10 @@ run:
 data:
   store: dash-molecules
   split_column: split
+target:
+  atom_property: MBIScharge
+  molecule_property: net_charge
+  label: charge (e)
 predictor:
   name: dash_pretrained
   params: {}

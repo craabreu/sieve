@@ -16,12 +16,13 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_sieve_charge_predictor_runs_end_to_end_via_run(tmp_path):
-    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
+    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg, TargetCfg
     from experiments.runner import run
 
     cfg = ExperimentCfg(
         run=RunCfg(experiment="sieve-charge-optional", seed=0),
         data=DataCfg(store="dash-molecules", split_column="split"),
+        target=TargetCfg(atom_property="MBIScharge", molecule_property="net_charge"),
         predictor=PredictorCfg(name="sieve", params={"max_wl_depth": 2}),
     )
     result = run(cfg, runs_root=tmp_path, allow_dirty=True, tracking=None, limit=200)

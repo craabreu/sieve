@@ -92,7 +92,7 @@ def test_dash_pretrained_predictor_runs_end_to_end_via_run(tmp_path):
     """Through the real CLI-level run() pipeline, on synthetic data (no
     real store needed for this part -- run() itself is exercised by the
     real-store test below when that store is prepared)."""
-    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg
+    from experiments.config import DataCfg, ExperimentCfg, PredictorCfg, RunCfg, TargetCfg
     from experiments.runner import execute
 
     from experiments.tests.helpers import synthetic_molecule_set
@@ -104,6 +104,7 @@ def test_dash_pretrained_predictor_runs_end_to_end_via_run(tmp_path):
     cfg = ExperimentCfg(
         run=RunCfg(experiment="dash-pretrained-smoke", seed=0),
         data=DataCfg(store="synthetic", split_column="split"),
+        target=TargetCfg(atom_property="MBIScharge", molecule_property="net_charge"),
         predictor=PredictorCfg(name="dash_pretrained", params={}),
     )
 

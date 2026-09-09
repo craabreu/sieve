@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 import yaml
 
+from experiments.config import _build, to_dict, to_flat_params
+
 
 def _write_yaml(tmp_path, data):
     path = tmp_path / "config.yaml"
@@ -14,6 +16,7 @@ def _base_raw():
     return {
         "run": {"experiment": "charge-smoke", "seed": 0},
         "data": {"store": "dash-molecules", "split_column": "split"},
+        "target": {"atom_property": "MBIScharge", "molecule_property": "net_charge"},
         "predictor": {"name": "global_mean", "params": {}},
     }
 
@@ -148,3 +151,74 @@ def test_to_dict_and_to_flat_params_spell_out_none_normalization(tmp_path):
     cfg = load_config(path)
     assert to_dict(cfg)["normalization"] is None
     assert to_flat_params(cfg)["normalization"] == "None"
+
+
+def _minimal_raw():
+    return {
+        "run": {"experiment": "e", "seed": 0},
+        "data": {"store": "s", "split_column": "split"},
+        "target": {"atom_property": "MBIScharge"},
+        "predictor": {"name": "global_mean"},
+    }
+
+
+def test_target_section_parsed():
+    cfg = _build(_minimal_raw())
+    assert cfg.target.atom_property == "MBIScharge"
+    assert cfg.target.molecule_property is None
+    assert cfg.target.axis_label == "MBIScharge"
+
+
+def test_target_label_overrides_axis_label():
+    raw = _minimal_raw()
+    raw["target"]["label"] = "charge (e)"
+    assert _build(raw).target.axis_label == "charge (e)"
+
+
+def test_missing_target_section_raises():
+    raw = _minimal_raw()
+    del raw["target"]
+    with pytest.raises(ValueError, match="target"):
+        _build(raw)
+
+
+def test_missing_atom_property_raises():
+    raw = _minimal_raw()
+    raw["target"] = {}
+    with pytest.raises(ValueError, match="atom_property"):
+        _build(raw)
+
+
+def test_unknown_target_key_raises():
+    raw = _minimal_raw()
+    raw["target"]["units"] = "e"
+    with pytest.raises(ValueError, match="units"):
+        _build(raw)
+
+
+def test_normalization_without_molecule_property_raises():
+    raw = _minimal_raw()
+    raw["normalization"] = "equal_weighted"
+    with pytest.raises(ValueError, match="molecule_property"):
+        _build(raw)
+
+
+def test_normalization_with_molecule_property_ok():
+    raw = _minimal_raw()
+    raw["target"]["molecule_property"] = "net_charge"
+    raw["normalization"] = "equal_weighted"
+    assert _build(raw).normalization == "equal_weighted"
+
+
+def test_target_round_trips_through_to_dict_and_flat_params():
+    raw = _minimal_raw()
+    raw["target"]["molecule_property"] = "net_charge"
+    cfg = _build(raw)
+    assert to_dict(cfg)["target"] == {
+        "atom_property": "MBIScharge",
+        "molecule_property": "net_charge",
+        "label": None,
+    }
+    flat = to_flat_params(cfg)
+    assert flat["target.atom_property"] == "MBIScharge"
+    assert flat["target.molecule_property"] == "net_charge"
