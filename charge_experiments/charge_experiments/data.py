@@ -96,13 +96,16 @@ class MoleculeSet:
     carries ``mol_profile``/``atom_profile`` as arrays parallel to
     ``smiles``).
 
-    The source SDF turns out to hold two record schemas (see
-    ``prepare_store._parse_one_record``'s docstring): ChEMBL-sourced rows
-    carry a ``CHEMBL_ID``, the rest carry a ``DASH_IDX`` instead. Exactly
-    one of ``chembl_id``/``dash_id`` is set per conformer, the other
-    ``None`` -- both are carried through purely as provenance; nothing in
-    this harness groups/clusters by them at this point (that already
-    happened once, at ``prepare_store`` time, and is baked into ``split``).
+    Every source-SDF record carries a ``DASH_IDX`` (the universal molecule
+    key, whose prefix encodes source cohort), and the ``QMUGS500_*`` half
+    carries a ``CHEMBL_ID``/``CONF_ID`` pair as well -- see
+    ``prepare_store._parse_one_record``'s docstring. So ``dash_id`` is set
+    for every conformer parsed by a current ``prepare_store``, and
+    ``chembl_id`` for the QMugs-derived subset; a store written before that
+    fix instead has ``dash_id`` ``None`` wherever ``chembl_id`` is set. Both
+    are carried through purely as provenance; nothing in this harness
+    groups/clusters by them at this point (that already happened once, at
+    ``prepare_store`` time, and is baked into ``split``).
     """
 
     chembl_id: list[str | None]

@@ -108,24 +108,30 @@ def _parse_one_record(
     raising -- a handful of malformed records should not abort an
     hours-long parse of an 8.3GB file.
 
-    The real SDF turns out to hold two distinct record schemas, confirmed
-    against the DASH paper's own stated dataset composition (arXiv:2305.15981):
-    the training set was assembled from four sources -- QMugs, a prior
-    paper's training set, lead-like ChEMBL v30 molecules, and organic
-    liquids -- and only the ChEMBL-sourced third of records carry a
-    ``CHEMBL_ID``/``CONF_ID`` pair. The other three sources' records instead
-    carry a ``DASH_IDX`` property (e.g. ``"Rest_2"``) which plays the exact
-    same per-molecule grouping role ``CHEMBL_ID`` does -- confirmed
-    empirically: ~3 rows share each ``DASH_IDX`` value, the same "a few
-    conformers per molecule" pattern ``CHEMBL_ID`` rows show. Those records
-    have no ``CONF_ID`` at all, so one is synthesized here
+    ``DASH_IDX`` is the corpus's *universal* molecule identifier and is read
+    unconditionally: a full-file tag scan finds one on all 1,029,785 records,
+    taking 348,935 distinct values -- exactly the corpus's unique-molecule
+    count. Its prefix encodes which of the DASH paper's four sources
+    (arXiv:2305.15981: QMugs, a prior paper's training set, lead-like ChEMBL
+    v30, organic liquids) a molecule came from, and there are exactly two:
+    518,669 ``QMUGS500_*`` records and 511,116 ``Rest_*`` records.
+
+    ``CHEMBL_ID``/``CONF_ID`` are *supplementary*, present on the 518,669
+    ``QMUGS500_*`` records only -- QMugs is itself derived from ChEMBL, so
+    those molecules carry both identities, and the two keys agree 1:1
+    (176,969 unique ``CHEMBL_ID``s against 176,969 unique ``QMUGS500_*``
+    ids). This function therefore populates ``dash_id`` for every row it
+    accepts and ``chembl_id``/``conf_id`` additionally where the record
+    offers them; earlier revisions treated the two identities as mutually
+    exclusive (an ``if``/``elif``) and so dropped ``dash_id`` on half the
+    corpus. A ``Rest_*`` record has no ``CONF_ID``, so one is synthesized
     (``dash_conf_counters``, keyed by ``DASH_IDX``, hands out sequential
     ``"conf_N"`` labels per group in file order) -- ``conf_id`` is purely
     informational downstream (no predictor/metric reads it back), so a
     synthesized label is exactly as good as a real one for that purpose.
-    A row's ``chembl_id``/``dash_id`` columns are populated from whichever
-    scheme its own record used; the other is left ``None`` -- see
-    ``assign_splits`` for how the two are reconciled into one clustering key.
+
+    A record carrying neither identity is skipped; see ``assign_splits`` for
+    how the two columns are reconciled into one clustering key.
     """
     from charge_experiments.data import mol_to_blob
 
@@ -135,6 +141,7 @@ def _parse_one_record(
         logger.warning("record missing MBIScharge property; skipping")
         return None
 
+    dash_id: str | None = mol.GetProp("DASH_IDX") if mol.HasProp("DASH_IDX") else None
     has_chembl_id = mol.HasProp("CHEMBL_ID")
     if has_chembl_id:
         if not mol.HasProp("CONF_ID"):
@@ -145,11 +152,9 @@ def _parse_one_record(
             return None
         chembl_id: str | None = mol.GetProp("CHEMBL_ID")
         conf_id = mol.GetProp("CONF_ID")
-        dash_id: str | None = None
         identity = chembl_id
-    elif mol.HasProp("DASH_IDX"):
+    elif dash_id is not None:
         chembl_id = None
-        dash_id = mol.GetProp("DASH_IDX")
         count = dash_conf_counters.get(dash_id, 0)
         conf_id = f"conf_{count}"
         dash_conf_counters[dash_id] = count + 1
@@ -235,7 +240,8 @@ def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
     """Stream-parse ``sdf_path`` (never loading it whole into memory) into
     ``out_path``, a parquet file with columns ``chembl_id, conf_id, dash_id,
     mol, net_charge`` (no ``split`` column yet -- see ``assign_splits``).
-    Exactly one of ``chembl_id``/``dash_id`` is set per row (see
+    ``dash_id`` is set on every row, ``chembl_id``/``conf_id`` additionally
+    on the ``QMUGS500_*`` cohort whose records carry them (see
     ``_parse_one_record``'s docstring for why the SDF has two record
     schemas). Written in batches via a ``pyarrow.parquet.ParquetWriter`` so
     peak memory is bounded by ``PARQUET_BATCH_SIZE`` rows, not the whole
@@ -329,12 +335,16 @@ def assign_splits(
     onto every row by molecule identity, so a molecule's conformers/
     stereoisomers never span two splits.
 
-    A row's identity is ``chembl_id`` when set, else ``dash_id`` (exactly
-    one is set per row -- see ``_parse_one_record``'s docstring for why the
-    store has two identity schemes). That coalesced key (``mol_key`` below)
-    is what clustering, splitting, and this function's own uniqueness/
-    grouping all operate on -- ``chembl_id``/``dash_id`` themselves stay in
-    the output purely as provenance, never read back for grouping elsewhere.
+    A row's identity is ``dash_id`` -- the universal key, set on every row a
+    current ``_parse_one_record`` accepts (see its docstring) -- falling back
+    to ``chembl_id`` for stores written before ``dash_id`` was populated on
+    the ChEMBL-identified half. The two orderings group identically wherever
+    both are present (they agree 1:1), so this fallback changes no existing
+    store's split; it only lets a legacy store still be split. That coalesced
+    key (``mol_key`` below) is what clustering, splitting, and this
+    function's own uniqueness/grouping all operate on -- ``chembl_id``/
+    ``dash_id`` themselves stay in the output purely as provenance, never
+    read back for grouping elsewhere.
 
     Loads the entire parsed store into memory at once (via
     ``pd.read_parquet``) rather than streaming, since by this point it is
@@ -355,7 +365,7 @@ def assign_splits(
 
     molecules_path = store_dir / "molecules.parquet"
     df = pd.read_parquet(molecules_path)
-    mol_key = df["chembl_id"].fillna(df["dash_id"])
+    mol_key = df["dash_id"].fillna(df["chembl_id"])
 
     first_seen_mask = ~mol_key.duplicated(keep="first")
     unique_keys = mol_key[first_seen_mask].to_numpy()

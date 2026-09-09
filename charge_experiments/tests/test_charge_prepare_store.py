@@ -65,6 +65,18 @@ Rest_2
 $$$$
 """
 
+# The real file's ChEMBL-schema records carry a DASH_IDX *as well as* their
+# CHEMBL_ID/CONF_ID -- confirmed by a full-file tag scan: all 1,029,785
+# records have a DASH_IDX (518,669 QMUGS500_*, 511,116 Rest_*), and the
+# 348,935 distinct values match the corpus's unique-molecule count exactly.
+# QMugs is itself derived from ChEMBL, which is why those molecules carry
+# both identities. Property order/spacing mirrors a real record sampled
+# from the head of the file (record #1).
+_TINY_SDF_BOTH_IDS = _TINY_SDF.replace(
+    ">  <MBIScharge>  (1)",
+    ">  <DASH_IDX>  (1)\nQMUGS500_1\n\n>  <MBIScharge>  (1)",
+)
+
 
 def test_parse_dash_molecules_writes_one_row_per_record(tmp_path):
     from charge_experiments.prepare_store import parse_dash_molecules
@@ -226,6 +238,116 @@ def test_assign_splits_handles_a_mixed_store_of_both_schemas(tmp_path):
     mol_key = df["chembl_id"].fillna(df["dash_id"])
     per_key = df.groupby(mol_key)["split"].nunique()
     assert (per_key == 1).all()
+
+
+def test_parse_dash_molecules_keeps_both_ids_when_a_record_carries_both(tmp_path):
+    from charge_experiments.prepare_store import parse_dash_molecules
+
+    # DASH_IDX is not the ChEMBL schema's *alternative* identity, it is a
+    # universal one: a record carrying both must land with both columns
+    # populated, not with dash_id dropped because chembl_id was found first.
+    sdf_path = tmp_path / "tiny.sdf"
+    sdf_path.write_text(_TINY_SDF_BOTH_IDS)
+    out_path = tmp_path / "molecules.parquet"
+
+    parse_dash_molecules(sdf_path, out_path)
+
+    import pandas as pd
+
+    df = pd.read_parquet(out_path)
+    assert len(df) == 1
+    assert df.loc[0, "chembl_id"] == "CHEMBL185198"
+    assert df.loc[0, "dash_id"] == "QMUGS500_1"
+    # The record's own CONF_ID wins; nothing is synthesized for it.
+    assert df.loc[0, "conf_id"] == "conf_00"
+
+
+def test_parse_dash_molecules_does_not_consume_a_conf_counter_for_a_real_conf_id(
+    tmp_path,
+):
+    from charge_experiments.prepare_store import parse_dash_molecules
+
+    # Two conformers of one both-ids molecule, then a Rest_* record sharing
+    # no group with them: the synthesized counters must be keyed per group,
+    # so the Rest_* row still starts at conf_0 rather than continuing some
+    # counter the CONF_ID-carrying rows advanced.
+    sdf_path = tmp_path / "tiny.sdf"
+    sdf_path.write_text(
+        _TINY_SDF_BOTH_IDS
+        + _TINY_SDF_BOTH_IDS.replace("conf_00", "conf_01")
+        + _TINY_SDF_DASH_ID
+    )
+    out_path = tmp_path / "molecules.parquet"
+
+    parse_dash_molecules(sdf_path, out_path)
+
+    import pandas as pd
+
+    df = pd.read_parquet(out_path)
+    assert list(df["conf_id"]) == ["conf_00", "conf_01", "conf_0"]
+    assert list(df["dash_id"]) == ["QMUGS500_1", "QMUGS500_1", "Rest_2"]
+
+
+def test_assign_splits_groups_both_ids_rows_by_their_shared_dash_id(tmp_path):
+    from charge_experiments.prepare_store import assign_splits, parse_dash_molecules
+
+    # Every row carries both identities, and the two keys agree 1:1 (as they
+    # do in the real corpus: 176,969 unique CHEMBL_IDs against 176,969
+    # unique QMUGS500_* ids), so grouping by either must keep a molecule's
+    # conformers together.
+    records = []
+    for i in range(3):
+        for conf in ("conf_00", "conf_01"):
+            records.append(
+                _TINY_SDF_BOTH_IDS.replace("CHEMBL185198", f"CHEMBL{i}")
+                .replace("QMUGS500_1", f"QMUGS500_{i}")
+                .replace("conf_00", conf)
+            )
+    sdf_path = tmp_path / "tiny.sdf"
+    sdf_path.write_text("".join(records))
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    molecules_path = store_dir / "molecules.parquet"
+    parse_dash_molecules(sdf_path, molecules_path)
+
+    assign_splits(store_dir, train=1 / 3, val=1 / 3, test=1 / 3)
+
+    import pandas as pd
+
+    df = pd.read_parquet(molecules_path)
+    assert df["dash_id"].notna().all()
+    assert df["chembl_id"].notna().all()
+    assert (df.groupby("dash_id")["split"].nunique() == 1).all()
+    assert (df.groupby("chembl_id")["split"].nunique() == 1).all()
+
+
+def test_assign_splits_still_groups_a_legacy_store_without_dash_ids(tmp_path):
+    from charge_experiments.prepare_store import assign_splits, parse_dash_molecules
+
+    # Stores built before this fix have dash_id NULL on every ChEMBL row.
+    # The split key falls back to chembl_id, so such a store still splits --
+    # no rebuild is required for an existing store to stay usable.
+    records = []
+    for i in range(3):
+        for conf in ("conf_00", "conf_01"):
+            records.append(
+                _TINY_SDF.replace("CHEMBL185198", f"CHEMBL{i}").replace("conf_00", conf)
+            )
+    sdf_path = tmp_path / "tiny.sdf"
+    sdf_path.write_text("".join(records))
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    molecules_path = store_dir / "molecules.parquet"
+    parse_dash_molecules(sdf_path, molecules_path)
+
+    assign_splits(store_dir, train=1 / 3, val=1 / 3, test=1 / 3)
+
+    import pandas as pd
+
+    df = pd.read_parquet(molecules_path)
+    assert df["dash_id"].isna().all()
+    assert df["split"].notna().all()
+    assert (df.groupby("chembl_id")["split"].nunique() == 1).all()
 
 
 def test_assign_splits_never_splits_a_chembl_id_across_splits(tmp_path):
