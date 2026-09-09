@@ -49,17 +49,37 @@ fi
 # DASH-tree's own match_new_atom redirects a hydrogen atom to its heavy
 # neighbor and pre-consumes one depth unit -- confirmed correct against
 # the real store and DASH-tree clone, bit-for-bit against an independent
-# run, before this default depths list was trusted with it). Idempotent
-# per fold (skip once every depth's own run directory already has a
-# metrics.json) -- safe to interrupt and resume by running this script
-# again. Untracked by MLflow (the default; no --track).
+# run, before this default depths list was trusted with it).
+#
+# Dispatched one process per fold via xargs -P (default: all 10 at once,
+# override with DASH_DEPTH_SWEEP_JOBS=N) -- each fold's own fit+walk is
+# now a much coarser unit of work than the old per-(depth,fold) runs, so
+# fold-level parallelism (not depth-level) is what actually uses this
+# box's real headroom (64 cores/500GB, each fold single-threaded).
+# `--fold` runs exactly one fold in that process, per-fold idempotent
+# (skip once every depth's own run directory already has a metrics.json)
+# -- safe to interrupt and resume by running this script again, including
+# under a different DASH_DEPTH_SWEEP_JOBS. Untracked by MLflow (the
+# default; no --track).
 #
 # Read the resulting curve with:
 #   "$PYTHON" -m experiments sweep --experiment dash-depth-sweep \
 #     --x predictor.params.max_depth --metric mae --metric r2
-"$PYTHON" -m experiments dash-depth-sweep \
-  --config experiments/configs/dash-charge-example.yaml \
-  --store-prefix dash-molecules-10fold \
-  --n-folds 10 \
-  --depths 1,2,4,6,8,10,12,14,16 \
-  --experiment dash-depth-sweep
+EXPERIMENT=dash-depth-sweep
+DEPTHS=1,2,4,6,8,10,12,14,16
+N_FOLDS=10
+PARALLEL_JOBS="${DASH_DEPTH_SWEEP_JOBS:-$N_FOLDS}"
+
+run_fold() {
+  local fold=$1
+  "$PYTHON" -m experiments dash-depth-sweep \
+    --config experiments/configs/dash-charge-example.yaml \
+    --store-prefix dash-molecules-10fold \
+    --fold "$fold" \
+    --depths "$DEPTHS" \
+    --experiment "$EXPERIMENT"
+}
+export -f run_fold
+export PYTHON DEPTHS EXPERIMENT
+
+seq 1 "$N_FOLDS" | xargs -P "$PARALLEL_JOBS" -n 1 bash -c 'run_fold "$1"' --

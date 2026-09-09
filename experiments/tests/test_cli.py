@@ -234,6 +234,69 @@ def test_build_parser_to_united_atom_accepts_source_flag():
     assert args.source == "some-other-store"
 
 
+def test_build_parser_dash_depth_sweep_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        ["dash-depth-sweep", "--config", "experiments/configs/dash-charge-example.yaml"]
+    )
+    assert args.store_prefix == "dash-molecules-10fold"
+    assert args.n_folds == 10
+    assert args.fold is None
+    assert args.depths == "1,2,4,6,8,10,12,14,16"
+    assert args.experiment == "dash-depth-sweep"
+    assert args.limit is None
+    assert args.allow_dirty is False
+
+
+def test_build_parser_dash_depth_sweep_accepts_fold_flag():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "dash-depth-sweep",
+            "--config",
+            "experiments/configs/dash-charge-example.yaml",
+            "--fold",
+            "3",
+        ]
+    )
+    assert args.fold == 3
+
+
+def test_build_parser_dash_depth_sweep_accepts_overrides():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "dash-depth-sweep",
+            "--config",
+            "some-config.yaml",
+            "--store-prefix",
+            "my-folds",
+            "--n-folds",
+            "5",
+            "--depths",
+            "2,4",
+            "--experiment",
+            "my-sweep",
+            "--limit",
+            "100",
+            "--allow-dirty",
+        ]
+    )
+    assert str(args.config) == "some-config.yaml"
+    assert args.store_prefix == "my-folds"
+    assert args.n_folds == 5
+    assert args.depths == "2,4"
+    assert args.experiment == "my-sweep"
+    assert args.limit == 100
+    assert args.allow_dirty is True
+
+
 def test_summarize_renders_a_non_finite_metric_as_empty(tmp_path, monkeypatch):
     """metrics.json stores NaN for an undefined r2. The shared reader drops
     non-finite values, so the cell is empty rather than the literal "nan"

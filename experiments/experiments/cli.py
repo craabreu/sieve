@@ -59,19 +59,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_dash_depth_sweep(args: argparse.Namespace) -> int:
-    from experiments.dash_depth_sweep import run_sweep
-
     depths = [int(d) for d in args.depths.split(",")]
-    results = run_sweep(
-        config_path=args.config,
-        store_prefix=args.store_prefix,
-        n_folds=args.n_folds,
-        depths=depths,
-        experiment=args.experiment,
-        runs_root=DEFAULT_RUNS_ROOT,
-        allow_dirty=args.allow_dirty,
-        limit=args.limit,
-    )
+    if args.fold is not None:
+        from experiments.dash_depth_sweep import run_fold
+
+        results = run_fold(
+            config_path=args.config,
+            store=f"{args.store_prefix}-{args.fold}",
+            depths=depths,
+            experiment=args.experiment,
+            fold=args.fold,
+            runs_root=DEFAULT_RUNS_ROOT,
+            allow_dirty=args.allow_dirty,
+            limit=args.limit,
+        )
+    else:
+        from experiments.dash_depth_sweep import run_sweep
+
+        results = run_sweep(
+            config_path=args.config,
+            store_prefix=args.store_prefix,
+            n_folds=args.n_folds,
+            depths=depths,
+            experiment=args.experiment,
+            runs_root=DEFAULT_RUNS_ROOT,
+            allow_dirty=args.allow_dirty,
+            limit=args.limit,
+        )
     if not results:
         print("nothing to do -- every fold already complete for every depth")
         return 0
@@ -317,6 +331,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dds.add_argument(
         "--n-folds", type=int, default=10, help="number of fold stores (default: 10)"
+    )
+    p_dds.add_argument(
+        "--fold",
+        type=int,
+        default=None,
+        help="sweep only this one fold (1-indexed) instead of 1..n-folds -- "
+        "for dispatching folds to separate, parallel processes",
     )
     p_dds.add_argument(
         "--depths",
