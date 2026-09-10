@@ -224,3 +224,56 @@ else
     --set run.experiment="$FULL_EXPERIMENT" \
     --set run.batch_id=full
 fi
+
+# --- Stage 5: full-corpus depth sweep -------------------------------------
+#
+# Stage 2's curve is a statement about a fold-sized training set (~82k
+# conformers), where it flattens past 4 WL rounds. Stage 4 then showed
+# the same depth-6 model reaching a far lower error once fit on the
+# whole corpus (~824k), which says the fold plateau is a data limit
+# rather than a capacity one -- and therefore that the depth question
+# has to be re-asked at full scale. This stage asks it.
+#
+# Plain `run` per depth, as in Stage 2 and for the same reason: under
+# continuation, level k's estimate depends on the model's own deepest
+# level, so an independent fit per depth is required, not merely
+# equivalent (see Stage 2's own note).
+#
+# Depths run to 10 rather than Stage 2's 6: the ceiling here is unknown,
+# which is the point of the stage.
+#
+# Idempotent per depth via a full-w<depth> batch_id, and dispatched via
+# xargs -P (default 4, override with SIEVE_FULL_SWEEP_JOBS). Each
+# process featurizes the whole corpus, which measured ~37GB RSS at
+# depth 6 with n_jobs=8 -- deeper is more, so the default concurrency is
+# deliberately far below the fold sweep's.
+FULL_SWEEP_EXPERIMENT=sieve-full-depth-sweep
+FULL_SWEEP_DEPTHS="0 1 2 3 4 5 6 7 8 9 10"
+FULL_SWEEP_JOBS="${SIEVE_FULL_SWEEP_JOBS:-4}"
+
+run_full_depth() {
+  local depth=$1
+  local batch="full-w${depth}"
+  if compgen -G "experiments/runs/$FULL_SWEEP_EXPERIMENT/${batch}__*/metrics.json" \
+    > /dev/null; then
+    echo "skip $batch (already done)"
+    return 0
+  fi
+  "$PYTHON" -m experiments run \
+    --config "$CONFIG" \
+    --set data.store=dash-molecules \
+    --set predictor.params.max_wl_depth="$depth" \
+    --set predictor.params.n_jobs="$FULL_JOBS" \
+    --set run.experiment="$FULL_SWEEP_EXPERIMENT" \
+    --set run.batch_id="$batch"
+}
+export -f run_full_depth
+export FULL_SWEEP_EXPERIMENT FULL_JOBS
+
+# shellcheck disable=SC2086
+echo $FULL_SWEEP_DEPTHS | tr ' ' '\n' \
+  | xargs -P "$FULL_SWEEP_JOBS" -n 1 bash -c 'run_full_depth "$1"' --
+
+# Read the resulting curve with:
+#   "$PYTHON" -m experiments sweep --experiment sieve-full-depth-sweep \
+#     --x predictor.params.max_wl_depth --metric mae --metric r2

@@ -98,23 +98,32 @@ def _cfg_for(
     )
 
 
-def _batch_id(depth: int, fold: int) -> str:
-    return f"d{depth}-f{fold}"
+def _batch_id(depth: int, label: str) -> str:
+    return f"d{depth}-{label}"
 
 
-def fold_done(runs_root: Path, experiment: str, depths: list[int], fold: int) -> bool:
-    """True when every depth's own run directory for this fold already has
-    a ``metrics.json``. The unit of idempotency is the whole fold, not one
-    depth within it: fit + walk is shared work across every depth in a
-    fold, so a partially-written fold isn't meaningfully resumable at a
-    finer grain than "redo the fold"."""
+def _fold_label(fold: int) -> str:
+    return f"f{fold}"
+
+
+def sweep_done(runs_root: Path, experiment: str, depths: list[int], label: str) -> bool:
+    """True when every depth's own run directory for this sweep already has
+    a ``metrics.json``. The unit of idempotency is the whole sweep over one
+    store, not one depth within it: fit + walk is shared work across every
+    depth, so a partially-written sweep isn't meaningfully resumable at a
+    finer grain than "redo the store"."""
     for depth in depths:
         matches = list(
-            (runs_root / experiment).glob(f"{_batch_id(depth, fold)}__*/metrics.json")
+            (runs_root / experiment).glob(f"{_batch_id(depth, label)}__*/metrics.json")
         )
         if not matches:
             return False
     return True
+
+
+def fold_done(runs_root: Path, experiment: str, depths: list[int], fold: int) -> bool:
+    """``sweep_done`` for one fold of a partitioned store."""
+    return sweep_done(runs_root, experiment, depths, _fold_label(fold))
 
 
 def _raw_to_prediction(
@@ -244,7 +253,38 @@ def run_fold(
     allow_dirty: bool = False,
     limit: int | None = None,
 ) -> list[RunResult]:
-    """One fold's worth of the depth sweep.
+    """``run_store`` for one fold of a partitioned store, labelled ``f<n>``."""
+    return run_store(
+        config_path=config_path,
+        store=store,
+        depths=depths,
+        experiment=experiment,
+        label=_fold_label(fold),
+        runs_root=runs_root,
+        allow_dirty=allow_dirty,
+        limit=limit,
+    )
+
+
+def run_store(
+    *,
+    config_path: str | Path,
+    store: str,
+    depths: list[int],
+    experiment: str,
+    label: str,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    allow_dirty: bool = False,
+    limit: int | None = None,
+) -> list[RunResult]:
+    """One store's worth of the depth sweep, tagged ``d<depth>-<label>``.
+
+    ``store`` is any store -- one fold of a partition (via ``run_fold``,
+    label ``f<n>``) or the whole corpus (label ``full``). The saving is
+    what makes this worth using on the full corpus too: one fit + one
+    walk at ``max(depths)`` serves every derivable depth, against one fit
+    + one walk *per depth* if the same sweep were run as independent
+    ``run`` invocations.
 
     Depths ``>= _MIN_DERIVABLE_DEPTH`` share one fit + one tree-matching
     walk (at ``max(depths)``), with each depth's own metrics derived by
@@ -263,10 +303,8 @@ def run_fold(
     against a real store rather than a full, ~7-minute fold."""
     from experiments.data import REPO_ROOT
 
-    if fold_done(runs_root, experiment, depths, fold):
-        logger.info(
-            "fold %d of %r already done for every depth; skipping", fold, experiment
-        )
+    if sweep_done(runs_root, experiment, depths, label):
+        logger.info("%r of %r already done for every depth; skipping", label, experiment)
         return []
 
     derived_depths = [d for d in depths if d >= _MIN_DERIVABLE_DEPTH]
@@ -283,7 +321,7 @@ def run_fold(
                 store=store,
                 depth=depth,
                 experiment=experiment,
-                batch_id=_batch_id(depth, fold),
+                batch_id=_batch_id(depth, label),
             ),
             save_tree_stats=False,
         )
@@ -300,7 +338,7 @@ def run_fold(
         store=store,
         depth=max_depth,
         experiment=experiment,
-        batch_id=_batch_id(max_depth, fold),
+        batch_id=_batch_id(max_depth, label),
     )
 
     git_info = _git_info(REPO_ROOT)
@@ -346,7 +384,7 @@ def run_fold(
             store=store,
             depth=depth,
             experiment=experiment,
-            batch_id=_batch_id(depth, fold),
+            batch_id=_batch_id(depth, label),
         )
         results.append(
             _write_depth_run(
@@ -406,7 +444,7 @@ def _fold_shard_path(
     -- newest match if that fold was ever re-run. Raises if absent."""
     matches = sorted(
         (runs_root / from_experiment).glob(
-            f"{_batch_id(depth, fold)}__*/tree_stats.npz"
+            f"{_batch_id(depth, _fold_label(fold))}__*/tree_stats.npz"
         )
     )
     if not matches:

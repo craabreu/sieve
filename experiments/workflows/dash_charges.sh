@@ -152,3 +152,42 @@ else
     --set run.experiment="$MERGED_EXPERIMENT" \
     --set run.batch_id=merged
 fi
+
+# --- Stage 6: full-corpus depth sweep -------------------------------------
+#
+# The fold sweep (Stage 2) answers "how does depth pay at fold scale?"
+# -- ~82k train conformers. This one asks it at full scale, ~824k, on
+# dash-molecules' own train/test split. Worth asking separately because
+# the fold curve's flat tail is a statement about a fold-sized training
+# set, not about the corpus: a model still data-limited at 82k can keep
+# paying for depth at 824k.
+#
+# Same `dash-depth-sweep` command as Stage 2, pointed at one store
+# instead of a partition (`--store`), so this is again one fit + one
+# tree-matching walk at the deepest depth requested, with every
+# shallower depth derived from the already-walked paths -- 1 walk over
+# the full corpus rather than 6. Runs are labelled d<depth>-full
+# (`--label`), and the stage is idempotent as a whole: it skips once
+# every depth already has a metrics.json.
+#
+# Depths stop at 10, not Stage 2's 16: the fold curve is already flat to
+# the fourth decimal from depth 10 (0.019844 at 10 vs 0.019742 at 16),
+# so the extra depths buy resolution where the answer is known and cost
+# a proportionally deeper walk over 10x the atoms.
+#
+# One process, single-threaded. This is the heaviest stage in the file
+# -- one DASH fit plus one walk over ~43M atoms -- and its footprint is
+# unmeasured at this scale (a single fold peaked around 8GB).
+FULL_EXPERIMENT=dash-full-depth-sweep
+FULL_DEPTHS=1,2,4,6,8,10
+
+"$PYTHON" -m experiments dash-depth-sweep \
+  --config experiments/configs/dash-charge-example.yaml \
+  --store dash-molecules \
+  --label full \
+  --depths "$FULL_DEPTHS" \
+  --experiment "$FULL_EXPERIMENT"
+
+# Read the resulting curve with:
+#   "$PYTHON" -m experiments sweep --experiment dash-full-depth-sweep \
+#     --x predictor.params.max_depth --metric mae --metric r2

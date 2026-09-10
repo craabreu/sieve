@@ -60,7 +60,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_dash_depth_sweep(args: argparse.Namespace) -> int:
     depths = [int(d) for d in args.depths.split(",")]
-    if args.fold is not None:
+    if args.store is not None:
+        if args.fold is not None:
+            raise SystemExit("--store and --fold are mutually exclusive")
+        from experiments.dash_depth_sweep import run_store
+
+        results = run_store(
+            config_path=args.config,
+            store=args.store,
+            depths=depths,
+            experiment=args.experiment,
+            label=args.label,
+            runs_root=DEFAULT_RUNS_ROOT,
+            allow_dirty=args.allow_dirty,
+            limit=args.limit,
+        )
+    elif args.fold is not None:
         from experiments.dash_depth_sweep import run_fold
 
         results = run_fold(
@@ -357,6 +372,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="sweep only this one fold (1-indexed) instead of 1..n-folds -- "
         "for dispatching folds to separate, parallel processes",
+    )
+    p_dds.add_argument(
+        "--store",
+        default=None,
+        help="sweep this one store instead of a fold partition -- e.g. the "
+        "whole corpus (dash-molecules). Mutually exclusive with --fold; "
+        "--store-prefix/--n-folds are ignored when it is given",
+    )
+    p_dds.add_argument(
+        "--label",
+        default="full",
+        help="run.batch_id suffix for a --store sweep, giving d<depth>-<label> "
+        "(default: full); ignored for fold sweeps, which label by fold",
     )
     p_dds.add_argument(
         "--depths",

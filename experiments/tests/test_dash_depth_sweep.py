@@ -85,3 +85,41 @@ def test_merge_fold_shards_raises_on_a_missing_fold(tmp_path):
             out_path=tmp_path / "merged.npz",
             runs_root=tmp_path,
         )
+
+
+def _touch_run(runs_root, experiment, batch_id):
+    d = runs_root / experiment / f"{batch_id}__dash-store-s0__stamp__uuid"
+    d.mkdir(parents=True)
+    (d / "metrics.json").write_text("{}")
+
+
+def test_batch_id_labels_a_fold_and_an_arbitrary_store_the_same_way():
+    from experiments.dash_depth_sweep import _batch_id, _fold_label
+
+    assert _batch_id(16, _fold_label(7)) == "d16-f7"
+    assert _batch_id(10, "full") == "d10-full"
+
+
+def test_sweep_done_is_per_label_and_needs_every_depth(tmp_path):
+    """The unit of idempotency is one label's whole sweep: a partially
+    written sweep is not done, and two labels do not satisfy each other."""
+    from experiments.dash_depth_sweep import sweep_done
+
+    depths = [2, 4]
+    assert not sweep_done(tmp_path, "exp", depths, "full")
+
+    _touch_run(tmp_path, "exp", "d2-full")
+    assert not sweep_done(tmp_path, "exp", depths, "full")
+
+    _touch_run(tmp_path, "exp", "d4-full")
+    assert sweep_done(tmp_path, "exp", depths, "full")
+    assert not sweep_done(tmp_path, "exp", depths, "f1")
+
+
+def test_fold_done_still_delegates_to_the_fold_label(tmp_path):
+    from experiments.dash_depth_sweep import fold_done
+
+    depths = [2]
+    assert not fold_done(tmp_path, "exp", depths, 3)
+    _touch_run(tmp_path, "exp", "d2-f3")
+    assert fold_done(tmp_path, "exp", depths, 3)
