@@ -198,11 +198,37 @@ def partition_store(
     ``subsample_store``'s own ``n_stores`` convention exactly, including
     ``n_stores=1`` keeping the bare ``dest_prefix`` name and returning one
     summary string instead of a list.
+
+    Idempotent as a whole (not store-by-store, unlike ``prepare_store``'s
+    own per-stage idempotency): if every destination store already has a
+    ``molecules.parquet``, this returns their existing ``split_summary.txt``
+    contents straight off disk without touching ``source_store`` at all --
+    safe to re-run as part of a larger reproduction script. Assignment is
+    computed jointly across all ``n_stores`` in one pass (each split is
+    shuffled once and divided as a whole), so a *partially* complete set
+    -- e.g. one destination missing after an interrupted prior run -- is
+    not treated as done: the entire partition reruns and every destination
+    is rewritten, the same as a fresh call.
     """
     if n_stores < 1:
         raise ValueError("n_stores must be >= 1")
     if conformers_per_molecule is not None and conformers_per_molecule < 1:
         raise ValueError("conformers_per_molecule must be >= 1 or None (uncapped)")
+
+    dest_dirs = [
+        stores_root / (dest_prefix if n_stores == 1 else f"{dest_prefix}-{i + 1}")
+        for i in range(n_stores)
+    ]
+    if all((d / "molecules.parquet").exists() for d in dest_dirs):
+        logger.info(
+            "every destination of %r (%d store(s)) already exists; skipping",
+            dest_prefix,
+            n_stores,
+        )
+        existing_summaries = [
+            (d / "split_summary.txt").read_text().removesuffix("\n") for d in dest_dirs
+        ]
+        return existing_summaries[0] if n_stores == 1 else existing_summaries
 
     import pandas as pd
 
@@ -247,14 +273,8 @@ def partition_store(
                 selected_positions[store_index].append(positions)
 
     summaries = [
-        _write_subsample(
-            df,
-            positions,
-            source_store=source_store,
-            dest_dir=stores_root
-            / (dest_prefix if n_stores == 1 else f"{dest_prefix}-{store_index + 1}"),
-        )
-        for store_index, positions in enumerate(selected_positions)
+        _write_subsample(df, positions, source_store=source_store, dest_dir=dest_dir)
+        for dest_dir, positions in zip(dest_dirs, selected_positions, strict=True)
     ]
     return summaries[0] if n_stores == 1 else summaries
 

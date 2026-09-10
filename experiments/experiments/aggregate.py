@@ -292,3 +292,52 @@ def aggregate_rows(table: CurveTable) -> list[dict[str, str]]:
             )
     rows.sort(key=lambda r: (r["series"], r["metric"], r["x_label"]))
     return rows
+
+
+def _md_escape(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _fmt_mean_std(point: CurvePoint) -> str:
+    return f"{point.mean:.6g} ± {point.std:.3g}"
+
+
+def markdown_report(table: CurveTable) -> str:
+    """``table.series`` as GitHub-flavoured Markdown: one table per metric,
+    x values down the rows, series across the columns, each cell the pooled
+    ``mean ± std`` (population std, the same as ``aggregate.csv``). A cell
+    is blank where that series has no run at that x. ``## <metric> (n = N)``
+    when every point in a metric's tables pooled the same run count."""
+    metrics = sorted({metric for _, metric in table.series})
+    out: list[str] = []
+    for metric in metrics:
+        series = sorted(
+            (name, points)
+            for (name, m), points in table.series.items()
+            if m == metric and points
+        )
+        if not series:
+            continue
+        x_order = sorted({(p.x_pos, p.x_label) for _, pts in series for p in pts})
+        by_series = {name: {p.x_label: p for p in pts} for name, pts in series}
+        n_values = {p.n_runs for _, pts in series for p in pts}
+        n_note = f" (n = {n_values.pop()})" if len(n_values) == 1 else ""
+
+        out.append(f"## {metric}{n_note}")
+        out.append("")
+        out.append(
+            f"| {table.x} | "
+            + " | ".join(_md_escape(name) for name, _ in series)
+            + " |"
+        )
+        out.append("| --- |" + " --- |" * len(series))
+        for _, x_label in x_order:
+            cells = [
+                _fmt_mean_std(by_series[name][x_label])
+                if x_label in by_series[name]
+                else ""
+                for name, _ in series
+            ]
+            out.append(f"| {_md_escape(x_label)} | " + " | ".join(cells) + " |")
+        out.append("")
+    return "\n".join(out)

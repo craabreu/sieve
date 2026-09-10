@@ -105,6 +105,44 @@ def predict_via_data_storage_walk(
     return predicted
 
 
+def predict_raw_from_paths(
+    tree: Any,
+    paths: list[NodePath],
+    mean_props: LiteralTreeChargeProperties,
+    std_props: LiteralTreeChargeProperties,
+    *,
+    max_depth: int,
+) -> RawPrediction:
+    """Derive a ``max_depth``-capped prediction from ``paths`` already
+    walked at some depth >= ``max_depth``, by truncating each atom's own
+    path to its first ``max_depth`` entries before backoff.
+
+    Equivalent to re-walking ``DASHTree.match_new_atom`` with
+    ``max_depth=max_depth`` from scratch, but far cheaper: the walk
+    (``match_new_atom``, this module's real cost) is a strict-prefix
+    relationship in depth -- an atom's depth-*k* path is exactly the first
+    *k* entries of any deeper walk for that same atom, since matching
+    stops early rather than taking a different route. Node stats are
+    unaffected by which depth ``fit()`` used either
+    (``tree_artifact.compute_node_stats`` accumulates over every node on
+    every atom's own path, not just its deepest one), so one fit at the
+    deepest depth needed already covers every shallower depth's own node
+    statistics too. Together this means ``fit`` + one walk per split, done
+    once at the sweep's own maximum depth, is enough to derive every
+    shallower depth's prediction -- see ``experiments.dash_depth_sweep``,
+    which is what actually exploits this rather than the ordinary
+    one-depth-per-run ``fit``/``predict_raw``.
+
+    A standalone function, not a ``DASHChargePredictor`` method: it needs
+    no tree-matching of its own, so it is testable with the same
+    ``_FakeTree`` pattern the rest of this module's pure-logic tests use.
+    """
+    truncated = [path[:max_depth] for path in paths]
+    atom_value = predict_via_data_storage_walk(tree, truncated, mean_props)
+    atom_std = predict_via_data_storage_walk(tree, truncated, std_props)
+    return RawPrediction(atom_value=atom_value, atom_std=atom_std)
+
+
 def _default_neighbor_dict_factory(mol: Any, af: Any) -> Any:
     from serenityff.charge.tree.dash_tools import init_neighbor_dict
 
@@ -204,7 +242,14 @@ class DASHChargePredictor:
             self._tree = DASHTree(**kwargs)
         return self._tree
 
-    def _paths_for(self, mset: MoleculeSet, *, split: str) -> list[NodePath]:
+    def match_paths(self, mset: MoleculeSet, *, split: str) -> list[NodePath]:
+        """``DASHTree.match_new_atom`` for every atom in ``mset``, walked to
+        ``self.max_depth`` -- the expensive step (real tree traversal), and
+        the one worth caching across a depth sweep: a path walked at
+        ``self.max_depth`` already contains every shallower depth's own
+        path as a prefix (see ``predict_raw_from_paths``), so a caller
+        sweeping multiple depths should walk once at the deepest value
+        needed and reuse the result, not call this once per depth."""
         tree = self._load_tree()
         paths, stats = _atom_paths(
             mset,
@@ -229,20 +274,38 @@ class DASHChargePredictor:
         self, train: MoleculeSet, val: MoleculeSet, *, rng: np.random.Generator
     ) -> None:
         del val, rng
-        paths = self._paths_for(train, split="train")
+        paths = self.match_paths(train, split="train")
         self._stats = compute_node_stats(paths, train.atom_target)
         self._mean_props, self._std_props = apply_node_stats(self._tree, self._stats)
+
+    def predict_raw_at_depth(
+        self, paths: list[NodePath], *, max_depth: int
+    ) -> RawPrediction:
+        """``predict_raw_from_paths`` bound to this predictor's own fitted
+        tree/props -- the public seam a depth-sweep caller uses to derive
+        a shallower-than-``self.max_depth`` prediction from paths already
+        walked once (via ``match_paths``), without reaching into this
+        instance's own ``_tree``/``_mean_props``/``_std_props``. See
+        ``predict_raw_from_paths``'s own docstring for why truncation is
+        exactly equivalent to a fresh, shallower walk."""
+        if self._mean_props is None or self._std_props is None:
+            raise RuntimeError(
+                "fit (or load_model_state) must be called before predict_raw_at_depth"
+            )
+        return predict_raw_from_paths(
+            self._tree, paths, self._mean_props, self._std_props, max_depth=max_depth
+        )
 
     def predict_raw(self, test: MoleculeSet) -> RawPrediction:
         if self._mean_props is None or self._std_props is None:
             raise RuntimeError(
                 "fit (or load_model_state) must be called before predict_raw"
             )
-        paths = self._paths_for(test, split="test")
+        paths = self.match_paths(test, split="test")
         atom_value = predict_via_data_storage_walk(self._tree, paths, self._mean_props)
         atom_std = predict_via_data_storage_walk(self._tree, paths, self._std_props)
 
-        # match_stats' own n_unmatched_atoms (set in _paths_for) only counts
+        # match_stats' own n_unmatched_atoms (set in match_paths) only counts
         # atoms whose path-matching itself failed -- a strict undercount of
         # the real NaN rate now that there is no invented fallback: an
         # atom's own path can match successfully yet still return NaN if

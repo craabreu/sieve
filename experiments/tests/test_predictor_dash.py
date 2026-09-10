@@ -98,3 +98,83 @@ def test_predict_via_data_storage_walk_is_nan_for_unmatched_atom():
 
     predicted = predict_via_data_storage_walk(tree, [[]], props)
     assert np.isnan(predicted[0])
+
+
+def _fit_props(tree, paths, atom_value):
+    """Both mean_props and std_props from one fit, exactly like
+    DASHChargePredictor.fit() does it -- unlike
+    populate_tree_with_charge_property (which only returns mean_props and
+    would silently overwrite the other's columns if called twice on the
+    same tree), apply_node_stats writes both from one TreeNodeStats."""
+    from experiments.tree_artifact import apply_node_stats, compute_node_stats
+
+    stats = compute_node_stats(paths, np.asarray(atom_value))
+    return apply_node_stats(tree, stats)
+
+
+def test_predict_raw_from_paths_truncates_before_backoff():
+    """The whole point: deriving a shallow-depth prediction from paths
+    already walked deep must match what walking at that shallower depth
+    directly would have produced -- i.e. it must NOT see the deeper,
+    populated node that a true max_depth=1 walk would never have reached."""
+    from experiments.predictors.dash import predict_raw_from_paths
+
+    tree = _FakeTree({0: 4})
+    # Fit populates every level along a full depth-2 walk.
+    mean_props, std_props = _fit_props(tree, [[(0, 1), (0, 2)]], [0.5])
+
+    # One atom walked to depth 2 at predict time too.
+    full_paths = [[(0, 1), (0, 2)]]
+
+    at_depth_2 = predict_raw_from_paths(
+        tree, full_paths, mean_props, std_props, max_depth=2
+    )
+    at_depth_1 = predict_raw_from_paths(
+        tree, full_paths, mean_props, std_props, max_depth=1
+    )
+
+    # Both node 1 and node 2 are populated with the same value here, so
+    # this alone wouldn't distinguish truncation from no truncation --
+    # the next test does that with genuinely different populated values.
+    assert at_depth_2.atom_value[0] == pytest.approx(0.5)
+    assert at_depth_1.atom_value[0] == pytest.approx(0.5)
+
+
+def test_predict_raw_from_paths_at_shallow_depth_ignores_deeper_populated_node():
+    from experiments.predictors.dash import predict_raw_from_paths
+
+    tree = _FakeTree({0: 4})
+    # One fit (a single compute_node_stats call): a shallow-only training
+    # atom gives node 1 mean=0.2 unblended, a deep-only training atom
+    # gives node 2 mean=0.9 unblended (fake-tree test, so paths need not
+    # respect real parent/child topology -- only the aggregation-by-
+    # node-id logic is under test here).
+    mean_props, std_props = _fit_props(tree, [[(0, 1)], [(0, 2)]], [0.2, 0.9])
+
+    full_paths = [[(0, 1), (0, 2)]]
+
+    at_depth_2 = predict_raw_from_paths(
+        tree, full_paths, mean_props, std_props, max_depth=2
+    )
+    at_depth_1 = predict_raw_from_paths(
+        tree, full_paths, mean_props, std_props, max_depth=1
+    )
+
+    # Untruncated: backs off from the deepest entry first -> node 2 (0.9).
+    assert at_depth_2.atom_value[0] == pytest.approx(0.9)
+    # Truncated to depth 1: node 2 is not even in the path -> node 1 (0.2),
+    # exactly what a real max_depth=1 walk would have matched.
+    assert at_depth_1.atom_value[0] == pytest.approx(0.2)
+
+
+def test_predict_raw_from_paths_shape_matches_number_of_atoms():
+    from experiments.predictors.dash import predict_raw_from_paths
+
+    tree = _FakeTree({0: 3})
+    mean_props, std_props = _fit_props(tree, [[(0, 1)]], [0.1])
+
+    raw = predict_raw_from_paths(
+        tree, [[(0, 1)], [], [(0, 1)]], mean_props, std_props, max_depth=1
+    )
+    assert raw.atom_value.shape == (3,)
+    assert raw.atom_std.shape == (3,)

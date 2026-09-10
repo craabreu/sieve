@@ -58,6 +58,56 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dash_depth_sweep(args: argparse.Namespace) -> int:
+    depths = [int(d) for d in args.depths.split(",")]
+    if args.fold is not None:
+        from experiments.dash_depth_sweep import run_fold
+
+        results = run_fold(
+            config_path=args.config,
+            store=f"{args.store_prefix}-{args.fold}",
+            depths=depths,
+            experiment=args.experiment,
+            fold=args.fold,
+            runs_root=DEFAULT_RUNS_ROOT,
+            allow_dirty=args.allow_dirty,
+            limit=args.limit,
+        )
+    else:
+        from experiments.dash_depth_sweep import run_sweep
+
+        results = run_sweep(
+            config_path=args.config,
+            store_prefix=args.store_prefix,
+            n_folds=args.n_folds,
+            depths=depths,
+            experiment=args.experiment,
+            runs_root=DEFAULT_RUNS_ROOT,
+            allow_dirty=args.allow_dirty,
+            limit=args.limit,
+        )
+    if not results:
+        print("nothing to do -- every fold already complete for every depth")
+        return 0
+    for result in results:
+        print(f"{result.run_dir}: mae={result.metrics.get('mae')}")
+    return 0
+
+
+def _cmd_merge_shards(args: argparse.Namespace) -> int:
+    from experiments.dash_depth_sweep import merge_fold_shards
+
+    out = merge_fold_shards(
+        from_experiment=args.from_experiment,
+        depth=args.depth,
+        n_folds=args.n_folds,
+        out_path=args.out,
+        runs_root=DEFAULT_RUNS_ROOT,
+    )
+    print(f"merged shard: {out}")
+    return 0
+
+
 def _cmd_promote_run(args: argparse.Namespace) -> int:
     from experiments.runner import promote_run
 
@@ -188,6 +238,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         AGGREGATE_FIELDNAMES,
         aggregate_rows,
         build_curve,
+        markdown_report,
         read_runs_from_dirs,
         read_runs_from_mlflow,
     )
@@ -237,6 +288,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         writer.writerows(agg_rows)
     print(f"wrote {len(agg_rows)} row(s) to {agg_path}")
 
+    report_path = out_dir / "report.md"
+    report_path.write_text(markdown_report(table))
+    print(f"wrote {report_path}")
+
     try:
         from experiments.plots import curve_panel
 
@@ -275,6 +330,77 @@ def build_parser() -> argparse.ArgumentParser:
         "own docstring for why)",
     )
     p_run.set_defaults(func=_cmd_run)
+
+    p_dds = sub.add_parser(
+        "dash-depth-sweep",
+        help="sweep the dash predictor's max_depth across a range of "
+        "already-partitioned fold stores, one fit + one tree-matching "
+        "walk per fold (see experiments.dash_depth_sweep's own docstring "
+        "for why this is far cheaper than one independent run per "
+        "(depth, fold) pair)",
+    )
+    p_dds.add_argument(
+        "--config", required=True, type=Path, help="a dash predictor config"
+    )
+    p_dds.add_argument(
+        "--store-prefix",
+        default="dash-molecules-10fold",
+        help="fold stores are named <prefix>-1 .. <prefix>-n-folds "
+        "(default: dash-molecules-10fold)",
+    )
+    p_dds.add_argument(
+        "--n-folds", type=int, default=10, help="number of fold stores (default: 10)"
+    )
+    p_dds.add_argument(
+        "--fold",
+        type=int,
+        default=None,
+        help="sweep only this one fold (1-indexed) instead of 1..n-folds -- "
+        "for dispatching folds to separate, parallel processes",
+    )
+    p_dds.add_argument(
+        "--depths",
+        default="1,2,4,6,8,10,12,14,16",
+        help="comma-separated max_depth values to sweep "
+        "(default: 1,2,4,6,8,10,12,14,16)",
+    )
+    p_dds.add_argument(
+        "--experiment",
+        default="dash-depth-sweep",
+        help="run.experiment for every written run (default: dash-depth-sweep)",
+    )
+    p_dds.add_argument(
+        "--limit", type=int, default=None, help="use only the first N conformers"
+    )
+    p_dds.add_argument(
+        "--allow-dirty", action="store_true", help="run with an uncommitted git tree"
+    )
+    p_dds.set_defaults(func=_cmd_dash_depth_sweep)
+
+    p_merge = sub.add_parser(
+        "merge-shards",
+        help="merge a depth sweep's per-fold tree_stats.npz shards (all "
+        "saved at one depth) into a single node-stats artifact -- "
+        "fold_node_stats, exact, no re-fit",
+    )
+    p_merge.add_argument(
+        "--from-experiment",
+        default="dash-depth-sweep",
+        help="experiment whose per-fold shards to merge (default: dash-depth-sweep)",
+    )
+    p_merge.add_argument(
+        "--depth",
+        type=int,
+        required=True,
+        help="the max_depth the shards were saved at",
+    )
+    p_merge.add_argument(
+        "--n-folds", type=int, default=10, help="number of fold shards (default: 10)"
+    )
+    p_merge.add_argument(
+        "--out", type=Path, required=True, help="output .npz path for the merged shard"
+    )
+    p_merge.set_defaults(func=_cmd_merge_shards)
 
     p_promote = sub.add_parser(
         "promote-run",

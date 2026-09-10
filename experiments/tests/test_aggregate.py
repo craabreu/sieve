@@ -231,3 +231,46 @@ def test_aggregate_rows_pools_every_run_sharing_one_x_value():
     assert agg[0]["n_runs"] == "5"
     assert agg[0]["lo"] == "0.0188"
     assert agg[0]["hi"] == "0.0192"
+
+
+def test_markdown_report_one_table_per_metric_with_mean_pm_std_cells():
+    from experiments.aggregate import RunRow, build_curve, markdown_report
+
+    rows = [
+        RunRow("r0", {"d": "1", "n": "raw"}, {"mae": 0.10}, {}),
+        RunRow("r1", {"d": "1", "n": "raw"}, {"mae": 0.20}, {}),
+        RunRow("r2", {"d": "2", "n": "raw"}, {"mae": 0.05}, {}),
+        RunRow("r3", {"d": "2", "n": "norm"}, {"mae": 0.04}, {}),
+    ]
+    table = build_curve(rows, x="d", metrics=["mae"], splits=["test"], group_by="n")
+    md = markdown_report(table)
+
+    assert "## mae" in md
+    # d down the rows, the two series across the columns
+    assert "| d | test n=norm | test n=raw |" in md
+    # pooled mean +/- population std for the two raw runs at d=1
+    assert "| 1 |  | 0.15 ± 0.05 |" in md
+    # a blank cell where the norm series has no run (d=1)
+    # and the norm point present at d=2
+    assert "| 2 | 0.04 ± 0 | 0.05 ± 0 |" in md
+
+
+def test_markdown_report_notes_a_uniform_run_count():
+    from experiments.aggregate import RunRow, build_curve, markdown_report
+
+    rows = [
+        RunRow("r0", {"d": "1"}, {"mae": 0.1}, {}),
+        RunRow("r1", {"d": "1"}, {"mae": 0.2}, {}),
+        RunRow("r2", {"d": "2"}, {"mae": 0.3}, {}),
+        RunRow("r3", {"d": "2"}, {"mae": 0.4}, {}),
+    ]
+    table = build_curve(rows, x="d", metrics=["mae"], splits=["test"])
+    assert "## mae (n = 2)" in markdown_report(table)
+
+
+def test_markdown_report_escapes_a_pipe_in_a_label():
+    from experiments.aggregate import RunRow, build_curve, markdown_report
+
+    rows = [RunRow("r0", {"d": "a|b"}, {"mae": 0.1}, {})]
+    table = build_curve(rows, x="d", metrics=["mae"], splits=["test"])
+    assert "a\\|b" in markdown_report(table)

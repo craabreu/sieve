@@ -532,6 +532,61 @@ def test_partition_store_raises_without_a_split_column(tmp_path):
         partition_store("unsplit-store", "part", stores_root=tmp_path, n_stores=2)
 
 
+def test_partition_store_skips_recomputation_when_all_destinations_exist(tmp_path):
+    """Second call is a no-op: same summaries, and the parquet files
+    genuinely aren't rewritten (checked via mtime, not just content)."""
+    from experiments.store_ops import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=9, n_val=3, n_test=3)
+
+    first = partition_store("source-store", "part", stores_root=tmp_path, n_stores=3)
+    paths = [tmp_path / f"part-{i + 1}" / "molecules.parquet" for i in range(3)]
+    mtimes_before = [p.stat().st_mtime_ns for p in paths]
+
+    second = partition_store("source-store", "part", stores_root=tmp_path, n_stores=3)
+
+    assert second == first
+    assert [p.stat().st_mtime_ns for p in paths] == mtimes_before
+
+
+def test_partition_store_skips_recomputation_with_n_stores_one(tmp_path):
+    """The n_stores=1 (bare-name, single-string-summary) shape is idempotent
+    too, not just the list-of-N shape."""
+    from experiments.store_ops import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=8, n_val=4, n_test=4)
+
+    first = partition_store("source-store", "part", stores_root=tmp_path, n_stores=1)
+    path = tmp_path / "part" / "molecules.parquet"
+    mtime_before = path.stat().st_mtime_ns
+
+    second = partition_store("source-store", "part", stores_root=tmp_path, n_stores=1)
+
+    assert isinstance(second, str)
+    assert second == first
+    assert path.stat().st_mtime_ns == mtime_before
+
+
+def test_partition_store_recomputes_all_when_any_destination_is_missing(tmp_path):
+    """Partial completion (e.g. an interrupted prior run) is not treated as
+    done -- assignment is computed jointly across every store in one pass,
+    so a missing store means the whole partition reruns."""
+    import shutil
+
+    from experiments.store_ops import partition_store
+
+    _synthetic_split_store(tmp_path, n_train=9, n_val=3, n_test=3)
+
+    partition_store("source-store", "part", stores_root=tmp_path, n_stores=3)
+    shutil.rmtree(tmp_path / "part-2")
+
+    partition_store("source-store", "part", stores_root=tmp_path, n_stores=3)
+
+    assert (tmp_path / "part-1" / "molecules.parquet").exists()
+    assert (tmp_path / "part-2" / "molecules.parquet").exists()
+    assert (tmp_path / "part-3" / "molecules.parquet").exists()
+
+
 def _ua_test_mol(
     smiles, *, add_hs=True, charges=None, isotope_h_idx=None, atom_property="MBIScharge"
 ):
