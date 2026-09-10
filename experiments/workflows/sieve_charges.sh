@@ -23,7 +23,7 @@ if [ ! -x "$PYTHON" ]; then
   exit 1
 fi
 
-CONFIG=experiments/configs/sieve-charge-example.yaml
+CONFIG=experiments/configs/sieve-charge-sweep.yaml
 
 # --- Stage 1: data preparation -------------------------------------------
 #
@@ -48,16 +48,25 @@ CONFIG=experiments/configs/sieve-charge-example.yaml
 # --- Stage 2: Sieve WL-depth sweep ---------------------------------------
 #
 # One plain `run` per (max_wl_depth, fold) pair. Unlike the DASH depth
-# sweep there is no sweep module here, and deliberately so: level k's
-# partition, class means/counts and (depth-local) shrinkage are
-# byte-identical between a depth-k fit and a depth-N fit for N > k --
-# verified directly on a real corpus -- so N independent runs *are* the
-# capped-at-k curve, exactly, with nothing to amortize between them. See
-# docs/superpowers/specs/2026-09-02-charge-sweep-and-loo-design.md, which
-# is where that equivalence was established and where the per-level
-# in-run design it replaced was dropped. A sieve fit on a real fold is
-# also a fraction of a DASH tree-matching walk on the same fold, which is
-# the other half of why dash_depth_sweep.py exists and this doesn't.
+# sweep there is no sweep module here, and under this series' own
+# `class_estimator: continuation` there could not be one: an independent
+# fit per depth is *required*, not merely equivalent. Level k's estimate
+# depends on whether k is the model's own deepest level --
+# continuation._child_of_level returns -1 for the level with no children
+# on the backoff path, so level 3 is an atom-weighted pooled mean in a
+# depth-3 fit and the unweighted mean of its children in a depth-6 one --
+# and empirical-Bayes alpha_k = tau^2_k / tau^2_{k-1} is estimated per
+# level against that same population. Nothing shallower can therefore be
+# read out of one deep fit by truncation.
+#
+# (Under the pooled estimator the shallower depths *are* recoverable
+# from a deep fit, which is what
+# docs/superpowers/specs/2026-09-02-charge-sweep-and-loo-design.md
+# verified on a real corpus when it dropped the per-level in-run design.
+# That equivalence is what does not survive continuation. It never
+# motivated a sweep module either way: a sieve fit on a real fold is a
+# fraction of a DASH tree-matching walk on the same fold, which is the
+# other half of why dash_depth_sweep.py exists and this doesn't.)
 #
 # `run.batch_id=w<depth>-f<fold>` is what makes the grid navigable and
 # resumable: `_run_name` puts it *ahead* of the predictor/store/seed part
@@ -73,11 +82,16 @@ CONFIG=experiments/configs/sieve-charge-example.yaml
 # Each process is left single-threaded (`n_jobs` unset) since the
 # dispatch already fills the box.
 #
-# `report_loo=true` throughout. The train/train_loo gap is the
-# memorization signal (design.md 10.3), it is the one quantity the curve
-# cannot be re-derived for afterwards without re-running everything, and
-# its cost -- a second featurization of train, ~+38% -- is cheap at these
-# run times. Off by default in the predictor, on here on purpose.
+# No `report_loo`, and not by choice: SievePredictor refuses it at
+# construction under either of this series' two estimator settings
+# (`sieve.predict_loo` supports neither `class_estimator=continuation`
+# nor a `shrinkage_weight` outside (None, "count") -- a deliberate scope
+# cut in sieve.predict._search, not a structural one). So the sweep
+# records train/* but no train_loo/*, and the train/train_loo
+# memorization gap (design.md 10.3) is not available for this series
+# until predict_loo grows continuation support. The in-sample train/*
+# numbers stay optimistic at minimum_support=1 and should be read as
+# such.
 #
 # The deepest depth additionally saves its fitted model
 # (`save_tree_stats`), so Stage 3 is predict-only. Only the deepest:
@@ -88,7 +102,7 @@ CONFIG=experiments/configs/sieve-charge-example.yaml
 #   "$PYTHON" -m experiments sweep --experiment sieve-depth-sweep \
 #     --x predictor.params.max_wl_depth \
 #     --metric mae --metric r2 \
-#     --split test --split train --split train_loo
+#     --split test --split train
 EXPERIMENT=sieve-depth-sweep
 DEPTHS="0 1 2 3 4 5 6"
 DEEPEST=6
@@ -112,7 +126,6 @@ run_pair() {
     --config "$CONFIG" \
     --set data.store=dash-molecules-10fold-"$fold" \
     --set predictor.params.max_wl_depth="$depth" \
-    --set predictor.params.report_loo=true \
     --set run.experiment="$EXPERIMENT" \
     --set run.batch_id="$batch" \
     ${extra[@]+"${extra[@]}"}
@@ -142,10 +155,8 @@ done | xargs -P "$PARALLEL_JOBS" -n 2 bash -c 'run_pair "$1" "$2"' --
 # that atom_std has been checked against real data. equal_weighted needs
 # no std at all.
 #
-# `report_loo` is left at the config default (off) here: LOO is a
-# statement about the *fit*, which Stage 2 already recorded at every
-# depth, and turning it on would buy a second full train featurization
-# for a run that is otherwise predict-only.
+# LOO does not enter here either -- see Stage 2 on why this series
+# cannot report it at all.
 NORM_EXPERIMENT=sieve-depth${DEEPEST}-equal-weighted
 
 normalize_fold() {
@@ -196,8 +207,7 @@ seq 1 "$N_FOLDS" | xargs -P "$PARALLEL_JOBS" -n 1 bash -c 'normalize_fold "$1"' 
 # `n_jobs` is set here -- the only stage where it is, since this stage is
 # a single process rather than a filled dispatch queue. Lower
 # SIEVE_FULL_JOBS if the box is tight; raise it if it isn't.
-# `report_loo` stays off: a LOO pass over the full training corpus is
-# both the expensive case and not what this stage is for.
+# LOO does not enter here either (Stage 2's note applies).
 FULL_EXPERIMENT=sieve-full-equal-weighted
 FULL_JOBS="${SIEVE_FULL_JOBS:-8}"
 
