@@ -107,6 +107,33 @@ def test_depth_one_specifically_matches_despite_the_h_atom_redirect(tmp_path):
     assert results[0].metrics["mae"] == pytest.approx(expected, abs=0.0)
 
 
+def test_save_tree_stats_writes_one_shard_at_the_deepest_depth_only(tmp_path):
+    """The shipped dash-charge-example.yaml sets save_tree_stats: true.
+    run_fold must save exactly one tree_stats.npz per fold -- the shared
+    deep fit, in the deepest derived depth's own run directory -- and
+    none for the shallower derived depths or the depth-1 real run."""
+    from experiments.dash_depth_sweep import run_fold
+
+    sweep_root = tmp_path / "sweep"
+    run_fold(
+        config_path=_CONFIG_PATH,
+        store="dash-molecules-10fold-1",
+        depths=[1, 2, 4],
+        experiment="dash-depth-sweep-test",
+        fold=1,
+        runs_root=sweep_root,
+        allow_dirty=True,
+        limit=200,
+    )
+
+    exp = sweep_root / "dash-depth-sweep-test"
+    trees = sorted(exp.glob("*/tree_stats.npz"))
+    assert len(trees) == 1
+    assert trees[0].parent.name.startswith("d4-f1__")
+    assert not list(exp.glob("d1-f1__*/tree_stats.npz"))
+    assert not list(exp.glob("d2-f1__*/tree_stats.npz"))
+
+
 def test_run_fold_is_idempotent(tmp_path):
     from experiments.dash_depth_sweep import run_fold
 

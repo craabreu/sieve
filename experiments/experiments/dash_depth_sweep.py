@@ -17,13 +17,19 @@ sieve's own sweep (cheap enough that N separate runs need no code at all
 
 Deliberately narrower than ``runner.execute``: no LOO (``dash`` doesn't
 implement ``predict_loo_raw``), no MLflow tracking (the whole point of
-this sweep is untracked), no ``tree_stats_load_path``/``save_tree_stats``
-(there is exactly one fit per fold here, already as cheap as it gets).
-``normalization`` *is* honored, the same way ``runner._normalize`` applies
-it. Every other artifact a run directory carries -- ``config.resolved.yaml``,
-``metrics.json``, ``manifest.json``, ``predictions.npz``, the parity
-plot -- is written the same way, via the same runner helpers, so
-``summarize``/``sweep`` read a depth-sweep run exactly like an ordinary one.
+this sweep is untracked), no ``tree_stats_load_path`` (there is exactly
+one fit per fold here). ``save_tree_stats`` *is* honored, but only for
+the one fit that actually happens: the fold's shared fit at
+``max(derived_depths)``, saved once into that deepest depth's own run
+directory. The depth-1 real sub-run is forced *not* to save its own --
+that shallow tree is neither reusable nor mergeable with the deep ones
+(``tree_artifact.merge_node_stats`` needs every shard at the same
+depth). ``normalization`` is honored the same way ``runner._normalize``
+applies it. Every other artifact a run directory carries --
+``config.resolved.yaml``, ``metrics.json``, ``manifest.json``,
+``predictions.npz``, the parity plot -- is written the same way, via the
+same runner helpers, so ``summarize``/``sweep`` read a depth-sweep run
+exactly like an ordinary one.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -145,6 +152,7 @@ def _write_depth_run(
     data_s: float,
     git_info: dict,
     runs_root: Path,
+    save_tree_stats: bool = False,
 ) -> RunResult:
     started = datetime.now(UTC)
 
@@ -213,6 +221,14 @@ def _write_depth_run(
     )
     _savez_run(run_dir / "predictions.npz", test, test_pred)
     _write_plots(run_dir, test, test_pred, run_metrics, cfg)
+    if save_tree_stats:
+        # The fold's one shared fit, at this (deepest) depth -- the run
+        # directory that produced it is its own provenance record, exactly
+        # as in runner._execute_inner. Depth-invariant node stats: a shard
+        # reusable via tree_stats_load_path at any depth, and mergeable
+        # across folds (tree_artifact.merge_node_stats) since every fold
+        # saves at this same depth.
+        predictor.save_model_state(run_dir / "tree_stats.npz")
 
     return RunResult(run_dir=run_dir, metrics=run_metrics, manifest=manifest)
 
@@ -237,6 +253,10 @@ def run_fold(
     instead run for real via the ordinary ``runner.run`` (cheap regardless
     -- max_depth=1 is the fastest case to walk).
 
+    When the config sets ``save_tree_stats``, the fold's one shared fit
+    is saved once, as ``tree_stats.npz`` in the deepest derived depth's
+    own run directory -- see the module docstring.
+
     Skips entirely (returns ``[]``) when ``fold_done`` already holds for
     this fold. ``limit`` mirrors ``run``'s own ``--limit`` (a literal
     row-prefix slice of the store), for a quick, cheap sanity check
@@ -254,12 +274,18 @@ def run_fold(
 
     results: list[RunResult] = []
     for depth in real_depths:
-        cfg = _cfg_for(
-            config_path,
-            store=store,
-            depth=depth,
-            experiment=experiment,
-            batch_id=_batch_id(depth, fold),
+        # Forced save_tree_stats=False regardless of config: a max_depth<2
+        # fit's node stats are a small subset, neither worth reusing nor
+        # mergeable with the deep shards -- see the module docstring.
+        cfg = replace(
+            _cfg_for(
+                config_path,
+                store=store,
+                depth=depth,
+                experiment=experiment,
+                batch_id=_batch_id(depth, fold),
+            ),
+            save_tree_stats=False,
         )
         results.append(
             runner_run(cfg, runs_root=runs_root, allow_dirty=allow_dirty, limit=limit)
@@ -338,6 +364,7 @@ def run_fold(
                 data_s=data_s,
                 git_info=git_info,
                 runs_root=runs_root,
+                save_tree_stats=base_cfg.save_tree_stats and depth == max_depth,
             )
         )
     return results

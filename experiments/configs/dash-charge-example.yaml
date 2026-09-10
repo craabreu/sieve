@@ -11,3 +11,8 @@ target:
 predictor:
   name: dash
   params: {}
+# dash's fit() is a real tree-matching walk -- worth caching. In an
+# ordinary run this writes <run_dir>/tree_stats.npz after fit(); in the
+# dash-depth-sweep it saves once per fold, for the shared deepest fit
+# only (dash_depth_sweep.py). Each is a depth-invariant, mergeable shard.
+save_tree_stats: true
