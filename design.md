@@ -460,10 +460,30 @@ This is the standard prediction-interval variance. Low-support classes flex more
 intended behavior. At $N=1$ it evaluates to $2\,\tilde\sigma^2_{k-1,p(c)}$ — twice the parent's
 shrunk variance — as a continuous limit of one formula rather than a bolted-on rule.
 
-**A stated approximation.** With $\sigma^2$ itself estimated, the exact predictive distribution is
-Student-$t$, not Gaussian. Its log-density is not quadratic, which would destroy the closed form in
-§6.4 and turn a one-line solve into an iteratively reweighted one. The Gaussian with inflated
-variance is taken deliberately, not by oversight.
+**A stated approximation.** The Gaussian §6.4 consumes is not the exact predictive distribution.
+Were a class's own $N$ observations iid normal with both parameters unknown under a flat prior, the
+exact predictive would be $t_{N-1}$ with scale $s\sqrt{1+1/N}$ — which is where the $(1+1/N)$ above
+comes from. Sieve's estimator is not that: the location is a shrunk (and under §4.4 child-averaged)
+mean with $\alpha$ estimated from the same data, $\tilde\sigma^2$ is pooled along the ancestor chain
+so its degrees of freedom are neither $N-1$ nor known, and the matched class is selected
+data-dependently. Student-$t$ is exact for an idealized sub-problem, not for this predictor. Its
+log-density is also not quadratic, which would destroy the closed form in §6.4 and turn a one-line
+solve into an iteratively reweighted one.
+
+**Measured, and the Student-$t$ mechanism is ruled out.** Held-out standardized residuals
+$z=(y-\mu)/\sigma_{\text{pred}}$ are much heavier-tailed than Gaussian — $P(|z|>3)$ is 2.4–2.8× the
+normal's 0.27% — but the excess does *not* shrink with support, as an estimated-$\sigma^2$
+explanation requires. Bucketing by the matched class's own $N$ and rescaling $z$ to unit variance
+within each bucket (a shape test, independent of $\alpha^v$): at $N>10^4$, where $t_{N-1}$ is
+indistinguishable from the Gaussian to five decimals, the empirical excess is still 2.40×, with
+excess kurtosis ~95. The ratio to Gaussian is flat in support (2.4–2.8× from $N=6$ upward), and $t$
+is wrong in both directions — over-predicting tails at low support (0.70× at $N=6$–10) and
+under-predicting at high support — crossing over around $N\approx11$–30. Excess kurtosis in the
+hundreds to thousands is far beyond any $t$ the support values would license ($t_5$ gives 6,
+$t_{10}$ gives 1). The tail excess is therefore misspecification — within-class heterogeneity,
+non-normal residuals — not the price of estimating the variance. Measured on DASH charges, 10 folds,
+depth 6, element-only, on the val split. The Gaussian is still taken deliberately for §6.4's closed
+form; what is *not* established is that a Student-$t$ would fix anything.
 
 ### 4.4 Continuation estimates are derived, never stored
 
@@ -1379,6 +1399,29 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    than reduce it; being the MLE of an idealized model does not settle it. `charge_experiments`'
    `NORMALIZERS` registry and nested-run machinery already apply several schemes to one set of raw
    predictions, so this is a three-way comparison on identical inputs, not three separate runs.
+
+   **Measured: it does not. The ordering is $\sigma^1>\sigma^2>\sigma^0$.** On DASH charges, depth
+   6, element-only with continuation and empirical-Bayes means, 10 folds, all four schemes applied
+   to identical raw predictions from the same saved shards. Post-normalization test MAE: $\sigma^1$
+   with §4.3's shrunk variance 0.015346, DASH's own eq 4 ($\sigma^1$ on the raw, floored $s$)
+   0.015365, $\sigma^2$ 0.015369, unnormalized 0.015799, $\sigma^0$ equal-weighted 0.015895. The two
+   shrunk figures are each at their best $\alpha^v$ over the tested grid, selected on this same test
+   metric — read them as upper bounds on those two schemes, not as honest held-out numbers; item 9
+   gives what they score when $\alpha^v$ is chosen properly, on val, which is worse for both. So
+   $\sigma^1$ beats $\sigma^2$ by $+2.3\times10^{-5}$ (t=4.8, 10/10 folds) and beat it at *every*
+   $\alpha^v$ tested, which is the more robust statement; $\sigma^2$ is statistically
+   indistinguishable from eq 4 (t=−0.9, 5/10). The section's own hedge — "being the MLE of an
+   idealized model does not settle it" — is what the data bears out.
+
+   Two findings around the headline. **$\sigma^0$ is worse than not normalizing at all** on MAE
+   ($-9.6\times10^{-5}$, 0/10 folds), though it improves RMSE like every other scheme; a
+   sum-constraint scheme can therefore degrade the very metric it is judged on, and the DASH paper's
+   own "normalizing reduces the errors slightly" is an RMSE claim. And **§4.3's shrunk variance buys
+   almost nothing over eq 4's floored raw $s$ here** ($+1.9\times10^{-5}$, t=12.9, 10/10 — real,
+   consistent, and 0.12%): only 0.09% of test atoms have a non-positive or NaN raw $s$. Its value is
+   totality (no arbitrary floor constant), not accuracy. See also §4.3's own tail measurement: the
+   $L_2$ objective §6.4 solves is most sensitive to exactly the tails that are 2.4× heavier than it
+   assumes, which is a candidate explanation for $\sigma^2$'s loss but is not established here.
 9. **How $\alpha$ (§4.2) and $\alpha^v$ (§4.3) should be set.** Both admit systematic treatment, by
    different routes, and both are inference-time parameters — so a whole sweep costs one fit.
    - $\alpha$ has a closed form. Sieve's weight $N/(N+\alpha)$ *is* the normal–normal hierarchical
@@ -1422,6 +1465,29 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
      shrunk-mean pass over the whole model, which still contains that node. The residual leakage
      through the ancestor chain is small but biased in exactly the direction that matters here — it
      flatters parent estimates, and so inflates the apparent optimal $\alpha$.
+   - **Measured, $\alpha^v$ half: the calibration criterion works, and it disagrees with
+     post-constraint MAE by ~300×.** On DASH charges, depth 6, element-only, 10 folds, tuning on val
+     and scoring test once. §4.3's distributional claim is satisfiable: $\mathrm{Var}(z)=0.991$ at
+     $\alpha^v\approx30$, and val Gaussian NLL is minimized at $\alpha^v\approx10$ (7/10 folds).
+     Post-constraint test MAE, however, prefers $\alpha^v\approx0.1$ ($\sigma^1$) or $0.3$
+     ($\sigma^2$) — so the MAE-optimal variance model is ~8× overconfident ($\mathrm{Var}(z)=7.9$),
+     and the honest one costs $\approx2\times10^{-4}$ MAE. Following this bullet's own recipe end to
+     end therefore yields a *worse* normalizer than DASH's eq 4: every calibration-chosen variant
+     loses to it on test MAE, 0/10 folds (scalar $\sigma^1$ 0.015545, per-level $\sigma^1$ 0.015453,
+     against eq 4's 0.015365). A per-level $\alpha^v$ vector does beat the best scalar on its own
+     criterion (val NLL −2.568 vs −2.499, coordinate descent iterated to convergence) and recovers
+     about half the MAE loss, but its deep levels pin at the top of the tested grid, so those values
+     are grid-edge rather than interior. The separability claim above is what fails: "then
+     optionally refine jointly on post-constraint MAE" is not optional here, it is where the two
+     criteria have to be traded off. Item 8's ranking is unaffected — $\sigma^1$ beat $\sigma^2$ at
+     every $\alpha^v$ tested, calibrated or not.
+   - **The raw class variance is unusable as an uncertainty, independently of $\alpha^v$.** Its
+     standardized residuals give median $\mathrm{Var}(z)\approx1.2\times10^{26}$ — driven not by
+     §4.1's NaN at $N=1$ (99.9% of atoms have a positive $s$) but by near-zero variances in small
+     homogeneous classes, where $\sigma\to0$ makes $z$ explode. That is a far stronger argument for
+     §4.3 than the NaN case is. It does not harm DASH's eq 4, which reads only *relative* weights
+     within a molecule and is scale-invariant — which is also why gross miscalibration there is
+     compatible with eq 4's winning MAE.
 10. **Whether to restore the coupling $J_{ij}$ dropped in §6.4.** The honest gap in that section is
     one named term, not a vague correlation worry, and the literature fixes its shape: a screened
     Coulomb kernel in $r_{ij}$. The general form is standard constrained GLS,
