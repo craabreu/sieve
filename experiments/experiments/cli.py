@@ -238,6 +238,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         AGGREGATE_FIELDNAMES,
         aggregate_rows,
         build_curve,
+        markdown_report,
         read_runs_from_dirs,
         read_runs_from_mlflow,
     )
@@ -286,6 +287,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         writer.writeheader()
         writer.writerows(agg_rows)
     print(f"wrote {len(agg_rows)} row(s) to {agg_path}")
+
+    report_path = out_dir / "report.md"
+    report_path.write_text(markdown_report(table))
+    print(f"wrote {report_path}")
 
     try:
         from experiments.plots import curve_panel
