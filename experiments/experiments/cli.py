@@ -94,6 +94,20 @@ def _cmd_dash_depth_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_merge_shards(args: argparse.Namespace) -> int:
+    from experiments.dash_depth_sweep import merge_fold_shards
+
+    out = merge_fold_shards(
+        from_experiment=args.from_experiment,
+        depth=args.depth,
+        n_folds=args.n_folds,
+        out_path=args.out,
+        runs_root=DEFAULT_RUNS_ROOT,
+    )
+    print(f"merged shard: {out}")
+    return 0
+
+
 def _cmd_promote_run(args: argparse.Namespace) -> int:
     from experiments.runner import promote_run
 
@@ -357,6 +371,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-dirty", action="store_true", help="run with an uncommitted git tree"
     )
     p_dds.set_defaults(func=_cmd_dash_depth_sweep)
+
+    p_merge = sub.add_parser(
+        "merge-shards",
+        help="merge a depth sweep's per-fold tree_stats.npz shards (all "
+        "saved at one depth) into a single node-stats artifact -- "
+        "fold_node_stats, exact, no re-fit",
+    )
+    p_merge.add_argument(
+        "--from-experiment",
+        default="dash-depth-sweep",
+        help="experiment whose per-fold shards to merge (default: dash-depth-sweep)",
+    )
+    p_merge.add_argument(
+        "--depth",
+        type=int,
+        required=True,
+        help="the max_depth the shards were saved at",
+    )
+    p_merge.add_argument(
+        "--n-folds", type=int, default=10, help="number of fold shards (default: 10)"
+    )
+    p_merge.add_argument(
+        "--out", type=Path, required=True, help="output .npz path for the merged shard"
+    )
+    p_merge.set_defaults(func=_cmd_merge_shards)
 
     p_promote = sub.add_parser(
         "promote-run",

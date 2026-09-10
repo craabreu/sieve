@@ -83,3 +83,72 @@ export -f run_fold
 export PYTHON DEPTHS EXPERIMENT
 
 seq 1 "$N_FOLDS" | xargs -P "$PARALLEL_JOBS" -n 1 bash -c 'run_fold "$1"' --
+
+# --- Stage 3: normalize the deepest fit, per fold -----------------------
+#
+# DASH's own published post-hoc charge conservation (normalize.py's
+# std_weighted, the paper's eq. 4) applied to each fold's depth-16
+# prediction. `tree_stats_load_path` loads that fold's own saved shard
+# (Stage 2), so this is predict-only -- no re-fit -- and `normalization`
+# re-scores against the sum constraint. One process per fold, idempotent
+# (skip a fold once its own run directory exists).
+NORM_EXPERIMENT=dash-depth16-std-weighted
+
+normalize_fold() {
+  local fold=$1
+  if compgen -G "experiments/runs/$NORM_EXPERIMENT/f${fold}__*/metrics.json" \
+    > /dev/null; then
+    echo "skip normalize f${fold} (already done)"
+    return 0
+  fi
+  local shard
+  shard=$(ls -t experiments/runs/"$EXPERIMENT"/d16-f"${fold}"__*/tree_stats.npz \
+    | head -1)
+  "$PYTHON" -m experiments run \
+    --config experiments/configs/dash-charge-example.yaml \
+    --set data.store=dash-molecules-10fold-"$fold" \
+    --set predictor.params.max_depth=16 \
+    --set tree_stats_load_path="$shard" \
+    --set normalization=std_weighted \
+    --set run.experiment="$NORM_EXPERIMENT" \
+    --set run.batch_id=f"$fold"
+}
+export -f normalize_fold
+export NORM_EXPERIMENT
+
+seq 1 "$N_FOLDS" | xargs -P "$PARALLEL_JOBS" -n 1 bash -c 'normalize_fold "$1"' --
+
+# --- Stage 4: merge the 10 shards -------------------------------------------
+#
+# fold_node_stats over the 10 depth-16 shards -- exact, no re-fit. The
+# folds partition the corpus by molecule and each shard is train-only, so
+# the merged result is one fit on the whole training set. Idempotent
+# (skips if the output already exists).
+MERGED_SHARD=experiments/results/dash-merged/tree_stats.npz
+"$PYTHON" -m experiments merge-shards \
+  --from-experiment "$EXPERIMENT" \
+  --depth 16 \
+  --n-folds "$N_FOLDS" \
+  --out "$MERGED_SHARD"
+
+# --- Stage 5: the merged full-corpus model, normalized --------------------
+#
+# The merged shard predicting the *original* store's own test split
+# (~103k conformers) -- genuinely held out, since every fold's shard was
+# fit on train molecules only and the folds partition by molecule.
+# Predict-only (tree_stats_load_path), std_weighted normalized.
+# Idempotent (skip if the run directory exists).
+MERGED_EXPERIMENT=dash-merged-std-weighted
+if compgen -G "experiments/runs/$MERGED_EXPERIMENT/merged__*/metrics.json" \
+  > /dev/null; then
+  echo "skip merged run (already done)"
+else
+  "$PYTHON" -m experiments run \
+    --config experiments/configs/dash-charge-example.yaml \
+    --set data.store=dash-molecules \
+    --set predictor.params.max_depth=16 \
+    --set tree_stats_load_path="$MERGED_SHARD" \
+    --set normalization=std_weighted \
+    --set run.experiment="$MERGED_EXPERIMENT" \
+    --set run.batch_id=merged
+fi

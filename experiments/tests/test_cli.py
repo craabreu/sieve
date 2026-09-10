@@ -297,6 +297,28 @@ def test_build_parser_dash_depth_sweep_accepts_overrides():
     assert args.allow_dirty is True
 
 
+def test_build_parser_merge_shards_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["merge-shards", "--depth", "16", "--out", "merged.npz"])
+    assert args.from_experiment == "dash-depth-sweep"
+    assert args.depth == 16
+    assert args.n_folds == 10
+    assert str(args.out) == "merged.npz"
+
+
+def test_build_parser_merge_shards_requires_depth_and_out():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["merge-shards", "--out", "merged.npz"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["merge-shards", "--depth", "16"])
+
+
 def test_summarize_renders_a_non_finite_metric_as_empty(tmp_path, monkeypatch):
     """metrics.json stores NaN for an undefined r2. The shared reader drops
     non-finite values, so the cell is empty rather than the literal "nan"

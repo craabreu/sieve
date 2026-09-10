@@ -397,3 +397,59 @@ def run_sweep(
             )
         )
     return results
+
+
+def _fold_shard_path(
+    runs_root: Path, from_experiment: str, depth: int, fold: int
+) -> Path:
+    """The ``tree_stats.npz`` a depth sweep saved for one fold at ``depth``
+    -- newest match if that fold was ever re-run. Raises if absent."""
+    matches = sorted(
+        (runs_root / from_experiment).glob(
+            f"{_batch_id(depth, fold)}__*/tree_stats.npz"
+        )
+    )
+    if not matches:
+        raise FileNotFoundError(
+            f"no tree_stats.npz for fold {fold} at depth {depth} under "
+            f"{runs_root / from_experiment} -- run the sweep with "
+            "save_tree_stats set first"
+        )
+    return matches[-1]
+
+
+def merge_fold_shards(
+    *,
+    from_experiment: str,
+    depth: int,
+    n_folds: int,
+    out_path: str | Path,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+) -> Path:
+    """Merge a depth sweep's per-fold ``tree_stats.npz`` shards (all at
+    ``depth``) into one node-stats artifact at ``out_path``, via
+    ``tree_artifact.fold_node_stats`` -- exact, no re-fit. A
+    ``partition-store`` split partitions the corpus by molecule and each
+    shard was fit train-only, so the merged result is exactly what one
+    fit on the union of every fold's train split would produce.
+
+    Idempotent: returns ``out_path`` unchanged if it already exists."""
+    from experiments.tree_artifact import (
+        fold_node_stats,
+        load_node_stats,
+        save_node_stats,
+    )
+
+    out_path = Path(out_path)
+    if out_path.exists():
+        logger.info("merged shard %s already exists; skipping", out_path)
+        return out_path
+
+    shard_paths = [
+        _fold_shard_path(runs_root, from_experiment, depth, fold)
+        for fold in range(1, n_folds + 1)
+    ]
+    merged = fold_node_stats(load_node_stats(p) for p in shard_paths)
+    save_node_stats(merged, out_path)
+    logger.info("merged %d shards -> %s", len(shard_paths), out_path)
+    return out_path
