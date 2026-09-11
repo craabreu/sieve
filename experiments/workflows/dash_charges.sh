@@ -170,21 +170,20 @@ fi
 # (`--label`), and the stage is idempotent as a whole: it skips once
 # every depth already has a metrics.json.
 #
-# Depths run past Stage 2's 16, to 20. Nothing in the predictor caps
-# max_depth -- it is handed straight to DASH-tree's own match_new_atom --
-# so 18 and 20 are cheap to ask for, being derived from the same walk as
-# every other depth. Expect them to reproduce 16 exactly once every
-# path has bottomed out in the published tree: the fold curve is already
-# identical to five decimals at 14 and 16 (0.019743, 0.019742). A pair
-# of duplicate points is the evidence that the tree, not the sweep, is
-# what ends the curve.
+# The same depth list as Stage 2, which is also as far as the published
+# tree goes: DASH's tree was built to depth 16, so a deeper request
+# cannot lengthen a path and would only re-report depth 16 under another
+# name. The fold curve already shows the paths bottoming out -- 0.019743
+# at depth 14 against 0.019742 at 16. Sharing Stage 2's list is also
+# what makes the fold and full-corpus curves comparable point for point,
+# which is the reason to run this stage against the very corpus the
+# folds partition.
 #
 # One process, single-threaded. This is the heaviest stage in the file
-# -- one DASH fit plus one walk at depth 20 over ~43M atoms -- and its
-# footprint is unmeasured at this scale (a single fold peaked around
-# 8GB).
+# -- one DASH fit plus one walk over ~43M atoms -- and its footprint is
+# unmeasured at this scale (a single fold peaked around 8GB).
 FULL_EXPERIMENT=dash-full-depth-sweep
-FULL_DEPTHS=1,2,4,6,8,10,12,14,16,18,20
+FULL_DEPTHS=1,2,4,6,8,10,12,14,16
 
 "$PYTHON" -m experiments dash-depth-sweep \
   --config experiments/configs/dash-charge-example.yaml \
