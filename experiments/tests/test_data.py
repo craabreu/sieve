@@ -143,3 +143,41 @@ def test_ids_length_mismatch_raises():
             atom_property=mset.atom_property,
             ids={"conf_id": ["a", "b"]},
         )
+
+
+def test_concat_molecule_sets_preserves_order_and_ids():
+    from experiments.data import concat_molecule_sets
+
+    a = synthetic_molecule_set(n_mol=3, seed=0)
+    b = synthetic_molecule_set(n_mol=2, seed=1)
+
+    combined = concat_molecule_sets([a, b])
+
+    assert combined.n_conformers == a.n_conformers + b.n_conformers
+    np.testing.assert_array_equal(
+        combined.atom_target, np.concatenate([a.atom_target, b.atom_target])
+    )
+    assert list(combined.ids) == list(a.ids)
+    for key in a.ids:
+        assert combined.ids[key] == a.ids[key] + b.ids[key]
+    np.testing.assert_array_equal(
+        combined.molecule_value,
+        np.concatenate([a.molecule_value, b.molecule_value]),
+    )
+
+
+def test_concat_molecule_sets_rejects_mismatched_atom_property():
+    from experiments.data import concat_molecule_sets
+
+    a = synthetic_molecule_set(n_mol=2, seed=0, atom_property="MBIScharge")
+    b = synthetic_molecule_set(n_mol=2, seed=1, atom_property="alpha")
+
+    with pytest.raises(ValueError, match="atom_property"):
+        concat_molecule_sets([a, b])
+
+
+def test_concat_molecule_sets_rejects_empty_list():
+    from experiments.data import concat_molecule_sets
+
+    with pytest.raises(ValueError, match="at least one"):
+        concat_molecule_sets([])

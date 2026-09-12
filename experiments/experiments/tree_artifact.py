@@ -116,42 +116,64 @@ def merge_node_stats(a: TreeNodeStats, b: TreeNodeStats) -> TreeNodeStats:
     node populated only in ``a`` or only in ``b`` passes through
     unchanged; a node populated in both gets its ``(count, mean, std)``
     combined exactly, no remapping needed at all.
+
+    Vectorized (``np.unique(..., axis=0)`` plus a segmented Chan
+    combination), not the row-by-row Python ``dict`` this used to be: a CV
+    scheme that merges shards approaching the whole corpus's ~7M populated
+    nodes made the dict form (each key a boxed Python tuple, ~1.5GB of
+    object overhead alone at that size) the dominant cost of assembling a
+    training model. The arithmetic is unchanged -- same formula, applied
+    once per key -- so results agree with the old implementation to
+    floating-point noise, not just in shape.
     """
-    combined: dict[PathKey, tuple[int, float, float]] = {}
-    for branch_idx, node_id, count, mean, std in zip(
-        a.branch_idx, a.node_id, a.count, a.mean, a.std, strict=True
-    ):
-        combined[(int(branch_idx), int(node_id))] = (
-            int(count),
-            float(mean),
-            float(std) ** 2,
-        )
+    keys_a = np.stack([a.branch_idx, a.node_id], axis=1)
+    keys_b = np.stack([b.branch_idx, b.node_id], axis=1)
+    keys = np.concatenate([keys_a, keys_b], axis=0)
+    uniq_keys, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.ravel()
+    n_a = len(a.branch_idx)
+    inv_a, inv_b = inverse[:n_a], inverse[n_a:]
 
-    for branch_idx, node_id, n_b, mean_b, std_b in zip(
-        b.branch_idx, b.node_id, b.count, b.mean, b.std, strict=True
-    ):
-        key = (int(branch_idx), int(node_id))
-        n_b, mean_b, var_b = int(n_b), float(mean_b), float(std_b) ** 2
-        if key in combined:
-            n_a, mean_a, var_a = combined[key]
-            n = n_a + n_b
-            w_a, w_b = n_a / n, n_b / n
-            delta = mean_b - mean_a
-            combined[key] = (
-                n,
-                mean_a + w_b * delta,
-                w_a * var_a + w_b * var_b + w_a * w_b * delta * delta,
-            )
-        else:
-            combined[key] = (n_b, mean_b, var_b)
+    n_out = len(uniq_keys)
+    count = np.zeros(n_out, dtype=np.float64)
+    mean = np.zeros(n_out, dtype=np.float64)
+    var = np.zeros(n_out, dtype=np.float64)
+    present_a = np.zeros(n_out, dtype=bool)
 
-    keys = list(combined)
+    # a's own keys are unique among themselves (one row per populated node),
+    # so this fancy assignment never has two source rows racing for the same
+    # destination slot -- same for every indexed assignment below.
+    count[inv_a] = a.count
+    mean[inv_a] = a.mean
+    var[inv_a] = a.std.astype(np.float64) ** 2
+    present_a[inv_a] = True
+
+    overlap = present_a[inv_b]
+    idx_overlap = inv_b[overlap]
+    n_b_ov = b.count[overlap].astype(np.float64)
+    mean_b_ov = b.mean[overlap]
+    var_b_ov = b.std[overlap].astype(np.float64) ** 2
+
+    n_a_ov = count[idx_overlap]
+    n_tot = n_a_ov + n_b_ov
+    w_a = n_a_ov / n_tot
+    w_b = n_b_ov / n_tot
+    delta = mean_b_ov - mean[idx_overlap]
+    mean[idx_overlap] = mean[idx_overlap] + w_b * delta
+    var[idx_overlap] = w_a * var[idx_overlap] + w_b * var_b_ov + w_a * w_b * delta * delta
+    count[idx_overlap] = n_tot
+
+    idx_new = inv_b[~overlap]
+    count[idx_new] = b.count[~overlap]
+    mean[idx_new] = b.mean[~overlap]
+    var[idx_new] = b.std[~overlap].astype(np.float64) ** 2
+
     return TreeNodeStats(
-        branch_idx=np.array([k[0] for k in keys], dtype=np.int64),
-        node_id=np.array([k[1] for k in keys], dtype=np.int64),
-        mean=np.array([combined[k][1] for k in keys], dtype=np.float64),
-        std=np.sqrt(np.array([combined[k][2] for k in keys], dtype=np.float64)),
-        count=np.array([combined[k][0] for k in keys], dtype=np.int64),
+        branch_idx=uniq_keys[:, 0].astype(np.int64),
+        node_id=uniq_keys[:, 1].astype(np.int64),
+        mean=mean,
+        std=np.sqrt(var),
+        count=count.astype(np.int64),
     )
 
 
@@ -209,12 +231,33 @@ def apply_node_stats(
     *,
     mean_column: str = "dash_charge_mean",
     std_column: str = "dash_charge_std",
+    reset_existing: bool = False,
 ) -> tuple[LiteralTreeChargeProperties, LiteralTreeChargeProperties]:
     """Write ``stats``'s mean/std onto ``tree.data_storage`` (one column
     each, indexed by ``node_id`` -- a node with no entry stays ``NaN``,
     exactly ``DASHTree.get_property_noNAN``'s own missing-value semantics),
     grouped by branch. Returns the ``(mean_props, std_props)``
-    ``predict_via_data_storage_walk`` needs."""
+    ``predict_via_data_storage_walk`` needs.
+
+    ``reset_existing=True`` first NaNs out both columns across *every*
+    branch in ``tree.data_storage`` that already carries them, before
+    writing this call's own ``stats``. Needed whenever one long-lived
+    ``DASHTree`` is reused across several ``apply_node_stats`` calls (a CV
+    scheme merging shards into a fresh model per sample, without re-reading
+    the published tree from disk each time): the loop below only iterates
+    branches populated in *this* call's own ``stats``, so a branch a
+    previous call populated and this one does not would otherwise silently
+    keep the previous call's values -- stale-state contamination across
+    samples, not a genuine "unpopulated" NaN. A one-time ``fit()`` on a
+    freshly loaded tree has nothing to reset, so this is a no-op there.
+    """
+    if reset_existing:
+        for df in tree.data_storage.values():
+            if mean_column in df.columns:
+                df[mean_column] = np.nan
+            if std_column in df.columns:
+                df[std_column] = np.nan
+
     by_branch: dict[int, list[int]] = {}
     for i, branch_idx in enumerate(stats.branch_idx):
         by_branch.setdefault(int(branch_idx), []).append(i)

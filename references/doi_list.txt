@@ -56,3 +56,6 @@ Mobley2018SMIRNOFF              10.1021/acs.jctc.8b00640
 Verstraelen2016MBIS             10.1021/acs.jctc.6b00456
 Mikkelsen2025MBISMultipole      10.1021/acs.jctc.4c01297
 Isert2022QMugs                  10.1038/s41597-022-01390-7
+
+# --- ML model comparison protocol (repeated CV + Tukey HSD, this repo's CV redesign) ---
+AshWognum2025ModelComparison    10.1021/acs.jcim.5c01609

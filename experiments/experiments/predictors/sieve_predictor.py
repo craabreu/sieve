@@ -34,6 +34,7 @@ per-node stats table.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -45,6 +46,41 @@ from experiments.predictors import register
 from experiments.predictors.base import Prediction, RawPrediction
 
 DEFAULT_ATTRIBUTES = ("element", "degree", "formal_charge", "aromatic", "num_h")
+
+
+def save_codes(
+    codes: Mapping[str, Mapping[str, int]],
+    edge_codes: Mapping[str, Mapping[str, int]],
+    path: str | Path,
+) -> None:
+    """Persist ``build_codes``'s own return value (two plain ``dict[str,
+    dict[str, int]]``, already JSON-shaped) as one JSON file.
+
+    Exists so a CV shard fit can be handed a vocabulary frozen over the
+    *whole* train split rather than discovering its own from a ~1/N-sized
+    shard: ``SieveConfig.attribute_codes`` is a dense rank over whatever
+    values a fit's own training molecules happened to contain
+    (``build_codes``'s own docstring), and it feeds ``schema_version``
+    (``sieve.config.SieveConfig.schema_version``), which
+    ``check_mergeable`` compares exactly -- a shard that never saw one
+    element gets a shifted table and refuses to merge with its siblings.
+    See ``load_codes``/``SievePredictor.codes_path``.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "attribute_codes": {k: dict(v) for k, v in codes.items()},
+        "edge_codes": {k: dict(v) for k, v in edge_codes.items()},
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def load_codes(
+    path: str | Path,
+) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+    """Inverse of ``save_codes``."""
+    payload = json.loads(Path(path).read_text())
+    return payload["attribute_codes"], payload["edge_codes"]
 
 
 def _build_config(
@@ -61,9 +97,11 @@ def _build_config(
     class_estimator: str = "pooled",
     shrinkage_weight: str | None = None,
     n_jobs: int | None = None,
+    codes: Mapping[str, Mapping[str, int]] | None = None,
+    edge_codes: Mapping[str, Mapping[str, int]] | None = None,
 ) -> Any:
-    """Learn ``attribute_codes``/``edge_codes`` from the training corpus and
-    freeze them into a ``SieveConfig``.
+    """Learn (or accept already-frozen) ``attribute_codes``/``edge_codes``
+    and freeze them into a ``SieveConfig``.
 
     ``attribute_levels`` defaults to ``None``, meaning "one level, every
     attribute in ``attributes``" -- this series' original, still-default
@@ -81,15 +119,22 @@ def _build_config(
     ``n_jobs`` parallelizes ``build_codes``'s own vocabulary-discovery pass
     -- profiling showed this and ``from_rdkit`` (``_batch_for``, below) are
     ~96% of a real fit, against ~4% for ``sieve.fit`` itself.
+
+    ``codes``/``edge_codes``, when both given, are used verbatim and
+    ``build_codes`` is never called -- the CV shard-fit seam: a vocabulary
+    frozen once over the whole train split (``load_codes``), so every
+    shard's ``SieveConfig`` shares one ``schema_version`` and is therefore
+    mergeable with the others (see ``save_codes``'s own docstring).
     """
     from sieve.config import SieveConfig
     from sieve.io.rdkit_adapter import build_codes
 
     levels = attribute_levels if attribute_levels is not None else (attributes,)
     flat = [name for group in levels for name in group]
-    codes, edge_codes = build_codes(
-        train_mols, flat, edge_attributes=edge_attributes, n_jobs=n_jobs
-    )
+    if codes is None or edge_codes is None:
+        codes, edge_codes = build_codes(
+            train_mols, flat, edge_attributes=edge_attributes, n_jobs=n_jobs
+        )
     return SieveConfig(
         target_dim=target_dim,
         attribute_levels=levels,
@@ -159,6 +204,18 @@ class SievePredictor:
     continuation (a deliberate scope cut, not a structural one -- see
     ``sieve.predict._search``'s own docstring) and would otherwise raise
     only once ``predict_loo_raw`` is actually called, ~38% of a run late.
+
+    ``codes_path``, when set, skips ``_build_config``'s own
+    ``build_codes`` vocabulary-discovery pass and loads a frozen
+    ``attribute_codes``/``edge_codes`` from that path instead (see
+    ``save_codes``/``load_codes``). This is the CV shard-fit seam: a
+    vocabulary discovered on a ~1/N-sized shard is a dense rank over only
+    what *that shard* happened to contain, so two shards' configs can
+    disagree on the meaning of the same integer code and refuse to merge
+    (``sieve.config.check_mergeable`` compares ``schema_version``, which
+    ``attribute_codes`` feeds) -- freezing the vocabulary once, over the
+    whole train split, before any shard is fit, is what makes the shards
+    mergeable at all.
     """
 
     name: ClassVar[str] = "sieve"
@@ -177,6 +234,7 @@ class SievePredictor:
         shrinkage_weight: str | None = None,
         n_jobs: int | None = None,
         report_loo: bool = False,
+        codes_path: str | None = None,
     ) -> None:
         if report_loo and (
             class_estimator != "pooled" or shrinkage_weight not in (None, "count")
@@ -201,6 +259,7 @@ class SievePredictor:
         self.shrinkage_weight = shrinkage_weight
         self.n_jobs = n_jobs
         self.report_loo = report_loo
+        self.codes_path = codes_path
         self._config: Any = None
         self._model: Any = None
         # Accumulated wall time spent in build_codes/from_rdkit (featurization)
@@ -223,6 +282,9 @@ class SievePredictor:
         import sieve
 
         self.last_featurize_s = 0.0
+        codes = edge_codes = None
+        if self.codes_path is not None:
+            codes, edge_codes = load_codes(self.codes_path)
         t0 = time.perf_counter()
         self._config = _build_config(
             train.mols,
@@ -237,6 +299,8 @@ class SievePredictor:
             class_estimator=self.class_estimator,
             shrinkage_weight=self.shrinkage_weight,
             n_jobs=self.n_jobs,
+            codes=codes,
+            edge_codes=edge_codes,
         )
         batch = _batch_for(
             train.mols,
@@ -253,19 +317,50 @@ class SievePredictor:
             raise RuntimeError(
                 "fit (or load_model_state) must be called before predict_raw"
             )
-        import time
+        batch = self.build_predict_batch(test.mols)
+        return self.predict_raw_from_batch(batch)
 
-        import sieve
+    def build_predict_batch(self, mols: list[Any]) -> Any:
+        """Featurize ``mols`` under this predictor's own fitted/loaded
+        config, with no target column -- the half of ``predict_raw`` worth
+        caching separately. A ``NodeBatch`` carries no depth information at
+        all (``sieve.predict._search`` calls ``refine(batch,
+        model.config)`` itself), so one batch, built once, is valid for
+        ``predict_raw_from_batch`` against *any* model sharing this
+        predictor's own ``attribute_codes``/``edge_codes`` -- exactly what
+        a CV scheme's frozen-vocabulary shards guarantee across depths
+        (``codes_path``). Without this seam a depth sweep re-featurizes
+        the same eval molecules once per depth, ~96% of a fit by this
+        predictor's own profiling (see the class docstring)."""
+        if self._config is None:
+            raise RuntimeError(
+                "fit (or load_model_state) must be called before "
+                "build_predict_batch"
+            )
+        import time
 
         t0 = time.perf_counter()
         batch = _batch_for(
-            test.mols,
+            mols,
             self._config,
-            atom_property=test.atom_property,
+            atom_property="",  # unread: with_target=False
             with_target=False,
             n_jobs=self.n_jobs,
         )
         self.last_featurize_s += time.perf_counter() - t0
+        return batch
+
+    def predict_raw_from_batch(self, batch: Any) -> RawPrediction:
+        """``predict_raw``'s own scoring half, given a batch already built
+        by ``build_predict_batch`` -- see that method's own docstring for
+        why one batch may be reused across every depth's own model."""
+        if self._model is None:
+            raise RuntimeError(
+                "fit (or load_model_state) must be called before "
+                "predict_raw_from_batch"
+            )
+        import sieve
+
         detailed = sieve.predict_detailed(self._model, batch)
         atom_value = np.asarray(detailed.value, dtype=np.float64)[:, 0]
         atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
@@ -329,6 +424,31 @@ class SievePredictor:
 
         self._model = sieve.SieveModel.load(path)
         self._config = self._model.config
+
+    @staticmethod
+    def merge_states(paths: list[str | Path], out: str | Path) -> None:
+        """Merge N saved ``SieveModel`` shards into one, via
+        ``sieve.merge.fold`` -- exact, no re-fit (design.md 5).
+
+        Every shard must share one ``schema_version``
+        (``sieve.config.check_mergeable``, raised loudly on mismatch) --
+        which is exactly what a frozen, whole-train vocabulary
+        (``codes_path``) is for: shards fit independently on disjoint
+        molecule sets would otherwise each discover their own
+        ``attribute_codes`` and refuse to merge. The generic CLI seam
+        (``experiments merge-states``) discovers this method by name on
+        whichever predictor it is asked to merge, mirroring
+        ``save_model_state``/``load_model_state``'s own duck-typed
+        convention (predictors/base.py).
+        """
+        import sieve
+        from sieve.merge import fold
+
+        if not paths:
+            raise ValueError("merge_states needs at least one shard path")
+        models = [sieve.SieveModel.load(p) for p in paths]
+        merged = fold(models, models[0].config)
+        merged.save(out)
 
 
 def _build(params: Mapping[str, Any]) -> SievePredictor:

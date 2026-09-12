@@ -275,3 +275,38 @@ def test_apply_node_stats_from_loaded_stats_matches_direct_apply(tmp_path):
     # isnan rather than dataclass equality.
     assert np.isnan(direct_mean_props.fallback_charge)
     assert np.isnan(loaded_mean_props.fallback_charge)
+
+
+def test_apply_node_stats_reset_existing_clears_a_branch_absent_from_new_stats():
+    """The stale-state contamination trap: a branch populated by an
+    earlier call and absent from this one's own stats must not silently
+    keep the earlier call's values when reset_existing=True."""
+    from experiments.tree_artifact import apply_node_stats, compute_node_stats
+
+    tree = _FakeTree({0: 3, 1: 2})
+
+    first = compute_node_stats([[(0, 1)], [(1, 0)]], np.array([0.2, 0.9]))
+    mean_props, _ = apply_node_stats(tree, first)
+    assert tree.data_storage[1].loc[0, mean_props.charge_column] == pytest.approx(0.9)
+
+    # Second call's own stats never touch branch 1 at all.
+    second = compute_node_stats([[(0, 1)]], np.array([0.5]))
+    mean_props2, _ = apply_node_stats(tree, second, reset_existing=True)
+
+    assert tree.data_storage[0].loc[1, mean_props2.charge_column] == pytest.approx(0.5)
+    assert pd.isna(tree.data_storage[1].loc[0, mean_props2.charge_column])
+
+
+def test_apply_node_stats_without_reset_existing_keeps_the_stale_value():
+    """The default (reset_existing=False) preserves today's behavior
+    exactly -- a regression guard, not an endorsement."""
+    from experiments.tree_artifact import apply_node_stats, compute_node_stats
+
+    tree = _FakeTree({0: 3, 1: 2})
+    first = compute_node_stats([[(1, 0)]], np.array([0.9]))
+    apply_node_stats(tree, first)
+
+    second = compute_node_stats([[(0, 1)]], np.array([0.5]))
+    mean_props2, _ = apply_node_stats(tree, second)
+
+    assert tree.data_storage[1].loc[0, mean_props2.charge_column] == pytest.approx(0.9)

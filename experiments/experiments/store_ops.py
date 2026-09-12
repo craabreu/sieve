@@ -16,6 +16,25 @@ import numpy as np
 
 logger = logging.getLogger("experiments")
 
+_KNOWN_SPLIT_VALUES = ("train", "val", "test")
+
+
+def _check_known_split_values(keys_by_split: dict[str, list[str]], *, source: str) -> None:
+    """Both ``subsample_store`` and ``partition_store`` iterate the literal
+    tuple ``("train", "val", "test")`` -- a molecule whose own ``split``
+    value is anything else (a ``shard`` id, a typo, a store carrying the CV
+    redesign's own ``shard`` column under the wrong name) is then silently
+    dropped from the destination store with no error and no count mismatch
+    to notice it by. Called right after ``keys_by_split`` is built, before
+    any row is selected."""
+    extra = sorted(set(keys_by_split) - set(_KNOWN_SPLIT_VALUES))
+    if extra:
+        raise ValueError(
+            f"{source!r}'s own 'split' column has value(s) {extra} outside "
+            f"{_KNOWN_SPLIT_VALUES} -- every molecule with one of them would "
+            f"be silently dropped from the destination store(s)"
+        )
+
 
 def subsample_store(
     source_store: str,
@@ -103,6 +122,7 @@ def subsample_store(
     keys_by_split: dict[str, list[str]] = {}
     for key, positions in positions_by_key.items():
         keys_by_split.setdefault(split_col[positions[0]], []).append(str(key))
+    _check_known_split_values(keys_by_split, source=source_store)
     total_molecules = len(positions_by_key)
 
     # Every split's own per-store molecule count, resolved up front so that
@@ -247,6 +267,7 @@ def partition_store(
     keys_by_split: dict[str, list[str]] = {}
     for key, positions in positions_by_key.items():
         keys_by_split.setdefault(split_col[positions[0]], []).append(str(key))
+    _check_known_split_values(keys_by_split, source=source_store)
 
     rng = np.random.default_rng(seed)
     selected_positions: list[list[np.ndarray]] = [[] for _ in range(n_stores)]

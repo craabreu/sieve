@@ -1,6 +1,22 @@
+> **Superseded (2026-09-12, commit `d7ff3f1`).** This spec's own permissive-
+> then-refining curation scheme (a Sieve-prediction-informed second filter on
+> top of a cheap first pass) was abandoned before implementation once the DASH
+> paper's own methods text turned up: the authors already discard a conformer
+> whose MBIS charges disagree with its siblings by more than 0.4 e, at fitting
+> time, once per model. `prepare_dash.curate_conformers` (commit `d7ff3f1`)
+> reproduces that same 0.4 e sibling-pairwise rule instead, but moved to parse
+> time -- computed once, before the split, so every downstream fold/shard
+> inherits a population that has already had it applied, rather than each one
+> re-deriving its own filter. See that function's own docstring for the exact
+> rule (pairwise agreement, not "all pairs must agree") and
+> `experiments/tests/test_prepare_dash.py` for its test coverage. Kept below
+> for history -- the literature findings on MBIS non-convergence this spec
+> recorded (design.md's own citation trail) remain accurate and motivated the
+> reproduction, even though the bespoke detector built here did not ship.
+
 # Design: curating anomalous MBIS records in the DASH-charges store
 
-**Status:** draft, awaiting review
+**Status:** superseded -- see the notice above
 **Date:** 2026-09-11
 **Scope:** one statistic retained during parsing plus one new annotation stage,
 both in `experiments/experiments/prepare_dash.py`; three new columns in

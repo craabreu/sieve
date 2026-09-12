@@ -8,9 +8,9 @@ an earlier run's own saved model state -- see
 ``ExperimentCfg.tree_stats_load_path``'s own docstring. `run.batch_id`
 groups several runs launched together as one sweep into a shared,
 greppable run-directory prefix -- see ``RunCfg.batch_id``'s own
-docstring. There is exactly one valid split column (`split` -- this
-series builds no size-biased second split, per the design spec's
-"Out of scope" list)."""
+docstring. There are two valid split columns: `split` (train/val/test) and
+`shard` (a CV driver's own per-shard partition of train -- see
+``VALID_SPLIT_COLUMNS``'s own docstring)."""
 
 from __future__ import annotations
 
@@ -24,7 +24,13 @@ import yaml
 
 from experiments.normalize import NORMALIZERS
 
-VALID_SPLIT_COLUMNS = ("split",)
+VALID_SPLIT_COLUMNS = ("split", "shard")
+"""``split`` is the original train/val/test column. ``shard`` is the CV
+redesign's own column (prepare_dash.assign_splits): ``s00``..``s{N-1}`` on
+train rows, the row's own split name (``"test"``, or ``"val"`` when a store
+still carries one) otherwise -- a CV driver selects one shard at a time via
+``data.train_split="s00"`` against this column, rather than a whole
+``"train"`` mask."""
 
 _RUN_KEYS = {"experiment", "seed", "tags", "batch_id"}
 _DATA_KEYS = {"store", "split_column", "train_split", "val_split", "eval_split"}

@@ -795,3 +795,42 @@ def test_to_united_atom_store_accepts_a_configured_atom_property(tmp_path):
     ua_mol = blob_to_mol(ua["mol"].iloc[0])
     assert ua_mol.GetNumAtoms() == 2  # just C and O
     assert all(a.HasProp("alpha") for a in ua_mol.GetAtoms())
+
+
+def test_subsample_store_rejects_an_unknown_split_value(tmp_path):
+    import pandas as pd
+    import pytest
+
+    _synthetic_split_store(tmp_path, n_train=10, n_val=2, n_test=2)
+    molecules_path = tmp_path / "source-store" / "molecules.parquet"
+    df = pd.read_parquet(molecules_path)
+    df.loc[0, "split"] = "s00"  # a shard id, never a legal `split` value
+    df.to_parquet(molecules_path)
+
+    from experiments.store_ops import subsample_store
+
+    with pytest.raises(ValueError, match="s00"):
+        subsample_store(
+            "source-store",
+            "dest-store",
+            stores_root=tmp_path,
+            n_molecules=5,
+            conformers_per_molecule=1,
+            seed=0,
+        )
+
+
+def test_partition_store_rejects_an_unknown_split_value(tmp_path):
+    import pandas as pd
+    import pytest
+
+    _synthetic_split_store(tmp_path, n_train=10, n_val=2, n_test=2)
+    molecules_path = tmp_path / "source-store" / "molecules.parquet"
+    df = pd.read_parquet(molecules_path)
+    df.loc[0, "split"] = "s00"
+    df.to_parquet(molecules_path)
+
+    from experiments.store_ops import partition_store
+
+    with pytest.raises(ValueError, match="s00"):
+        partition_store("source-store", "dest", stores_root=tmp_path, n_stores=2)

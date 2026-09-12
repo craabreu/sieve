@@ -367,3 +367,229 @@ def test_sieve_fits_a_non_charge_property():
     pred = predictor.predict(mset)
     assert pred.atom_value.shape == (mset.n_atoms,)
     assert np.isfinite(pred.atom_value).all()
+
+
+def test_save_and_load_codes_round_trip(tmp_path):
+    from experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+        load_codes,
+        save_codes,
+    )
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    config = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+
+    path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, path)
+    codes, edge_codes = load_codes(path)
+
+    assert codes == {k: dict(v) for k, v in config.attribute_codes.items()}
+    assert edge_codes == {k: dict(v) for k, v in config.edge_codes.items()}
+
+
+def test_build_config_with_frozen_codes_skips_build_codes(monkeypatch):
+    """codes/edge_codes given -> build_codes must not be called at all,
+    which is the whole point (a shard must not discover its own, shifted
+    vocabulary)."""
+    from experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+    )
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    frozen_codes = {"element": {"C": 0, "O": 1, "N": 2, "Cl": 3}}
+    frozen_edge_codes = {"bond_type": {"SINGLE": 0, "DOUBLE": 1}}
+
+    def _boom(*a, **k):
+        raise AssertionError("build_codes must not be called with frozen codes")
+
+    monkeypatch.setattr("sieve.io.rdkit_adapter.build_codes", _boom)
+
+    config = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+        codes=frozen_codes,
+        edge_codes=frozen_edge_codes,
+    )
+    assert dict(config.attribute_codes["element"]) == frozen_codes["element"]
+
+
+def test_codes_path_freezes_the_vocabulary_across_disjoint_shards(tmp_path):
+    """The blocking bug this exists to fix: two shards whose training
+    molecules don't cover the same element set must still end up
+    mergeable, because both used one frozen vocabulary rather than each
+    discovering its own."""
+    from experiments.predictors.sieve_predictor import (
+        SievePredictor,
+        _build_config,
+        save_codes,
+    )
+
+    import sieve
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    whole = synthetic_molecule_set(n_mol=16, seed=0)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=2,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+
+    shard_a = whole.select(np.arange(whole.n_conformers) < whole.n_conformers // 2)
+    shard_b = whole.select(np.arange(whole.n_conformers) >= whole.n_conformers // 2)
+
+    pred_a = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=2,
+        minimum_support=1,
+        codes_path=codes_path,
+    )
+    pred_a.fit(shard_a, shard_a, rng=np.random.default_rng(0))
+    pred_b = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=2,
+        minimum_support=1,
+        codes_path=codes_path,
+    )
+    pred_b.fit(shard_b, shard_b, rng=np.random.default_rng(0))
+
+    assert pred_a._config.schema_version == pred_b._config.schema_version
+    merged = sieve.merge.merge_models(pred_a._model, pred_b._model)
+    assert merged is not None
+
+
+def test_predict_raw_from_batch_matches_predict_raw(tmp_path):
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=8, seed=2)
+    test = synthetic_molecule_set(n_mol=4, seed=3)
+
+    predictor = SievePredictor(max_wl_depth=2, minimum_support=1)
+    predictor.fit(train, train, rng=np.random.default_rng(0))
+
+    direct = predictor.predict_raw(test)
+
+    batch = predictor.build_predict_batch(test.mols)
+    from_batch = predictor.predict_raw_from_batch(batch)
+
+    np.testing.assert_array_equal(direct.atom_value, from_batch.atom_value)
+    np.testing.assert_array_equal(direct.atom_std, from_batch.atom_std)
+
+
+def test_predict_raw_from_batch_reused_across_two_models_sharing_codes(tmp_path):
+    """The actual point of the seam: one batch, two models at different
+    depths but sharing one frozen vocabulary, predicting without a second
+    featurization pass."""
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=8, seed=2)
+    test = synthetic_molecule_set(n_mol=4, seed=3)
+
+    shallow = SievePredictor(max_wl_depth=1, minimum_support=1)
+    shallow.fit(train, train, rng=np.random.default_rng(0))
+    deep = SievePredictor(max_wl_depth=3, minimum_support=1)
+    deep.fit(train, train, rng=np.random.default_rng(0))
+
+    batch = shallow.build_predict_batch(test.mols)
+    shallow_pred = shallow.predict_raw_from_batch(batch)
+    deep_pred = deep.predict_raw_from_batch(batch)
+
+    expected_shallow = shallow.predict_raw(test)
+    expected_deep = deep.predict_raw(test)
+    np.testing.assert_array_equal(shallow_pred.atom_value, expected_shallow.atom_value)
+    np.testing.assert_array_equal(deep_pred.atom_value, expected_deep.atom_value)
+
+
+def test_merge_states_matches_fitting_the_union_directly(tmp_path):
+    """merge_states(fit(A), fit(B)) must equal fit(A + B) -- the CV
+    assembly's own load-bearing invariant, checked at the predictor
+    seam rather than only at sieve.merge's own unit-test level."""
+    from experiments.predictors.sieve_predictor import (
+        SievePredictor,
+        _build_config,
+        save_codes,
+    )
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    whole = synthetic_molecule_set(n_mol=16, seed=0)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=2,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+
+    half = whole.n_conformers // 2
+    shard_a = whole.select(np.arange(whole.n_conformers) < half)
+    shard_b = whole.select(np.arange(whole.n_conformers) >= half)
+
+    def _fit_and_save(mset, path):
+        predictor = SievePredictor(
+            attributes=("element",),
+            edge_attributes=(),
+            max_wl_depth=2,
+            minimum_support=1,
+            codes_path=codes_path,
+        )
+        predictor.fit(mset, mset, rng=np.random.default_rng(0))
+        predictor.save_model_state(path)
+        return predictor
+
+    path_a = tmp_path / "a.npz"
+    path_b = tmp_path / "b.npz"
+    _fit_and_save(shard_a, path_a)
+    _fit_and_save(shard_b, path_b)
+
+    merged_path = tmp_path / "merged.npz"
+    SievePredictor.merge_states([path_a, path_b], merged_path)
+
+    direct = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=2,
+        minimum_support=1,
+        codes_path=codes_path,
+    )
+    direct.fit(whole, whole, rng=np.random.default_rng(0))
+
+    from_merge = SievePredictor(max_wl_depth=2, minimum_support=1)
+    from_merge.load_model_state(merged_path)
+
+    test = synthetic_molecule_set(n_mol=4, seed=99)
+    np.testing.assert_allclose(
+        from_merge.predict(test).atom_value, direct.predict(test).atom_value
+    )

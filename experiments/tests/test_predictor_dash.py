@@ -178,3 +178,57 @@ def test_predict_raw_from_paths_shape_matches_number_of_atoms():
     )
     assert raw.atom_value.shape == (3,)
     assert raw.atom_std.shape == (3,)
+
+
+def test_merge_states_matches_fitting_the_union_directly(tmp_path):
+    """DASHChargePredictor.merge_states(fit(A), fit(B)) must equal fitting
+    the union of A and B directly -- the predictor-level seam over
+    tree_artifact's own fold_node_stats/merge_node_stats, whose exactness
+    is already pinned by test_tree_artifact.py."""
+    from experiments.predictors.dash import DASHChargePredictor
+    from experiments.tree_artifact import (
+        compute_node_stats,
+        save_node_stats,
+    )
+
+    paths_a = [[(0, 1)], [(0, 1), (0, 2)]]
+    charge_a = np.array([0.10, 0.30])
+    paths_b = [[(0, 1)], [(1, 0)]]
+    charge_b = np.array([0.20, -0.40])
+
+    stats_a = compute_node_stats(paths_a, charge_a)
+    stats_b = compute_node_stats(paths_b, charge_b)
+
+    path_a = tmp_path / "a.npz"
+    path_b = tmp_path / "b.npz"
+    save_node_stats(stats_a, path_a)
+    save_node_stats(stats_b, path_b)
+
+    merged_path = tmp_path / "merged.npz"
+    DASHChargePredictor.merge_states([path_a, path_b], merged_path)
+
+    from experiments.tree_artifact import load_node_stats
+
+    merged = load_node_stats(merged_path)
+    whole = compute_node_stats(paths_a + paths_b, np.concatenate([charge_a, charge_b]))
+
+    def as_dict(stats):
+        return {
+            (int(br), int(nd)): (float(m), int(c))
+            for br, nd, m, c in zip(
+                stats.branch_idx, stats.node_id, stats.mean, stats.count, strict=True
+            )
+        }
+
+    merged_d, whole_d = as_dict(merged), as_dict(whole)
+    assert merged_d.keys() == whole_d.keys()
+    for key in whole_d:
+        assert merged_d[key][1] == whole_d[key][1]
+        assert merged_d[key][0] == pytest.approx(whole_d[key][0])
+
+
+def test_merge_states_rejects_an_empty_path_list(tmp_path):
+    from experiments.predictors.dash import DASHChargePredictor
+
+    with pytest.raises(ValueError, match="at least one"):
+        DASHChargePredictor.merge_states([], tmp_path / "out.npz")

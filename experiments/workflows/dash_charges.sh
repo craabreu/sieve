@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
-# Reproduces the DASH-charges experiment series end to end: download +
-# parse + split the real published SDF, partition it into 10 disjoint
-# folds, run a predictor against them, and summarize the results.
+# Reproduces the DASH-charges experiment series end to end under the CV
+# redesign: download + parse + curate + split the real published SDF into
+# 90% train / 10% test with N cluster-clean train shards, fit each shard
+# once, then run two CV studies (depth selection, model comparison) by
+# assembling every sample's training model from shard merges -- no
+# per-sample refit. See docs/superpowers/specs/2026-09-12-cv-shard-
+# redesign-design.md for the full design and why shard merging replaces
+# the old 10-fold sweep this script used to run.
+#
+# Superseded by this script: the old partition-store/dash-depth-sweep/
+# merge-shards sequence (still available as CLI commands, kept for other
+# uses, but no longer this workflow's own path).
 #
 # Every step below is a plain call to the `experiments` CLI (see
 # experiments/README.md) -- this script only fixes the sequence and the
@@ -20,178 +29,115 @@ if [ ! -x "$PYTHON" ]; then
   exit 1
 fi
 
-# --- Stage 1: data preparation -------------------------------------------
+STORE=dash-molecules
+N_SHARDS="${DASH_N_SHARDS:-25}"
+# The published tree's own depth ceiling -- deeper cannot lengthen a path
+# (see the old script's own Stage 6 note, carried over unchanged).
+MAX_DEPTH=16
+K="${DASH_CV_K:-5}"
+
+# --- Stage 1: data preparation --------------------------------------------
 #
-# `prepare-store` is idempotent at each of its three stages (download,
-# parse, split) -- safe to re-run; it skips whatever it already did. It
+# `prepare-store` is idempotent at each of its stages (download, parse,
+# curate, split) -- safe to re-run; it skips whatever it already did. It
 # downloads the real ~8.3GB dashMoleculesSDF_v2.sdf (ETH Research
-# Collection) and writes experiments/stores/dash-molecules
-# (~1M conformers, ~9.6GB parquet).
-"$PYTHON" -m experiments prepare-store
+# Collection), curates conformers (the DASH paper's own 0.4 e criterion,
+# reproduced at parse time -- see prepare_dash.curate_conformers), and
+# writes a 90/10 train/test split plus a `cluster`/`shard` column on
+# experiments/stores/dash-molecules.
+#
+# Before running this for the first time, consider
+#   "$PYTHON" -m experiments cluster-report
+# against a store that is parsed+curated but not yet split, to pick
+# N_SHARDS from the real cluster-size distribution rather than blind --
+# see prepare_dash.cluster_size_report's own docstring. The default below
+# (25) is what the CV redesign discussion settled on as a starting point.
+"$PYTHON" -m experiments prepare-store "$STORE" --n-shards "$N_SHARDS"
 
-# `partition-store` divides dash-molecules' entire molecule set into 10
-# disjoint folds -- every conformer of every molecule kept, none used
-# twice -- named dash-molecules-10fold-1 .. dash-molecules-10fold-10.
-# Idempotent as a whole: skips entirely once every fold already exists,
-# and deterministic at the default seed (0) if it does run -- safe to
-# re-run, including after this script was interrupted partway through.
-"$PYTHON" -m experiments partition-store dash-molecules-10fold --n-stores 10
+# --- Stage 2: shard fits ---------------------------------------------------
+#
+# One DASH fit per shard, at MAX_DEPTH -- node stats are depth-invariant
+# (compute_node_stats accumulates over every node on every atom's path,
+# not just the deepest), so one fit per shard serves every shallower
+# depth Study A below asks for, exactly as the old per-fold sweep already
+# exploited. Predicts nothing: a single ~1/N-of-train shard is only ever
+# used merged. Idempotent per shard (skips once its own tree_stats.npz
+# exists). One process, not one per shard: `cv-fit-dash-shards` already
+# loops every shard s00..s{N-1} internally (run_dash_shard_fits), and
+# DASHTree(preload=True) -- the expensive part of constructing a
+# predictor -- is amortized across every shard fit that one process does
+# in sequence, rather than paid again per shard under N separate
+# processes.
+"$PYTHON" -m experiments cv-fit-dash-shards "$STORE" \
+  --n-shards "$N_SHARDS" --max-depth "$MAX_DEPTH"
 
-# --- Stage 2: DASH depth sweep --------------------------------------------
+# --- Stage 3: Study A -- depth selection -----------------------------------
 #
-# One fit + one tree-matching walk per fold (at the deepest depth
-# requested), with every shallower depth's own metrics derived from the
-# already-walked paths instead of re-walking from scratch -- ~10 fits
-# total instead of ~90 independent ones. See
-# experiments/experiments/dash_depth_sweep.py's own module docstring for
-# why this is exact, not an approximation (and for the one genuine
-# exception: depth 1 is always run for real, never derived, because
-# DASH-tree's own match_new_atom redirects a hydrogen atom to its heavy
-# neighbor and pre-consumes one depth unit -- confirmed correct against
-# the real store and DASH-tree clone, bit-for-bit against an independent
-# run, before this default depths list was trusted with it).
-#
-# Dispatched one process per fold via xargs -P (default: all 10 at once,
-# override with DASH_DEPTH_SWEEP_JOBS=N) -- each fold's own fit+walk is
-# now a much coarser unit of work than the old per-(depth,fold) runs, so
-# fold-level parallelism (not depth-level) is what actually uses this
-# box's real headroom (64 cores/500GB, each fold single-threaded).
-# `--fold` runs exactly one fold in that process, per-fold idempotent
-# (skip once every depth's own run directory already has a metrics.json)
-# -- safe to interrupt and resume by running this script again, including
-# under a different DASH_DEPTH_SWEEP_JOBS. Untracked by MLflow (the
-# default; no --track).
-#
+# One repeat (seed 0), K folds -- no ANOVA, no Tukey, just a depth curve.
+# Each fold's training model is the merge of the other K-1 groups'
+# shards (tree_artifact.merge_node_stats, exact); one tree-matching walk
+# per fold, shared across every depth via predict_raw_at_depth. Both raw
+# and std_weighted-normalized metrics land in one metrics.json per run
+# (norm/* prefix) -- read the normalized curve to pick a depth, since
+# that is the form DASH is actually deployed in.
+STUDY_A_EXPERIMENT=dash-cv-study-a
+STUDY_A_DEPTHS=1,2,4,6,8,10,12,14,16
+
+"$PYTHON" -m experiments cv-run-dash "$STORE" \
+  --n-shards "$N_SHARDS" --k "$K" --max-depth "$MAX_DEPTH" \
+  --depths "$STUDY_A_DEPTHS" --repeats 0 \
+  --normalization std_weighted --method dash --experiment "$STUDY_A_EXPERIMENT"
+
 # Read the resulting curve with:
-#   "$PYTHON" -m experiments sweep --experiment dash-depth-sweep \
-#     --x predictor.params.max_depth --metric mae --metric r2
-EXPERIMENT=dash-depth-sweep
-DEPTHS=1,2,4,6,8,10,12,14,16
-N_FOLDS=10
-PARALLEL_JOBS="${DASH_DEPTH_SWEEP_JOBS:-$N_FOLDS}"
+#   "$PYTHON" -m experiments sweep --experiment dash-cv-study-a \
+#     --x config.cv.depth --metric norm/mae --metric mae
 
-run_fold() {
-  local fold=$1
-  "$PYTHON" -m experiments dash-depth-sweep \
-    --config experiments/configs/dash-charge-example.yaml \
-    --store-prefix dash-molecules-10fold \
-    --fold "$fold" \
-    --depths "$DEPTHS" \
-    --experiment "$EXPERIMENT"
-}
-export -f run_fold
-export PYTHON DEPTHS EXPERIMENT
-
-seq 1 "$N_FOLDS" | xargs -P "$PARALLEL_JOBS" -n 1 bash -c 'run_fold "$1"' --
-
-# --- Stage 3: normalize the deepest fit, per fold -----------------------
+# --- Stage 4: Study B -- model comparison -----------------------------------
 #
-# DASH's own published post-hoc charge conservation (normalize.py's
-# std_weighted, the paper's eq. 4) applied to each fold's depth-16
-# prediction. `tree_stats_load_path` loads that fold's own saved shard
-# (Stage 2), so this is predict-only -- no re-fit -- and `normalization`
-# re-scores against the sum constraint. One process per fold, idempotent
-# (skip a fold once its own run directory exists).
-NORM_EXPERIMENT=dash-depth16-std-weighted
+# Pick DASH_SELECTED_DEPTH from Stage 3's own curve before running this
+# (defaults to MAX_DEPTH, the published tree's own ceiling, which is
+# rarely the actual optimum -- override it once Stage 3 has run). Four
+# further repeats (seeds 1-4; Study A's own repeat 0/K-partition is
+# reused as the first of the five, per the CV design), 5x5 = 25 samples
+# at the one selected depth, feeding compare.py's repeated-measures
+# ANOVA + Tukey HSD (Ash/Wognum/Rodriguez-Perez JCIM 2025 protocol).
+SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-$MAX_DEPTH}"
+STUDY_B_EXPERIMENT=dash-cv-study-b
 
-normalize_fold() {
-  local fold=$1
-  if compgen -G "experiments/runs/$NORM_EXPERIMENT/f${fold}__*/metrics.json" \
-    > /dev/null; then
-    echo "skip normalize f${fold} (already done)"
-    return 0
-  fi
-  local shard
-  shard=$(ls -t experiments/runs/"$EXPERIMENT"/d16-f"${fold}"__*/tree_stats.npz \
-    | head -1)
-  "$PYTHON" -m experiments run \
-    --config experiments/configs/dash-charge-example.yaml \
-    --set data.store=dash-molecules-10fold-"$fold" \
-    --set predictor.params.max_depth=16 \
-    --set tree_stats_load_path="$shard" \
-    --set normalization=std_weighted \
-    --set run.experiment="$NORM_EXPERIMENT" \
-    --set run.batch_id=f"$fold"
-}
-export -f normalize_fold
-export NORM_EXPERIMENT
+"$PYTHON" -m experiments cv-run-dash "$STORE" \
+  --n-shards "$N_SHARDS" --k "$K" --max-depth "$MAX_DEPTH" \
+  --depths "$SELECTED_DEPTH" --repeats 0,1,2,3,4 \
+  --normalization std_weighted --method dash --experiment "$STUDY_B_EXPERIMENT"
 
-seq 1 "$N_FOLDS" | xargs -P "$PARALLEL_JOBS" -n 1 bash -c 'normalize_fold "$1"' --
-
-# --- Stage 4: merge the 10 shards -------------------------------------------
+# --- Stage 5: final held-out evaluation ------------------------------------
 #
-# fold_node_stats over the 10 depth-16 shards -- exact, no re-fit. The
-# folds partition the corpus by molecule and each shard is train-only, so
-# the merged result is one fit on the whole training set. Idempotent
-# (skips if the output already exists).
+# Once, at the end, not part of either CV study: merge all N shards
+# (built once, in Stage 2) into a single full-train model and predict the
+# untouched 10% test split -- the headline number. Idempotent (skips if
+# the merged shard or the run directory already exists).
 MERGED_SHARD=experiments/results/dash-merged/tree_stats.npz
-"$PYTHON" -m experiments merge-shards \
-  --from-experiment "$EXPERIMENT" \
-  --depth 16 \
-  --n-folds "$N_FOLDS" \
-  --out "$MERGED_SHARD"
+if [ ! -f "$MERGED_SHARD" ]; then
+  # Merge order does not affect the result (merge_node_stats is
+  # commutative/associative); sorted here only for a readable command.
+  mapfile -t SHARD_PATHS < <(
+    ls experiments/runs/cv-shard-fits/fit-dash-s*__*/tree_stats.npz | sort
+  )
+  "$PYTHON" -m experiments merge-states --predictor dash --out "$MERGED_SHARD" \
+    "${SHARD_PATHS[@]}"
+fi
 
-# --- Stage 5: the merged full-corpus model, normalized --------------------
-#
-# The merged shard predicting the *original* store's own test split
-# (~103k conformers) -- genuinely held out, since every fold's shard was
-# fit on train molecules only and the folds partition by molecule.
-# Predict-only (tree_stats_load_path), std_weighted normalized.
-# Idempotent (skip if the run directory exists).
-MERGED_EXPERIMENT=dash-merged-std-weighted
-if compgen -G "experiments/runs/$MERGED_EXPERIMENT/merged__*/metrics.json" \
+FINAL_EXPERIMENT=dash-final-holdout
+if compgen -G "experiments/runs/$FINAL_EXPERIMENT/final__*/metrics.json" \
   > /dev/null; then
-  echo "skip merged run (already done)"
+  echo "skip final holdout run (already done)"
 else
   "$PYTHON" -m experiments run \
     --config experiments/configs/dash-charge-example.yaml \
-    --set data.store=dash-molecules \
-    --set predictor.params.max_depth=16 \
+    --set data.store="$STORE" \
+    --set data.split_column=split \
+    --set predictor.params.max_depth="$SELECTED_DEPTH" \
     --set tree_stats_load_path="$MERGED_SHARD" \
     --set normalization=std_weighted \
-    --set run.experiment="$MERGED_EXPERIMENT" \
-    --set run.batch_id=merged
+    --set run.experiment="$FINAL_EXPERIMENT" \
+    --set run.batch_id=final
 fi
-
-# --- Stage 6: full-corpus depth sweep -------------------------------------
-#
-# The fold sweep (Stage 2) answers "how does depth pay at fold scale?"
-# -- ~82k train conformers. This one asks it at full scale, ~824k, on
-# dash-molecules' own train/test split. Worth asking separately because
-# the fold curve's flat tail is a statement about a fold-sized training
-# set, not about the corpus: a model still data-limited at 82k can keep
-# paying for depth at 824k.
-#
-# Same `dash-depth-sweep` command as Stage 2, pointed at one store
-# instead of a partition (`--store`), so this is again one fit + one
-# tree-matching walk at the deepest depth requested, with every
-# shallower depth derived from the already-walked paths -- 1 walk over
-# the full corpus rather than 6. Runs are labelled d<depth>-full
-# (`--label`), and the stage is idempotent as a whole: it skips once
-# every depth already has a metrics.json.
-#
-# The same depth list as Stage 2, which is also as far as the published
-# tree goes: DASH's tree was built to depth 16, so a deeper request
-# cannot lengthen a path and would only re-report depth 16 under another
-# name. The fold curve already shows the paths bottoming out -- 0.019743
-# at depth 14 against 0.019742 at 16. Sharing Stage 2's list is also
-# what makes the fold and full-corpus curves comparable point for point,
-# which is the reason to run this stage against the very corpus the
-# folds partition.
-#
-# One process, single-threaded. This is the heaviest stage in the file
-# -- one DASH fit plus one walk over ~43M atoms -- and its footprint is
-# unmeasured at this scale (a single fold peaked around 8GB).
-FULL_EXPERIMENT=dash-full-depth-sweep
-FULL_DEPTHS=1,2,4,6,8,10,12,14,16
-
-"$PYTHON" -m experiments dash-depth-sweep \
-  --config experiments/configs/dash-charge-example.yaml \
-  --store dash-molecules \
-  --label full \
-  --depths "$FULL_DEPTHS" \
-  --experiment "$FULL_EXPERIMENT"
-
-# Read the resulting curve with:
-#   "$PYTHON" -m experiments sweep --experiment dash-full-depth-sweep \
-#     --x predictor.params.max_depth --metric mae --metric r2
