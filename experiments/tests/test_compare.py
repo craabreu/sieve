@@ -47,11 +47,21 @@ def test_read_cv_table_pivots_by_repeat_fold_and_method(tmp_path):
     for repeat in range(2):
         for fold in range(3):
             _write_cv_manifest(
-                runs_root, "exp", repeat=repeat, fold=fold, method="a", depth=5,
+                runs_root,
+                "exp",
+                repeat=repeat,
+                fold=fold,
+                method="a",
+                depth=5,
                 mae=float(repeat * 10 + fold),
             )
             _write_cv_manifest(
-                runs_root, "exp", repeat=repeat, fold=fold, method="b", depth=5,
+                runs_root,
+                "exp",
+                repeat=repeat,
+                fold=fold,
+                method="b",
+                depth=5,
                 mae=float(repeat * 10 + fold) + 0.5,
             )
 
@@ -71,11 +81,21 @@ def test_read_cv_table_filters_by_depth_per_method(tmp_path):
         for fold in range(3):
             for depth in (4, 5, 6):
                 _write_cv_manifest(
-                    runs_root, "exp", repeat=repeat, fold=fold, method="a", depth=depth,
+                    runs_root,
+                    "exp",
+                    repeat=repeat,
+                    fold=fold,
+                    method="a",
+                    depth=depth,
                     mae=float(depth),
                 )
             _write_cv_manifest(
-                runs_root, "exp", repeat=repeat, fold=fold, method="b", depth=7,
+                runs_root,
+                "exp",
+                repeat=repeat,
+                fold=fold,
+                method="b",
+                depth=7,
                 mae=1.0,
             )
 
@@ -191,9 +211,7 @@ def test_tukey_hsd_confidence_interval_contains_the_true_diff_typically():
     rng = np.random.default_rng(2)
     n = 40
     subject = rng.normal(size=n)
-    table = np.stack(
-        [subject, subject + 5.0 + rng.normal(scale=0.1, size=n)], axis=1
-    )
+    table = np.stack([subject, subject + 5.0 + rng.normal(scale=0.1, size=n)], axis=1)
 
     comparisons = tukey_hsd(["a", "b"], table)
     c = comparisons[0]
@@ -221,7 +239,9 @@ def test_write_tukey_plot_writes_a_file(tmp_path):
     from experiments.compare import PairwiseComparison, write_tukey_plot
 
     comparisons = [
-        PairwiseComparison(a="a", b="b", diff=-1.0, ci_lo=-1.5, ci_hi=-0.5, q_stat=3.0, p_value=0.01)
+        PairwiseComparison(
+            a="a", b="b", diff=-1.0, ci_lo=-1.5, ci_hi=-0.5, q_stat=3.0, p_value=0.01
+        )
     ]
     out = tmp_path / "tukey.png"
     write_tukey_plot(comparisons, out, provenance="store=test git=deadbeef n=1")

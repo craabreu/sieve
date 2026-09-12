@@ -334,8 +334,7 @@ class SievePredictor:
         predictor's own profiling (see the class docstring)."""
         if self._config is None:
             raise RuntimeError(
-                "fit (or load_model_state) must be called before "
-                "build_predict_batch"
+                "fit (or load_model_state) must be called before build_predict_batch"
             )
         import time
 
@@ -356,8 +355,7 @@ class SievePredictor:
         why one batch may be reused across every depth's own model."""
         if self._model is None:
             raise RuntimeError(
-                "fit (or load_model_state) must be called before "
-                "predict_raw_from_batch"
+                "fit (or load_model_state) must be called before predict_raw_from_batch"
             )
         import sieve
 

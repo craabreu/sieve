@@ -19,7 +19,9 @@ logger = logging.getLogger("experiments")
 _KNOWN_SPLIT_VALUES = ("train", "val", "test")
 
 
-def _check_known_split_values(keys_by_split: dict[str, list[str]], *, source: str) -> None:
+def _check_known_split_values(
+    keys_by_split: dict[str, list[str]], *, source: str
+) -> None:
     """Both ``subsample_store`` and ``partition_store`` iterate the literal
     tuple ``("train", "val", "test")`` -- a molecule whose own ``split``
     value is anything else (a ``shard`` id, a typo, a store carrying the CV

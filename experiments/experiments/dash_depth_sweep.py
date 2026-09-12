@@ -304,7 +304,9 @@ def run_store(
     from experiments.data import REPO_ROOT
 
     if sweep_done(runs_root, experiment, depths, label):
-        logger.info("%r of %r already done for every depth; skipping", label, experiment)
+        logger.info(
+            "%r of %r already done for every depth; skipping", label, experiment
+        )
         return []
 
     derived_depths = [d for d in depths if d >= _MIN_DERIVABLE_DEPTH]

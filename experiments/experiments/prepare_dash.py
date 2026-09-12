@@ -528,7 +528,9 @@ def assign_splits(
     if df.loc[train_row_mask, "shard"].isna().any():
         raise ValueError("some train row(s) were not assigned a shard")
 
-    shard_counts = mol_key[train_row_mask].groupby(df.loc[train_row_mask, "shard"]).nunique()
+    shard_counts = (
+        mol_key[train_row_mask].groupby(df.loc[train_row_mask, "shard"]).nunique()
+    )
     logger.info(
         "n_shards=%d train molecule counts: min=%d max=%d mean=%.1f",
         n_shards,
@@ -538,9 +540,7 @@ def assign_splits(
     )
 
     summary = (
-        df.groupby("split")
-        .agg(n_conformers=("mol", "size"))
-        .reindex(list(fractions))
+        df.groupby("split").agg(n_conformers=("mol", "size")).reindex(list(fractions))
     )
     summary["n_molecules"] = (
         mol_key.groupby(df["split"]).nunique().reindex(list(fractions))
@@ -558,9 +558,7 @@ CURATION_THRESHOLD = 0.4
 CURATION_SUMMARY = "curation_summary.txt"
 
 
-def curate_conformers(
-    store_dir: Path, *, threshold: float = CURATION_THRESHOLD
-) -> str:
+def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD) -> str:
     """Drop conformers whose MBIS charges disagree with *every* sibling, and
     overwrite ``molecules.parquet`` in place; return the summary text.
 

@@ -160,7 +160,9 @@ def merge_node_stats(a: TreeNodeStats, b: TreeNodeStats) -> TreeNodeStats:
     w_b = n_b_ov / n_tot
     delta = mean_b_ov - mean[idx_overlap]
     mean[idx_overlap] = mean[idx_overlap] + w_b * delta
-    var[idx_overlap] = w_a * var[idx_overlap] + w_b * var_b_ov + w_a * w_b * delta * delta
+    var[idx_overlap] = (
+        w_a * var[idx_overlap] + w_b * var_b_ov + w_a * w_b * delta * delta
+    )
     count[idx_overlap] = n_tot
 
     idx_new = inv_b[~overlap]

@@ -112,8 +112,8 @@ def _write_shard_store(tmp_path, *, n_mol=40, n_shards=10, seed=0, name="synthet
     known-good molecules. Every row is treated as its own shard-assignable
     unit (no multi-conformer grouping needed for these tests)."""
     import pandas as pd
-
     from experiments.data import mol_to_blob
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=n_mol, seed=seed)
@@ -140,11 +140,12 @@ def _write_shard_store(tmp_path, *, n_mol=40, n_shards=10, seed=0, name="synthet
 
 
 def test_run_sieve_shard_fits_is_idempotent(tmp_path):
-    from experiments.cv import run_sieve_shard_fits, shard_ids
+    from experiments.cv import run_sieve_shard_fits
     from experiments.predictors.sieve_predictor import (
         _build_config,
         save_codes,
     )
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     store, stores_root = _write_shard_store(tmp_path, n_mol=20, n_shards=5)
@@ -178,7 +179,7 @@ def test_run_sieve_shard_fits_is_idempotent(tmp_path):
     for p in paths[2]:
         assert p.exists()
 
-    before = set(p for group in paths.values() for p in group)
+    before = {p for group in paths.values() for p in group}
     again = run_sieve_shard_fits(
         store=store,
         n_shards=5,
@@ -190,7 +191,7 @@ def test_run_sieve_shard_fits_is_idempotent(tmp_path):
         stores_root=stores_root,
         allow_dirty=True,
     )
-    after = set(p for group in again.values() for p in group)
+    after = {p for group in again.values() for p in group}
     assert before == after  # no new shard fits were written
 
 
@@ -200,7 +201,6 @@ def test_run_sieve_cv_assembly_matches_a_direct_fit_on_the_complement(tmp_path):
     a single Sieve fit on the union of those same molecules, done
     directly -- confirming the shard/merge scheme changes nothing about
     what gets learned."""
-    import sieve
     from experiments.cv import (
         build_cv_plan,
         run_sieve_cv,
@@ -212,6 +212,7 @@ def test_run_sieve_cv_assembly_matches_a_direct_fit_on_the_complement(tmp_path):
         _build_config,
         save_codes,
     )
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     n_mol, n_shards, k = 20, 10, 5
@@ -294,10 +295,13 @@ def test_run_sieve_cv_assembly_matches_a_direct_fit_on_the_complement(tmp_path):
 def test_run_sieve_cv_is_idempotent(tmp_path):
     from experiments.cv import run_sieve_cv, run_sieve_shard_fits
     from experiments.predictors.sieve_predictor import _build_config, save_codes
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     n_mol, n_shards, k = 20, 10, 5
-    store, stores_root = _write_shard_store(tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2)
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
     runs_root = tmp_path / "runs"
 
     whole = synthetic_molecule_set(n_mol=n_mol, seed=2)
@@ -315,22 +319,44 @@ def test_run_sieve_cv_is_idempotent(tmp_path):
     params = {"attributes": ("element",), "edge_attributes": ()}
 
     run_sieve_shard_fits(
-        store=store, n_shards=n_shards, depths=[1], codes_path=codes_path,
-        config_label="cfg", predictor_params=params,
-        runs_root=runs_root, stores_root=stores_root, allow_dirty=True,
+        store=store,
+        n_shards=n_shards,
+        depths=[1],
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        runs_root=runs_root,
+        stores_root=stores_root,
+        allow_dirty=True,
     )
     first = run_sieve_cv(
-        store=store, n_shards=n_shards, depths=[1], repeats=[0],
-        codes_path=codes_path, config_label="cfg", predictor_params=params,
-        k=k, method="sieve-cfg", runs_root=runs_root, stores_root=stores_root,
+        store=store,
+        n_shards=n_shards,
+        depths=[1],
+        repeats=[0],
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        k=k,
+        method="sieve-cfg",
+        runs_root=runs_root,
+        stores_root=stores_root,
         allow_dirty=True,
     )
     assert len(first) == k
 
     second = run_sieve_cv(
-        store=store, n_shards=n_shards, depths=[1], repeats=[0],
-        codes_path=codes_path, config_label="cfg", predictor_params=params,
-        k=k, method="sieve-cfg", runs_root=runs_root, stores_root=stores_root,
+        store=store,
+        n_shards=n_shards,
+        depths=[1],
+        repeats=[0],
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        k=k,
+        method="sieve-cfg",
+        runs_root=runs_root,
+        stores_root=stores_root,
         allow_dirty=True,
     )
     assert second == []  # every (repeat, fold, depth) already done

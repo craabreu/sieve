@@ -25,8 +25,8 @@ def _write_shard_store(tmp_path, *, n_mol=40, n_shards=10, seed=0, name="synthet
     duplicated rather than imported so this file stays skippable/importable
     independent of that one (both are gated on different optional deps)."""
     import pandas as pd
-
     from experiments.data import mol_to_blob
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=n_mol, seed=seed)
@@ -86,8 +86,14 @@ def test_run_dash_cv_assembly_matches_a_direct_fit_on_the_complement(tmp_path):
     training model (tree_artifact.merge_node_stats over the complementary
     shards) must predict identically to a direct DASHChargePredictor.fit()
     on the union of those same molecules."""
-    from experiments.cv import build_cv_plan, run_dash_cv, run_dash_shard_fits, shard_ids
+    from experiments.cv import (
+        build_cv_plan,
+        run_dash_cv,
+        run_dash_shard_fits,
+        shard_ids,
+    )
     from experiments.predictors.dash import DASHChargePredictor
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     n_mol, n_shards, k, max_depth = 20, 10, 5, 4
