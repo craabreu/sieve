@@ -6,6 +6,8 @@ DASH-tree clone only for the DASH driver tests, gated accordingly)."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -234,7 +236,12 @@ def test_run_sieve_cv_assembly_matches_a_direct_fit_on_the_complement(tmp_path):
     codes_path = tmp_path / "codes.json"
     save_codes(config.attribute_codes, config.edge_codes, codes_path)
 
-    params = {
+    # Explicitly `dict[str, Any]`: a bare literal's inferred value type
+    # (here `tuple[str] | tuple[()] | int`) makes `**params` below type-
+    # check every SievePredictor keyword against that one union, since a
+    # type checker can't statically know which key lands on which
+    # parameter through a `**` unpack of a heterogeneous dict.
+    params: dict[str, Any] = {
         "attributes": ("element",),
         "edge_attributes": (),
         "minimum_support": 1,

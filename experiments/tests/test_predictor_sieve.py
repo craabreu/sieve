@@ -441,7 +441,6 @@ def test_codes_path_freezes_the_vocabulary_across_disjoint_shards(tmp_path):
         save_codes,
     )
 
-    import sieve
     from experiments.tests.helpers import synthetic_molecule_set
 
     whole = synthetic_molecule_set(n_mol=16, seed=0)
@@ -478,7 +477,9 @@ def test_codes_path_freezes_the_vocabulary_across_disjoint_shards(tmp_path):
     pred_b.fit(shard_b, shard_b, rng=np.random.default_rng(0))
 
     assert pred_a._config.schema_version == pred_b._config.schema_version
-    merged = sieve.merge.merge_models(pred_a._model, pred_b._model)
+    from sieve.merge import merge_models
+
+    merged = merge_models(pred_a._model, pred_b._model)
     assert merged is not None
 
 

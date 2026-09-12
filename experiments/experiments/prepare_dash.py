@@ -370,11 +370,16 @@ def cluster_size_report(
     _, inverse = np.unique(train_cluster_ids, return_inverse=True)
     sizes = np.bincount(inverse)
 
+    # np.max(sizes), not sizes.max(): a ty/numpy-stubs overload-resolution
+    # gap picks the wrong candidate for the bound-method form on an
+    # np.bincount-shaped 1-D int array (confirmed a false positive --
+    # same class of ty/numpy-stubs mismatch src/sieve/model.py's own
+    # pyproject.toml override already documents for a different method).
+    largest = int(np.max(sizes))
     lines = [
         f"train molecules: {n_train}",
         f"clusters in train: {len(sizes)}",
-        f"largest cluster: {int(sizes.max())} molecule(s) "
-        f"({sizes.max() / n_train:.4%} of train)",
+        f"largest cluster: {largest} molecule(s) ({largest / n_train:.4%} of train)",
     ]
     for q in (50, 90, 99, 99.9):
         lines.append(f"  p{q} cluster size: {int(np.percentile(sizes, q))}")
