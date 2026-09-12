@@ -205,5 +205,6 @@ final held-out evaluation once all shards are fit:
 
     uv run python -m experiments merge-states --predictor dash --out merged.npz runs/cv-shard-fits/fit-dash-s*/tree_stats.npz
 
-See `experiments/workflows/dash_charges.sh`/`sieve_charges.sh` for the full
-sequence, end to end.
+See `experiments/workflows/cv_charges.sh` for the full sequence, end to
+end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
+stop after a given one.

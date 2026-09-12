@@ -156,6 +156,7 @@ def _cmd_prepare_store(args: argparse.Namespace) -> int:
         stores_root=DEFAULT_STORES_ROOT,
         sdf_path=args.sdf_path,
         n_shards=args.n_shards,
+        stop_before_split=args.stop_before_split,
     )
     return 0
 
@@ -686,6 +687,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=25,
         help="cluster-clean train shards for CV (s00..s{n-1}); choose via "
         "cluster-report first (default: 25)",
+    )
+    p_prepare.add_argument(
+        "--stop-before-split",
+        action="store_true",
+        help="stop after parse+curate, without writing the split -- the "
+        "state cluster-report reads, so --n-shards can be chosen from the "
+        "real cluster-size distribution instead of guessed",
     )
     p_prepare.set_defaults(func=_cmd_prepare_store)
 

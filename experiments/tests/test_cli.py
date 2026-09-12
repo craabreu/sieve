@@ -616,3 +616,13 @@ def test_build_parser_compare_requires_experiment():
     assert args.alpha == 0.05
     assert args.depth_by_method is None
     assert args.out is None
+
+
+def test_build_parser_prepare_store_stop_before_split_defaults_off():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["prepare-store"])
+    assert args.stop_before_split is False
+    args = parser.parse_args(["prepare-store", "--stop-before-split"])
+    assert args.stop_before_split is True

@@ -5,13 +5,12 @@ manually -- this test does not download/parse the 8.3GB SDF itself)."""
 from __future__ import annotations
 
 import pytest
-from experiments.data import DEFAULT_STORES_ROOT
 
-_STORE_DIR = DEFAULT_STORES_ROOT / "dash-molecules"
+from experiments.tests.helpers import real_store_has_columns
 
 pytestmark = pytest.mark.skipif(
-    not (_STORE_DIR / "molecules.parquet").exists(),
-    reason="real dash-molecules store not prepared locally",
+    not real_store_has_columns("dash-molecules", "split"),
+    reason="real dash-molecules store not prepared and split locally",
 )
 
 

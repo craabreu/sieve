@@ -1,5 +1,5 @@
 # The Sieve-charges series' own config -- what
-# experiments/workflows/sieve_charges.sh drives. Separate from the two
+# experiments/workflows/cv_charges.sh drives. Separate from the two
 # sieve-*-charge-example.yaml configs, which are illustrative and stay
 # as they are.
 #

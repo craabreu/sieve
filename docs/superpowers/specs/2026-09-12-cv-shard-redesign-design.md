@@ -5,7 +5,7 @@
 **Scope:** `experiments/experiments/prepare_dash.py` (store split), `cv.py`
 (new), `compare.py` (new), `predictors/sieve_predictor.py`,
 `predictors/dash.py`, `tree_artifact.py`, `store_ops.py`, `config.py`,
-`cli.py`, both workflow scripts. No change to `sieve`'s core (`src/sieve/**`).
+`cli.py`, the workflow scripts. No change to `sieve`'s core (`src/sieve/**`).
 
 ## Context
 
@@ -215,11 +215,38 @@ Implemented and unit/integration-tested against small synthetic stores
 (`experiments/tests/test_cv.py`, `test_cv_optional.py`, `test_compare.py`) --
 including the load-bearing exactness claim itself (a CV sample's assembled
 model predicts identically to a direct fit on the same molecule union, for
-both predictors) -- but **not yet run against the real corpus**: that means
-deleting/rebuilding `experiments/stores/dash-molecules` under the new
-90/10 + shard split (a store the existing 10-fold partitions and every run
-under `experiments/runs/` currently depend on), choosing `N` from
-`cluster-report`'s real output, and then running both workflow scripts'
-shard-fit/Study-A/Study-B stages for real -- each a long-running, resource-
-heavy operation deferred to a deliberate follow-up rather than done as a
-side effect of this implementation pass.
+both predictors).
+
+## Follow-up: the workflow, and what running it for real turned up
+
+The two per-predictor scripts were replaced by a single
+`experiments/workflows/cv_charges.sh`, because under this design the two
+series share one store, one shard partition and one fold assignment per
+repeat -- and that sharing is exactly what makes their samples pairable in
+`compare.py`'s repeated-measures design, so describing the procedure twice
+risked the pairing silently drifting apart.
+
+It is built as guarded steps (`step <name> <guard> -- <command>`) whose
+guards check the **real artifact** -- a parquet's columns, a run's
+`metrics.json`, a shard's `tree_stats.npz` -- never a side marker
+recording that something once ran. Each guard is re-evaluated *after* its
+step, so a step that silently no-ops fails loudly instead of leaving an
+artifact that misrepresents itself. `CV_UNTIL=<step>` stops after a named
+step, which the procedure genuinely needs: Study A's depth curve has to be
+read by a person before Study B can be told which depth to fix.
+
+Two defects surfaced while rebuilding the real corpus, both now fixed:
+
+- **`curate_conformers` trusted its own marker.** The skip fired on
+  `curation_summary.txt` merely existing, which records that curation once
+  ran -- a different claim from "this parquet is curated". Deleting
+  `molecules.parquet` while leaving the summary made `prepare_store`
+  re-parse (uncurated) and then skip curation, splitting a store that
+  claimed a curation it never received. The skip now also compares the
+  summary's own recorded post-count against the parquet's actual row
+  count, and re-curates on a mismatch.
+- **The parsed-and-curated-but-unsplit state had no supported way to
+  exist.** Both workflow scripts told the reader to run `cluster-report`
+  against such a store, but `prepare-store` always ran through to
+  `assign_splits`; reaching it meant calling the module's stages by hand.
+  `--stop-before-split` makes it a first-class, idempotent step.

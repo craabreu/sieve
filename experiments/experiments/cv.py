@@ -323,8 +323,8 @@ def fit_sieve_shard(
     whether its own level is the model's *deepest* one, so a shallow
     config is not a truncation of a deep one and the two are not
     mergeable either (different ``max_wl_depth`` means different
-    ``schema_version``) -- see ``workflows/sieve_charges.sh``'s own Stage 2
-    note, which established this for the original fold sweep.
+    ``schema_version``) -- established for the original fold sweep, before
+    the CV redesign, and unchanged by it.
 
     ``config_label`` distinguishes one named Sieve configuration (e.g.
     ``"element-eb"``) from another sharing the same store/shard/depth, so

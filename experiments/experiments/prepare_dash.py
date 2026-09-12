@@ -563,6 +563,29 @@ CURATION_THRESHOLD = 0.4
 CURATION_SUMMARY = "curation_summary.txt"
 
 
+def _curated_conformer_count(summary_text: str) -> int | None:
+    """The post-curation conformer count recorded in a
+    ``curation_summary.txt`` (``conformers: 1029785 -> 1027538 (...)``), or
+    ``None`` if the text does not carry one -- a summary written by an
+    older revision, or a hand-edited one. Used as a *fingerprint* of the
+    store the summary describes, not merely as evidence that curation
+    happened; see ``curate_conformers``'s own skip branch."""
+    import re
+
+    match = re.search(r"conformers:\s*(\d+)\s*->\s*(\d+)", summary_text)
+    return int(match.group(2)) if match else None
+
+
+def _parquet_row_count(path: Path) -> int:
+    """Row count straight from the parquet footer -- no column is read, so
+    this stays cheap even against the real ~1GB store."""
+    import pyarrow.parquet as pq
+
+    if not path.exists():
+        return -1
+    return int(pq.ParquetFile(path).metadata.num_rows)
+
+
 def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD) -> str:
     """Drop conformers whose MBIS charges disagree with *every* sibling, and
     overwrite ``molecules.parquet`` in place; return the summary text.
@@ -608,20 +631,46 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     leave half the molecules uncorroborated and delete them.
 
     On the real store this removes 2,247 of 1,029,785 conformers (0.218%)
-    and 86 molecules outright. Idempotent: skips when
-    ``curation_summary.txt`` already exists.
+    and 86 molecules outright.
+
+    Idempotent, and *verified* rather than assumed: the skip fires only
+    when ``curation_summary.txt`` exists **and** the post-curation
+    conformer count it records matches the store's own actual row count.
+    The marker alone would record that curation once ran, which is a
+    different claim from "this parquet is curated" -- and the two come
+    apart whenever the parquet is rebuilt underneath a surviving summary.
     """
     import pandas as pd
 
     from experiments.data import blob_to_mol
 
     summary_path = store_dir / CURATION_SUMMARY
+    molecules_path = store_dir / "molecules.parquet"
     if summary_path.exists():
         text = summary_path.read_text().strip()
-        logger.info("%s already curated; skipping", store_dir)
-        return f"already curated\n{text}"
+        recorded = _curated_conformer_count(text)
+        actual = _parquet_row_count(molecules_path)
+        if recorded is not None and recorded == actual:
+            logger.info("%s already curated; skipping", store_dir)
+            return f"already curated\n{text}"
+        # The marker records that curation *ran once*, not that *this*
+        # parquet is curated -- and the two come apart for real: deleting
+        # molecules.parquet while leaving the summary behind makes
+        # prepare_store re-parse (uncurated, 1,029,785 rows on the real
+        # corpus) and then skip curation on the marker alone, producing a
+        # store that claims a curation it never received. Comparing the
+        # summary's own recorded post-count against the parquet's actual
+        # row count is the fingerprint that tells those states apart; a
+        # mismatch re-curates rather than trusting the marker.
+        logger.warning(
+            "%s has a curation summary recording %s conformer(s) but the "
+            "store holds %d -- re-curating (the summary was stale, not the "
+            "store curated)",
+            store_dir,
+            "an unparseable count" if recorded is None else str(recorded),
+            actual,
+        )
 
-    molecules_path = store_dir / "molecules.parquet"
     df = pd.read_parquet(molecules_path)
     charges = [
         np.array(
@@ -672,6 +721,7 @@ def prepare_store(
     test: float = 0.1,
     n_shards: int = 25,
     sdf_path: Path | None = None,
+    stop_before_split: bool = False,
 ) -> None:
     """Ensure ``store_name`` is downloaded, parsed, curated, and has
     ``split``/``cluster``/``shard`` columns. Idempotent at each stage,
@@ -694,7 +744,16 @@ def prepare_store(
     docstring): it divides train into that many cluster-clean shards, the
     unit a CV scheme fits once and reassembles by merging. Choose it via
     ``cluster_size_report`` against a parsed-but-not-yet-split store, not
-    blind."""
+    blind.
+
+    ``stop_before_split`` returns after curation, without calling
+    ``assign_splits`` -- which is exactly the parsed-and-curated state
+    ``cluster_size_report`` wants to read, so ``n_shards`` can be chosen
+    from the real cluster-size distribution rather than guessed and then
+    regretted. Without it that state was reachable only by calling this
+    module's stages by hand, which is how one gets a load-bearing
+    data-preparation step living in a scratch script instead of in an
+    idempotent workflow."""
     store_dir = stores_root / store_name
     store_dir.mkdir(parents=True, exist_ok=True)
 
@@ -740,6 +799,16 @@ def prepare_store(
     # here would stamp its own "already curated" prefix into the file on a
     # re-run.
     logger.info("curated %s:\n%s", store_name, curate_conformers(store_dir))
+
+    if stop_before_split:
+        logger.info(
+            "%s is parsed and curated; stopping before the split as asked. "
+            "Run `cluster-report` against it to choose n_shards from the "
+            "real cluster-size distribution, then re-run without "
+            "stop_before_split to write the split.",
+            store_name,
+        )
+        return
 
     summary_text = assign_splits(
         store_dir, train=train, val=val, test=test, n_shards=n_shards
