@@ -309,12 +309,25 @@ step sieve-codes \
 # dispatch N single-threaded processes, or run one process with `n_jobs`,
 # never both.
 #
-# The job counts are deliberately below `nproc`: per-process RSS at this
-# shard size is unmeasured, and the old sieve full-corpus sweep measured
-# ~37GB at whole-corpus scale, so these start conservative. Raise them once
-# a run's real footprint is known.
-DASH_SHARD_JOBS="${DASH_SHARD_JOBS:-16}"
-SIEVE_SHARD_JOBS="${SIEVE_SHARD_JOBS:-16}"
+# The job counts are set from measured peak RSS, not from `nproc` and not
+# from a guess -- a guess of 16 already cost one OOM-killed shard here:
+#
+#   dash  shard fit, max_depth=16 : 35.1 GB peak RSS, 2m07 wall
+#   sieve shard fit, max_wl_depth=10: 32.0 GB peak RSS, 1m11 wall
+#
+# 16 x 32GB = 512GB against this box's 503GB, which is exactly why s10 was
+# killed. A ~400GB budget (leaving the OS and page cache room) allows ~11
+# concurrent fits of either kind; 8 keeps real headroom for shard-to-shard
+# variance while still being 8x a sequential run.
+#
+# The non-obvious part, worth stating because it defeats the intuition that
+# sharding shrinks memory: a Sieve fit's footprint is driven by **depth**,
+# not by shard size. 32GB here is for 1/50th of train at depth 10, against
+# the old workflow's ~37GB for the *whole* corpus at depth 6 -- the class
+# count is what explodes, and WL depth is what explodes it. Fitting more,
+# smaller shards therefore does not buy proportionally more concurrency.
+DASH_SHARD_JOBS="${DASH_SHARD_JOBS:-8}"
+SIEVE_SHARD_JOBS="${SIEVE_SHARD_JOBS:-8}"
 SIEVE_MAX_DEPTH="${SIEVE_MAX_DEPTH:-10}"  # the deepest SIEVE_DEPTHS asks for
 
 fit_one_dash_shard() {
