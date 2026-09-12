@@ -2,9 +2,10 @@
 
 **Status:** draft, awaiting review
 **Date:** 2026-09-11
-**Scope:** one annotation stage in `experiments/experiments/prepare_dash.py`, two
-new columns in `molecules.parquet`, one opt-in config key. No change to any
-predictor, to `sieve`, or to how metrics are computed.
+**Scope:** one statistic retained during parsing plus one new annotation stage,
+both in `experiments/experiments/prepare_dash.py`; three new columns in
+`molecules.parquet`; one opt-in config key. No change to any predictor, to
+`sieve`, or to how metrics are computed.
 
 ## Problem
 
@@ -38,15 +39,38 @@ uncurated store is dominated by ~100 records.
 
 ## The criterion
 
-For each molecule, take the per-atom median charge across its conformers; flag a
-conformer if any atom deviates from it by more than a threshold.
+Two signals. The sibling comparison **screens**; an independent cross-check
+**confirms**; exclusion requires both.
 
 ```
-key   = dash_id                                   # NOT chembl_id
-med   = median over conformers of the same key    # per atom
-score = max_i |q_i - med_i|                       # per conformer, in e
-flag  = score > 0.3
+# screen -- needs only the stored charges
+key    = dash_id                                  # NOT chembl_id
+med    = median over conformers of the same key   # per atom
+sib    = max_i |q_i - med_i|                      # per conformer, in e
+
+# confirm -- needs the auxiliary GFN2-xTB charges the SDF already carries
+xtb_z  = max_i |q_i - (a_el * x_i + b_el)| / s_el # robust residual, per atom
+
+flag   = sib > 0.3  AND  xtb_z > (99th percentile of the corpus)
 ```
+
+**Why confirmation is required, and not optional.** The screen is
+model-independent in its definition but *not* independent of model difficulty: a
+sibling disagreement means the charge varies with conformation, and a graph-only
+model cannot predict conformational variation by construction. Screening alone
+therefore selects records this model class must fail on — including records whose
+labels are perfectly valid. Requiring an independent quantum-chemical
+contradiction converts the criterion from "records our models find hard" into
+"records where two partition schemes disagree about the same wavefunction", which
+is a statement about the data rather than about the model.
+
+The cost of getting this wrong is small but real, and was measured. Of 386
+records the screen flags at 0.3 e, 300 are confirmed and 86 are valid-but-hard.
+Dropping only the confirmed 300 moves Sieve's full-corpus test MAE by −1.76% and
+DASH's by −1.33%; dropping only the 86 moves them by −0.24% and −0.18%. So **88%
+of the effect comes from records with independent evidence of corruption**, and
+the valid-but-hard residue is about a tenth of it and near-identical across the
+two model families. Confirmation removes even that residue.
 
 **`dash_id`, not `chembl_id`.** 49.6% of the corpus (511,116 of 1,029,785
 conformers) has no `CHEMBL_ID` — those are the `Rest_*` records, for which
@@ -82,39 +106,52 @@ non-comparable.
 
 ## Schema
 
-`molecules.parquet` gains two columns, and the fold stores inherit them
+`molecules.parquet` gains three columns, and the fold stores inherit them
 automatically — `partition_store` reads the whole frame and writes row subsets,
 so it carries unknown columns through without modification.
 
 | column | type | meaning |
 |---|---|---|
-| `mbis_sibling_dev` | float64 | `max_i \|q_i − median_over_siblings(q_i)\|`, in e |
-| `mbis_anomaly_flag` | bool | `mbis_sibling_dev > 0.3` |
+| `mbis_sibling_dev` | float64 | screen: `max_i \|q_i − median_over_siblings(q_i)\|`, in e |
+| `mbis_xtb_z` | float64 | confirmation: max robust residual of MBIS against GFN2-xTB Mulliken |
+| `mbis_anomaly_flag` | bool | `mbis_sibling_dev > 0.3 AND mbis_xtb_z > p99` |
 
-Storing the score, not only the verdict, is what keeps the threshold revisable
-and the sensitivity analysis free.
+Storing both scores, not only the verdict, is what keeps the thresholds revisable
+and the sensitivity analysis free — and it lets an analysis separate the
+confirmed-corrupt population from the valid-but-conformationally-hard one, which
+are different things and should not be conflated.
 
 ## Where it runs
 
-A new stage in `prepare_store`, after the split stage, with its own guard:
+Each statistic is computed where its inputs exist.
 
 ```
-download → parse → split → annotate
+download → parse (+ mbis_xtb_z) → split → annotate (+ mbis_sibling_dev, flag)
 ```
 
-Each stage already skips when its output exists; `annotate` follows the same
-pattern (skip when both columns are present). It cannot live in `parse_record`,
-which is streaming and sees one record at a time, whereas the criterion needs all
-conformers of a molecule at once. It is a pass over the parsed store, not over
-the 7.8 GB SDF. Runtime on the full corpus has not been measured; the
-equivalent pass over the 103k-conformer
-test split takes ~1 minute, dominated by deserializing each conformer's `Mol`,
-so expect ~10 minutes for 1.03M — worth confirming before it is called cheap.
+`mbis_xtb_z` is computed **in `parse_record`**, which is the only place the
+auxiliary charges exist — that function currently clears every mol-level property
+right after reading `MBIScharge`, discarding `XTB_MulikenCharge` /
+`GFN2:MULLIKEN_CHARGES` along with the rest. It needs only the record itself, so
+it fits the streaming parse.
+
+`mbis_sibling_dev` and the flag are computed in a new `annotate` stage after the
+split, because the sibling median needs all conformers of a molecule at once.
+Each stage skips when its output is already present, like the existing ones.
+
+That annotate pass reads the parsed store, not the 7.8 GB SDF. Its runtime on the
+full corpus has not been measured; the equivalent pass over the 103k-conformer
+test split takes ~1 minute, dominated by deserializing each conformer's `Mol`, so
+expect ~10 minutes for 1.03M — worth confirming before calling it cheap.
 
 `prepare_store` currently returns early once the split column exists; that early
 return becomes a guarded stage so the annotation stage can follow it.
 
-Existing stores are annotated by re-running `prepare-store`, which will skip
+Existing stores need a one-off backfill for `mbis_xtb_z`, since they were parsed
+before the column existed and the auxiliary charges are no longer in the store: a
+pass over the SDF keyed by `(dash_id, record order within that id)`, which is how
+the analysis behind this spec matched them and took 147 s for the full corpus.
+`mbis_sibling_dev` needs no backfill — re-running `prepare-store` will skip
 download, parse and split and execute only the new stage. Fold stores must then
 be rebuilt, or annotated by the same pass — the spec prefers rebuilding, since
 `partition_store` is already idempotent and deterministic at seed 0.
@@ -133,12 +170,30 @@ applied, so it affects train, val and eval consistently. `metrics.json` records
 the resolved value (it rides in the config, so `to_flat_params` logs it for
 free), and the run manifest therefore says which population a number refers to.
 
-**Recommended usage, and it differs by purpose.** Headline accuracy metrics:
-report on the unfiltered store, for comparability. Any analysis of error
-distribution, tails, or uncertainty calibration: filter, because the unfiltered
-statistic is dominated by ~100 corrupted records. RMSE-based comparisons: report
-both, since the exclusion moves Sieve's RMSE by 7.2% and DASH's by 4.5% and thus
-changes the reported gap.
+**Rule, not recommendation: headline accuracy metrics are always reported on the
+unfiltered store.** MAE, RMSE and R² as the primary numbers for any model come
+from every record, so no reader has to trust the curation to trust the headline,
+and the numbers stay comparable with anyone else's on this dataset. Filtered
+numbers are reported *alongside*, never instead.
+
+Filtering is for analysis that the corrupted records genuinely invalidate:
+distribution shape, tails, uncertainty calibration. There the unfiltered
+statistic is dominated by ~100 records — excess kurtosis 476 against 60 — and
+reporting it would characterise the dataset's failures rather than the model.
+
+RMSE deserves its own note whichever way it is reported: exclusion moves Sieve's
+by 7.2% and DASH's by 4.5%, so the *gap* between methods depends on the choice in
+a way MAE's does not.
+
+**A framing the spec states rather than implies.** The valid-but-hard records —
+those the screen catches and the cross-check clears — are unlearnable by *any*
+graph-based model: their inputs are graph-identical to their siblings' and their
+labels differ, so no function of the graph can fit both. Including them measures
+the dataset's conformational spread, not the model. That is a sound reason to
+exclude them from a distribution analysis, and it is *not* a reason to exclude
+them from an accuracy number. Requiring cross-check confirmation means the flag
+does not exclude them at all; the screen score is stored so an analysis can
+isolate them deliberately if it wants to.
 
 ## What the criterion was validated against
 
@@ -159,17 +214,21 @@ sibling flag. Conversely, at that detector's ~80%-precision operating point, the
 agree — the criterion's structural blind spot, measured rather than assumed.
 
 **Model error, as corroboration only.** Sieve's own max per-conformer error
-separates the groups cleanly: median 0.056 e on ordinary records, 0.358 e on
-sibling-flagged records the cross-check calls clean, 0.481 e on records both
-methods flag.
+separates the three groups cleanly: median 0.056 e on ordinary records, 0.358 e
+on screen-flagged records the cross-check clears, 0.481 e on records both methods
+flag. Note the middle number is what the "you are removing hard cases" objection
+is about — those records *are* six times harder than average for the model — and
+it is exactly why the flag requires confirmation and the headline metric is never
+filtered.
 
-**False positives are real chemistry, and acceptable.** Of 386 records flagged at
-0.3 e, 306 (79.3%) are confirmed by the cross-check. The remaining ~80 have
+**What the screen catches that is not corruption.** Of 386 records the screen
+flags at 0.3 e, ~300 (79%) are confirmed by the cross-check. The rest have
 unremarkable charge magnitudes but twice the corpus-median dipole change between
 conformers — molecules whose charge distribution genuinely varies with geometry.
-Excluding them costs 0.08% of data and removes records a graph-only model cannot
-predict anyway. Retaining them would leave corrupted labels in the metric. The
-spec accepts them.
+Under this spec they are **not** flagged for exclusion: they keep a high
+`mbis_sibling_dev` and a low `mbis_xtb_z`, which is exactly the signature that
+identifies them, and an analysis interested in conformational sensitivity can
+select them on that.
 
 ## Alternatives rejected, with measurements
 
@@ -220,13 +279,19 @@ confirm the corpus-wide counts match those recorded here (2.12% / 0.375% /
 
 ## Open questions
 
-1. **Threshold.** 0.3 e is recommended; 0.5 e halves the false positives and
-   drops recall to 79.8%. Since the score is stored, this is revisable without
-   re-deriving anything, and a sensitivity curve over 0.1–1.0 e belongs in any
-   paper that uses the flag.
-2. **Fold stores.** Rebuild them after annotation, or annotate them in place?
+1. **Thresholds.** 0.3 e for the screen; the 99th percentile of the corpus for
+   the confirmation. Both scores are stored, so both are revisable without
+   re-deriving anything, and a two-way sensitivity table belongs in any paper
+   that uses the flag.
+2. **Which cross-scheme variant to implement.** The 300/86 split quoted above was
+   measured with a *per-DASH-tuple-class* regression (≈38 constants, AUC 0.9986).
+   A *per-element* regression is far simpler (≈11 constants) and nearly as good
+   (AUC 0.9967), and for a confirmation role that is likely enough — but the
+   confirmed set would shift slightly, so the 300/86 numbers must be re-measured
+   against whichever variant is implemented rather than carried over.
+3. **Fold stores.** Rebuild them after annotation, or annotate them in place?
    Rebuilding is simpler and deterministic; annotating in place avoids
    invalidating the ~1.8 GB of depth-6 shards keyed to the current folds.
-3. **Whether `exclude_anomalous` should default to `true` for new experiment
+4. **Whether `exclude_anomalous` should default to `true` for new experiment
    series** once the flag exists, with the current default kept only for
    reproducing existing runs.
