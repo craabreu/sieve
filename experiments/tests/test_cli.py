@@ -540,8 +540,8 @@ def test_build_parser_cv_fit_sieve_shards_defaults():
             "cv-fit-sieve-shards",
             "--n-shards",
             "25",
-            "--depths",
-            "1,2,3",
+            "--max-depth",
+            "10",
             "--codes-path",
             "codes.json",
             "--config-label",
@@ -549,7 +549,8 @@ def test_build_parser_cv_fit_sieve_shards_defaults():
         ]
     )
     assert args.n_shards == 25
-    assert args.depths == "1,2,3"
+    assert args.max_depth == 10
+    assert args.shard is None  # dispatch seam: whole set unless asked otherwise
     assert str(args.codes_path) == "codes.json"
     assert args.config_label == "element-eb"
     assert args.predictor_params is None

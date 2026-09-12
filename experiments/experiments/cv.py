@@ -318,13 +318,19 @@ def fit_sieve_shard(
     merge -- see ``predictors.sieve_predictor.SievePredictor``'s own
     docstring on ``codes_path``).
 
-    Unlike DASH, Sieve fits one shard set **per depth**: under
-    ``class_estimator="continuation"`` a class's estimate depends on
-    whether its own level is the model's *deepest* one, so a shallow
-    config is not a truncation of a deep one and the two are not
-    mergeable either (different ``max_wl_depth`` means different
-    ``schema_version``) -- established for the original fold sweep, before
-    the CV redesign, and unchanged by it.
+    Fit at the deepest depth the sweep needs, once -- not once per depth.
+    Level *k*'s stored statistics do not depend on how deep the model goes
+    (WL refinement never looks ahead), so every shallower depth is
+    ``truncate_model`` applied to the merged result; see that function for
+    the proof obligation and the merge-then-truncate ordering.
+
+    This corrects an earlier claim here that a shallow config "is not a
+    truncation of a deep one". What is true is narrower: under
+    ``class_estimator="continuation"`` a shallow depth's *prediction*
+    cannot be read out of a deep model's *output*, because the deepest
+    level is read differently from the rest. That says nothing about the
+    stored sufficient statistics, which truncation rebuilds the reading of
+    -- and which are bit-identical, as the tests now pin.
 
     ``config_label`` distinguishes one named Sieve configuration (e.g.
     ``"element-eb"``) from another sharing the same store/shard/depth, so
@@ -420,7 +426,7 @@ def run_sieve_shard_fits(
     *,
     store: str,
     n_shards: int,
-    depths: Sequence[int],
+    max_depth: int,
     codes_path: str | Path,
     config_label: str,
     predictor_params: dict[str, Any] | None = None,
@@ -428,25 +434,78 @@ def run_sieve_shard_fits(
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
     allow_dirty: bool = False,
-) -> dict[int, list[Path]]:
-    return {
-        depth: [
-            fit_sieve_shard(
-                store=store,
-                shard=s,
-                depth=depth,
-                codes_path=codes_path,
-                config_label=config_label,
-                predictor_params=predictor_params,
-                seed=seed,
-                runs_root=runs_root,
-                stores_root=stores_root,
-                allow_dirty=allow_dirty,
-            )
-            for s in shard_ids(n_shards)
-        ]
-        for depth in depths
-    }
+) -> list[Path]:
+    """One fit per shard, at ``max_depth`` -- the deepest the sweep will
+    ask for. Every shallower depth comes from ``truncate_model`` applied to
+    the *merged* model, so this is N fits, not N per depth (see
+    ``truncate_model``'s own docstring for why that is exact)."""
+    return [
+        fit_sieve_shard(
+            store=store,
+            shard=s,
+            depth=max_depth,
+            codes_path=codes_path,
+            config_label=config_label,
+            predictor_params=predictor_params,
+            seed=seed,
+            runs_root=runs_root,
+            stores_root=stores_root,
+            allow_dirty=allow_dirty,
+        )
+        for s in shard_ids(n_shards)
+    ]
+
+
+def truncate_model(model: Any, depth: int) -> Any:
+    """The depth-``depth`` model implied by an already-fitted deeper one.
+
+    WL refinement is bottom-up -- level *k* is built from level *k-1* and
+    never looks ahead -- so a depth-*D* fit's levels ``0..d`` hold exactly
+    the sufficient statistics a native depth-*d* fit would have stored.
+    Only the *predict-time reading* of them depends on the model's own
+    depth (under ``class_estimator="continuation"`` the deepest level uses
+    its pooled mean while every other level averages its children, and
+    empirical-Bayes alpha is estimated per level against that same
+    population) -- and rebuilding the config at ``max_wl_depth=depth``
+    restores exactly that reading. Verified bit-for-bit against native fits
+    at every depth in
+    ``test_truncate_model_matches_a_native_fit_at_every_depth``.
+
+    **Truncate after merging, never before.** ``max_wl_depth`` feeds
+    ``schema_version``, so a truncated model will not merge with its
+    untruncated siblings (``check_mergeable`` refuses). Merging first and
+    truncating the result is both legal and cheaper: one merge then serves
+    every depth, and it gives the same answer, since ``merge_models`` works
+    level by level and level *k*'s merge reads only level *k*.
+
+    Refuses a ``neighbor_depth`` config: there the level tuple is
+    ``[attr][coarse WL chain][main WL_PAIR chain]`` (design.md 3.6), so the
+    main chain is the *last* block and a prefix slice would cut through the
+    coarse one, silently misaligning every level.
+    """
+    import dataclasses
+
+    import sieve
+
+    if model.config.neighbor_depth is not None:
+        raise ValueError(
+            "truncate_model does not support neighbor_depth configs: the "
+            "main WL chain is the last level block, so a prefix slice would "
+            "cut through the coarse chain instead of shortening the main one"
+        )
+    if depth > model.config.max_wl_depth:
+        raise ValueError(
+            f"cannot truncate a max_wl_depth={model.config.max_wl_depth} "
+            f"model up to depth {depth}"
+        )
+    cfg = dataclasses.replace(model.config, max_wl_depth=depth)
+    return sieve.SieveModel(
+        cfg,
+        tuple(model.levels[: cfg.n_levels]),
+        model.global_count,
+        model.global_mean,
+        model.global_msd,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -608,8 +667,30 @@ def run_dash_cv(
     ``match_paths`` walk per (repeat, fold) -- shared across every depth,
     the same saving ``dash_depth_sweep`` already relies on for a single
     fold sweep.
+
+    **Depths below** ``dash_depth_sweep._MIN_DERIVABLE_DEPTH`` **are
+    refused.** Every depth here is derived by truncating one walk, and
+    depth 1 is the one case where that is measurably wrong: DASH-tree's
+    ``_get_init_layer`` redirects a hydrogen to its heavy neighbour and
+    consumes a depth unit *before* ``max_depth`` is checked, so an H atom's
+    depth-1 and depth-2 requests resolve to the same 2-entry path, and the
+    true depth-1 path is one entry longer than truncation can produce (mae
+    0.0937 vs 0.1315 on a real slice -- see that module's own note). The
+    path itself does not record which entries came from the redirect, so no
+    truncation length fixes it; a real depth-1 point needs its own shard
+    set, which this driver does not build. Refused loudly rather than
+    silently scored wrong.
     """
+    from experiments.dash_depth_sweep import _MIN_DERIVABLE_DEPTH
     from experiments.predictors.dash import DASHChargePredictor
+
+    too_shallow = sorted(d for d in depths if d < _MIN_DERIVABLE_DEPTH)
+    if too_shallow:
+        raise ValueError(
+            f"depth(s) {too_shallow} cannot be derived by truncating a "
+            f"deeper walk (see run_dash_cv's own docstring); request "
+            f">= {_MIN_DERIVABLE_DEPTH}"
+        )
     from experiments.tree_artifact import (
         apply_node_stats,
         fold_node_stats,
@@ -707,16 +788,21 @@ def run_sieve_cv(
     stores_root: Path | None = None,
     allow_dirty: bool = False,
 ) -> list[RunResult]:
-    """Sieve's own CV sweep -- the same shape as ``run_dash_cv``, except a
-    training model is assembled **per depth** (Sieve shards are fit one set
-    per depth; see ``fit_sieve_shard``'s own docstring on why) and
-    evaluation reuses one featurized batch across every depth
-    (``SievePredictor.build_predict_batch``/``predict_raw_from_batch`` --
-    valid because every depth's shards share ``codes_path``'s one frozen
-    vocabulary), rather than one tree-matching walk shared across depths
-    the way DASH's paths are.
+    """Sieve's own CV sweep, structurally the same as ``run_dash_cv``: one
+    shard set, fit once at the deepest depth, serves every depth.
 
-    Requires every shard already fit at every requested depth
+    Per sample the complementary shards are merged **once**, and each
+    requested depth is then ``truncate_model`` applied to that one merged
+    model -- exact, and the reason this needs N shard fits rather than N
+    per depth. Evaluation reuses a single featurized batch across every
+    depth as well (``SievePredictor.build_predict_batch``/
+    ``predict_raw_from_batch``), which is valid because a ``NodeBatch``
+    carries no depth information and every model here shares
+    ``codes_path``'s one frozen vocabulary. DASH gets the same saving from
+    the other direction: its paths are prefix-nested, so one walk serves
+    every depth.
+
+    Requires every shard already fit at ``max(depths)``
     (``run_sieve_shard_fits``); raises naming any that are missing.
     """
     import sieve
@@ -726,64 +812,49 @@ def run_sieve_cv(
 
     method = method or f"sieve-{config_label}"
     ids = shard_ids(n_shards)
+    fit_depth = max(depths)
 
-    shard_paths: dict[int, dict[str, Path]] = {}
-    for depth in depths:
-        paths_or_none = {
-            s: _shard_fit_done(runs_root, sieve_shard_batch_id(config_label, depth, s))
-            for s in ids
-        }
-        missing = [s for s, p in paths_or_none.items() if p is None]
-        if missing:
-            raise FileNotFoundError(
-                f"no shard fit for {config_label!r} depth {depth}, shard(s) "
-                f"{missing}; run run_sieve_shard_fits first"
-            )
-        shard_paths[depth] = {s: p for s, p in paths_or_none.items() if p is not None}
-
-    models_by_shard_by_depth = {
-        depth: {s: sieve.SieveModel.load(p) for s, p in paths.items()}
-        for depth, paths in shard_paths.items()
+    paths_or_none = {
+        s: _shard_fit_done(runs_root, sieve_shard_batch_id(config_label, fit_depth, s))
+        for s in ids
+    }
+    missing = [s for s, p in paths_or_none.items() if p is None]
+    if missing:
+        raise FileNotFoundError(
+            f"no shard fit for {config_label!r} at depth {fit_depth}, shard(s) "
+            f"{missing}; run run_sieve_shard_fits(max_depth={fit_depth}) first"
+        )
+    models_by_shard = {
+        s: sieve.SieveModel.load(p) for s, p in paths_or_none.items() if p is not None
     }
 
     mset_by_shard = load_shards(store, ids, stores_root=stores_root)
     git_info = _check_clean(allow_dirty)
 
-    # One predictor per depth, reused across every repeat/fold; a second,
-    # bare predictor supplies build_predict_batch (any depth's config has
-    # the same attribute_codes/edge_codes, since they were all frozen from
-    # one codes_path -- see fit_sieve_shard).
-    predictors_by_depth = {
-        depth: SievePredictor(**(predictor_params or {})) for depth in depths
-    }
-    batch_predictor = predictors_by_depth[depths[0]]
+    # One predictor, reused throughout: the model it carries is swapped per
+    # (fold, depth), and build_predict_batch only ever reads the config's
+    # attribute_codes/edge_codes, which every model here shares by
+    # construction (one frozen codes_path -- see fit_sieve_shard).
+    predictor = SievePredictor(**(predictor_params or {}))
 
     results: list[RunResult] = []
     for repeat in repeats:
         plan = build_cv_plan(ids, k=k, repeat=repeat)
 
-        train_models_by_depth: dict[int, list[Any]] = {}
-        for depth, models_by_shard in models_by_shard_by_depth.items():
-            group_models = [
-                sieve_fold(
-                    [models_by_shard[s] for s in g], models_by_shard[g[0]].config
-                )
-                for g in plan.groups
-            ]
-            train_models_by_depth[depth] = leave_one_group_out(
-                group_models, merge=merge_models
-            )
+        # Merged once, at fit_depth; every requested depth is a truncation
+        # of these, not a separate merge of a separate shard set.
+        group_models = [
+            sieve_fold([models_by_shard[s] for s in g], models_by_shard[g[0]].config)
+            for g in plan.groups
+        ]
+        train_models = leave_one_group_out(group_models, merge=merge_models)
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
 
-            # build_predict_batch needs *a* fitted config; set it once from
-            # the shallowest depth's own assembled model (codes are shared
-            # across every depth by construction).
-            batch_predictor._model = train_models_by_depth[depths[0]][fold]
-            batch_predictor._config = batch_predictor._model.config
+            predictor.set_model(train_models[fold])
             t0 = time.perf_counter()
-            batch = batch_predictor.build_predict_batch(held_out.mols)
+            batch = predictor.build_predict_batch(held_out.mols)
             featurize_s = time.perf_counter() - t0
 
             for depth in depths:
@@ -793,9 +864,7 @@ def run_sieve_cv(
                 if _cv_run_done(runs_root, experiment, batch_id) is not None:
                     logger.info("%s already done; skipping", batch_id)
                     continue
-                predictor = predictors_by_depth[depth]
-                predictor._model = train_models_by_depth[depth][fold]
-                predictor._config = predictor._model.config
+                predictor.set_model(truncate_model(train_models[fold], depth))
                 t0 = time.perf_counter()
                 raw = predictor.predict_raw_from_batch(batch)
                 predict_s = time.perf_counter() - t0

@@ -106,12 +106,32 @@ as they share `attribute_codes` (guaranteed by §2).
 `predict_raw` used to do in one call, so a depth sweep featurizes an eval set
 once rather than once per depth (featurization measured at ~96% of a fit).
 
-Sieve still fits one shard set **per depth**, unlike DASH: under
-`class_estimator="continuation"`, a class's estimate depends on whether its
-own level is the model's *deepest* one, so a shallow config is not a
-truncation of a deep one, and the two are not mergeable either (`max_wl_depth`
-feeds `schema_version`). This is cheap regardless, since `N` shards is one
-pass over train no matter how many depths are fit.
+**Correction (this claim was wrong as first written).** An earlier version
+of this section said Sieve must fit one shard set *per depth*, because under
+`class_estimator="continuation"` a shallow config "is not a truncation of a
+deep one". What is actually true is narrower: a shallow depth's *prediction*
+cannot be read out of a deep model's *output*, since the deepest level is
+read differently from the rest. The *stored statistics* are another matter —
+WL refinement never looks ahead, so a depth-*D* fit's levels `0..d` are
+bit-identical to a native depth-*d* fit's. `cv.truncate_model` rebuilds the
+config at `max_wl_depth=d` and slices the levels, reproducing a native fit
+exactly: same `schema_version`, identical predictions at every depth,
+pinned by `test_truncate_model_matches_a_native_fit_at_every_depth`.
+
+So **both** predictors fit one shard set, at the deepest depth needed, and
+derive every shallower depth — DASH by truncating its prefix-nested paths,
+Sieve by truncating the merged model's levels. The ordering constraint is
+real and was the part the original reasoning got right: `max_wl_depth` feeds
+`schema_version`, so truncation must come *after* merging, never before.
+Merging first is also cheaper, since one merge then serves every depth.
+
+The one exception is **DASH depth 1**, which truncation gets measurably
+wrong (mae 0.0937 vs 0.1315): `_get_init_layer` redirects a hydrogen to its
+heavy neighbour and consumes a depth unit before `max_depth` is checked, so
+an H atom's depth-1 and depth-2 requests resolve to the same path.
+`dash_depth_sweep._MIN_DERIVABLE_DEPTH` has encoded this since before the
+redesign; `run_dash_cv` now refuses depths below it rather than scoring them
+wrongly.
 
 ### 4. Assembly: permute shards, not the splitter
 
@@ -250,3 +270,15 @@ Two defects surfaced while rebuilding the real corpus, both now fixed:
   against such a store, but `prepare-store` always ran through to
   `assign_splits`; reaching it meant calling the module's stages by hand.
   `--stop-before-split` makes it a first-class, idempotent step.
+- **The workflow was written sequential, discarding the old scripts' own
+  parallel dispatch.** The pre-redesign scripts dispatched one process per
+  fold with `xargs -P`, with concurrency defaults justified by measured RSS
+  ("a single fold peaked around 8GB"; "~37GB at depth 6 with n_jobs=8, so
+  the default is deliberately far below the fold sweep's"), and the rule
+  that dispatch and `n_jobs` are alternatives, never both. Rewriting from
+  scratch lost all of it: DASH's 50 shard fits ran sequentially in 53.8
+  minutes on a 64-core box where a filled dispatch queue is 1-2 minutes.
+  Restored, with `--shard` on both shard-fit commands as the dispatch seam.
+  design.md 5.5's warning about process overhead does not apply at this
+  granularity -- it concerns pools spun up per `fit()` call, where startup
+  rivals a sub-second fit; a shard fit is ~65s.

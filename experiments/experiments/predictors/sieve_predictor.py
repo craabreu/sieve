@@ -423,6 +423,18 @@ class SievePredictor:
         self._model = sieve.SieveModel.load(path)
         self._config = self._model.config
 
+    def set_model(self, model: Any) -> None:
+        """Attach an already-built ``SieveModel`` directly -- the in-memory
+        counterpart to ``load_model_state``, which only reads from disk.
+
+        A CV driver assembles its training model by merging shards (and
+        truncating the result to a shallower depth) entirely in memory, and
+        swapping it in should not require a round trip through a file. The
+        config comes from the model itself, exactly as ``load_model_state``
+        takes it from ``SieveModel.load``."""
+        self._model = model
+        self._config = model.config
+
     @staticmethod
     def merge_states(paths: list[str | Path], out: str | Path) -> None:
         """Merge N saved ``SieveModel`` shards into one, via

@@ -211,7 +211,7 @@ STUDY_A_REPEATS=0
 STUDY_B_REPEATS=0,1,2,3,4
 
 DASH_MAX_DEPTH=16  # the published tree's own ceiling; deeper cannot lengthen a path
-DASH_DEPTHS=1,2,4,6,8,10,12,14,16
+DASH_DEPTHS=2,4,6,8,10,12,14,16
 
 SIEVE_CONFIG_LABEL=element-eb
 SIEVE_DEPTHS=0,1,2,3,4,5,6,7,8,9,10
@@ -282,22 +282,78 @@ step sieve-codes \
 # --- shard fits ------------------------------------------------------------
 #
 # One fit per shard, predicting nothing (a single shard is only ever used
-# merged). DASH needs one set: its node stats are depth-invariant, so one
-# fit at the deepest depth serves every shallower one. Sieve needs one set
-# *per depth*: under continuation a class's estimate depends on whether its
-# own level is the model's deepest, so a shallow config is not a truncation
-# of a deep one.
-step dash-shard-fits \
-  "shard_fits_count_is fit-dash-s $N_SHARDS" -- \
-  "$PYTHON" -m experiments cv-fit-dash-shards "$STORE" \
-    --n-shards "$N_SHARDS" --max-depth "$DASH_MAX_DEPTH"
+# merged) -- and for both predictors, one set at the deepest depth serves
+# every shallower one. DASH's node stats are depth-invariant and its paths
+# prefix-nested; Sieve's levels are bottom-up, so a deep fit's levels 0..d
+# are exactly a depth-d fit's, recovered by truncating the *merged* model
+# (cv.truncate_model). The one exception is DASH depth 1, which truncation
+# cannot reproduce (the H-atom redirect consumes a depth unit before
+# max_depth is checked) -- hence DASH_DEPTHS starts at 2, and run_dash_cv
+# refuses anything shallower rather than scoring it wrongly.
+# Shards are independent and each fit is ~1 minute of real work, so the
+# unit of parallelism is one shard per process, dispatched with xargs -P --
+# the same shape the pre-CV workflows used for folds, and for the same
+# reason: it is what actually uses this box's headroom (64 cores / 503GB).
+# Running these sequentially cost 53.8 min for DASH's 50 shards where a
+# filled dispatch queue is ~1-2 min.
+#
+# design.md 5.5's warning about process overhead does not bite here: it
+# concerns worker pools spun up per `fit()` call, where startup (260-390ms)
+# rivals the fit itself. A shard fit is ~65s -- three orders of magnitude
+# above that -- so the per-process DASHTree preload is noise by comparison.
+# Nor does friction observation 7 (repeated identical work across
+# processes): every process here fits a *different* shard.
+#
+# Each process is left single-threaded (`n_jobs` unset) because the
+# dispatch already fills the box. That is the old workflows' own rule:
+# dispatch N single-threaded processes, or run one process with `n_jobs`,
+# never both.
+#
+# The job counts are deliberately below `nproc`: per-process RSS at this
+# shard size is unmeasured, and the old sieve full-corpus sweep measured
+# ~37GB at whole-corpus scale, so these start conservative. Raise them once
+# a run's real footprint is known.
+DASH_SHARD_JOBS="${DASH_SHARD_JOBS:-16}"
+SIEVE_SHARD_JOBS="${SIEVE_SHARD_JOBS:-16}"
+SIEVE_MAX_DEPTH="${SIEVE_MAX_DEPTH:-10}"  # the deepest SIEVE_DEPTHS asks for
 
-step sieve-shard-fits \
-  "shard_fits_count_is fit-sieve-$SIEVE_CONFIG_LABEL-w $((N_SHARDS * $(n_items "$SIEVE_DEPTHS")))" -- \
+fit_one_dash_shard() {
+  "$PYTHON" -m experiments cv-fit-dash-shards "$STORE" \
+    --n-shards "$N_SHARDS" --max-depth "$DASH_MAX_DEPTH" --shard "$1"
+}
+
+fit_one_sieve_shard() {
   "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
-    --n-shards "$N_SHARDS" --depths "$SIEVE_DEPTHS" \
+    --n-shards "$N_SHARDS" --max-depth "$SIEVE_MAX_DEPTH" --shard "$1" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS"
+}
+export -f fit_one_dash_shard fit_one_sieve_shard
+export PYTHON STORE N_SHARDS DASH_MAX_DEPTH SIEVE_MAX_DEPTH
+export CODES_PATH SIEVE_CONFIG_LABEL SIEVE_PREDICTOR_PARAMS
+
+# Each shard's own fit is idempotent, and xargs hands a given shard to
+# exactly one process, so an interrupted dispatch resumes cleanly -- and
+# under a different job count, as the old workflows also guaranteed.
+all_shard_ids() { seq -f "s%02g" 0 $((N_SHARDS - 1)); }
+
+dispatch_dash_shards() {
+  all_shard_ids | xargs -P "$DASH_SHARD_JOBS" -n 1 \
+    bash -c 'fit_one_dash_shard "$1"' --
+}
+
+dispatch_sieve_shards() {
+  all_shard_ids | xargs -P "$SIEVE_SHARD_JOBS" -n 1 \
+    bash -c 'fit_one_sieve_shard "$1"' --
+}
+
+step dash-shard-fits \
+  "shard_fits_count_is fit-dash-s $N_SHARDS" -- \
+  dispatch_dash_shards
+
+step sieve-shard-fits \
+  "shard_fits_count_is fit-sieve-$SIEVE_CONFIG_LABEL-w$SIEVE_MAX_DEPTH-s $N_SHARDS" -- \
+  dispatch_sieve_shards
 
 # --- Study A: depth selection ----------------------------------------------
 #

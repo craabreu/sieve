@@ -286,7 +286,20 @@ def _cmd_to_united_atom(args: argparse.Namespace) -> int:
 
 
 def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
-    from experiments.cv import run_dash_shard_fits
+    from experiments.cv import fit_dash_shard, run_dash_shard_fits
+
+    if args.shard is not None:
+        print(
+            fit_dash_shard(
+                store=args.store,
+                shard=args.shard,
+                max_depth=args.max_depth,
+                seed=args.seed,
+                runs_root=DEFAULT_RUNS_ROOT,
+                allow_dirty=args.allow_dirty,
+            )
+        )
+        return 0
 
     paths = run_dash_shard_fits(
         store=args.store,
@@ -304,16 +317,31 @@ def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
 def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
     import json as _json
 
-    from experiments.cv import run_sieve_shard_fits
+    from experiments.cv import fit_sieve_shard, run_sieve_shard_fits
 
-    depths = [int(d) for d in args.depths.split(",")]
     predictor_params = (
         _json.loads(args.predictor_params) if args.predictor_params else {}
     )
+    if args.shard is not None:
+        print(
+            fit_sieve_shard(
+                store=args.store,
+                shard=args.shard,
+                depth=args.max_depth,
+                codes_path=args.codes_path,
+                config_label=args.config_label,
+                predictor_params=predictor_params,
+                seed=args.seed,
+                runs_root=DEFAULT_RUNS_ROOT,
+                allow_dirty=args.allow_dirty,
+            )
+        )
+        return 0
+
     result = run_sieve_shard_fits(
         store=args.store,
         n_shards=args.n_shards,
-        depths=depths,
+        max_depth=args.max_depth,
         codes_path=args.codes_path,
         config_label=args.config_label,
         predictor_params=predictor_params,
@@ -321,9 +349,8 @@ def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
-    for depth, paths in result.items():
-        for p in paths:
-            print(f"w{depth}: {p}")
+    for path in result:
+        print(path)
     return 0
 
 
@@ -767,20 +794,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="the deepest depth the CV sweep will need -- one fit serves "
         "every shallower depth (node stats are depth-invariant)",
     )
+    p_cv_fit_dash.add_argument(
+        "--shard",
+        default=None,
+        help="fit only this one shard (e.g. s07) instead of all of them "
+        "-- the seam an xargs -P dispatch uses to put one shard per process",
+    )
     p_cv_fit_dash.add_argument("--seed", type=int, default=0)
     p_cv_fit_dash.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_dash.set_defaults(func=_cmd_cv_fit_dash_shards)
 
     p_cv_fit_sieve = sub.add_parser(
         "cv-fit-sieve-shards",
-        help="fit Sieve on each of a store's s00..s{n-1} shards, one shard "
-        "set per depth (continuation's estimate depends on its own "
-        "deepest level, so shallow depths are not derivable from a deep fit)",
+        help="fit Sieve once per shard at the deepest depth needed -- "
+        "shallower depths come from truncating the merged model, exactly",
     )
     p_cv_fit_sieve.add_argument("store", nargs="?", default="dash-molecules")
     p_cv_fit_sieve.add_argument("--n-shards", type=int, required=True)
     p_cv_fit_sieve.add_argument(
-        "--depths", required=True, help="comma-separated max_wl_depth values"
+        "--max-depth",
+        type=int,
+        required=True,
+        help="the deepest max_wl_depth the sweep will need -- one fit per "
+        "shard serves every shallower depth, via cv.truncate_model applied "
+        "to the merged model",
     )
     p_cv_fit_sieve.add_argument(
         "--codes-path", required=True, type=Path, help="from build-sieve-codes"
@@ -795,6 +832,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="JSON object of SievePredictor kwargs other than max_wl_depth/"
         "codes_path (e.g. attributes, class_estimator, shrinkage_weight)",
+    )
+    p_cv_fit_sieve.add_argument(
+        "--shard",
+        default=None,
+        help="fit only this one shard (e.g. s07) instead of all of them "
+        "-- the seam an xargs -P dispatch uses to put one shard per process",
     )
     p_cv_fit_sieve.add_argument("--seed", type=int, default=0)
     p_cv_fit_sieve.add_argument("--allow-dirty", action="store_true")

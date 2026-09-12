@@ -169,7 +169,7 @@ def test_run_sieve_shard_fits_is_idempotent(tmp_path):
     paths = run_sieve_shard_fits(
         store=store,
         n_shards=5,
-        depths=[2],
+        max_depth=2,
         codes_path=codes_path,
         config_label="test-config",
         predictor_params={"attributes": ("element",), "edge_attributes": ()},
@@ -177,15 +177,15 @@ def test_run_sieve_shard_fits_is_idempotent(tmp_path):
         stores_root=stores_root,
         allow_dirty=True,
     )
-    assert len(paths[2]) == 5
-    for p in paths[2]:
+    assert len(paths) == 5
+    for p in paths:
         assert p.exists()
 
-    before = {p for group in paths.values() for p in group}
+    before = set(paths)
     again = run_sieve_shard_fits(
         store=store,
         n_shards=5,
-        depths=[2],
+        max_depth=2,
         codes_path=codes_path,
         config_label="test-config",
         predictor_params={"attributes": ("element",), "edge_attributes": ()},
@@ -193,7 +193,7 @@ def test_run_sieve_shard_fits_is_idempotent(tmp_path):
         stores_root=stores_root,
         allow_dirty=True,
     )
-    after = {p for group in again.values() for p in group}
+    after = set(again)
     assert before == after  # no new shard fits were written
 
 
@@ -249,7 +249,7 @@ def test_run_sieve_cv_assembly_matches_a_direct_fit_on_the_complement(tmp_path):
     run_sieve_shard_fits(
         store=store,
         n_shards=n_shards,
-        depths=[2],
+        max_depth=2,
         codes_path=codes_path,
         config_label="cfg",
         predictor_params=params,
@@ -328,7 +328,7 @@ def test_run_sieve_cv_is_idempotent(tmp_path):
     run_sieve_shard_fits(
         store=store,
         n_shards=n_shards,
-        depths=[1],
+        max_depth=1,
         codes_path=codes_path,
         config_label="cfg",
         predictor_params=params,
@@ -367,3 +367,102 @@ def test_run_sieve_cv_is_idempotent(tmp_path):
         allow_dirty=True,
     )
     assert second == []  # every (repeat, fold, depth) already done
+
+
+def test_truncate_model_matches_a_native_fit_at_every_depth():
+    """The claim the whole one-fit-per-shard scheme rests on, and which an
+    earlier revision of this module wrongly denied: truncating a deep fit
+    reproduces a native shallow fit exactly -- same schema_version, same
+    predictions, bit for bit -- under continuation + empirical Bayes, the
+    very estimator the old comment said made it impossible."""
+    from experiments.cv import truncate_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=24, seed=0)
+    test = synthetic_molecule_set(n_mol=8, seed=7)
+    # dict[str, Any], not a bare literal: `**params` below would otherwise
+    # be type-checked against every SievePredictor keyword as one narrow
+    # union (see test_run_sieve_cv_... for the same annotation).
+    params: dict[str, Any] = {
+        "attributes": ("element",),
+        "edge_attributes": (),
+        "class_estimator": "continuation",
+        "shrinkage_weight": "empirical_bayes",
+        "minimum_support": 1,
+    }
+
+    def fit(depth):
+        p = SievePredictor(max_wl_depth=depth, **params)
+        p.fit(train, train, rng=np.random.default_rng(0))
+        return p
+
+    deep = fit(6)
+    for depth in range(0, 7):
+        native = fit(depth)
+        truncated = SievePredictor(max_wl_depth=depth, **params)
+        truncated.set_model(truncate_model(deep._model, depth))
+
+        assert (
+            truncated._model.config.schema_version
+            == native._model.config.schema_version
+        ), depth
+        np.testing.assert_array_equal(
+            truncated.predict(test).atom_value,
+            native.predict(test).atom_value,
+            err_msg=f"depth {depth}",
+        )
+
+
+def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
+    import dataclasses
+
+    from experiments.cv import truncate_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=12, seed=0)
+    p = SievePredictor(
+        attributes=("element",), edge_attributes=(), max_wl_depth=3, minimum_support=1
+    )
+    p.fit(train, train, rng=np.random.default_rng(0))
+
+    with pytest.raises(ValueError, match="up to depth"):
+        truncate_model(p._model, 5)
+
+    # A neighbor_depth model's main WL chain is the *last* level block, so a
+    # prefix slice would cut the coarse chain instead -- refused, not risked.
+    faked = dataclasses.replace(
+        p._model,
+        config=dataclasses.replace(
+            p._model.config,
+            attribute_levels=(("element",), ("degree",)),
+            attribute_codes={
+                "element": dict(p._model.config.attribute_codes["element"]),
+                "degree": {"1": 0, "2": 1},
+            },
+            neighbor_depth=1,
+        ),
+    )
+    with pytest.raises(ValueError, match="neighbor_depth"):
+        truncate_model(faked, 1)
+
+
+def test_run_dash_cv_refuses_a_depth_truncation_cannot_derive():
+    """Depth 1 is the one DASH depth a truncated walk gets measurably
+    wrong (the H-atom redirect consumes a depth unit before max_depth is
+    checked). dash_depth_sweep has always routed it around truncation;
+    run_dash_cv cannot, so it must refuse rather than score it wrongly."""
+    from experiments.cv import run_dash_cv
+
+    with pytest.raises(ValueError, match=r"cannot be derived"):
+        run_dash_cv(
+            store="unused",
+            n_shards=10,
+            depths=[1, 4],
+            repeats=[0],
+            max_depth=16,
+            allow_dirty=True,
+        )
