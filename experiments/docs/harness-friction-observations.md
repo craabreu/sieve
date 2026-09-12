@@ -49,8 +49,9 @@ mechanisms:
 Both work, and the stub-dispatch tests confirm a second pass runs nothing.
 But completion is *inferred* from artifacts rather than recorded, and the two
 implementations can drift. It also makes "done" a property of a glob pattern:
-the run-directory naming convention (`{batch_id}__{predictor}-{store}-s{seed}__{stamp}__{uuid}`)
-is load-bearing for correctness, not just for readability.
+the run-directory naming convention
+(`{batch_id}__{predictor}-{store}-s{seed}__{stamp}__{uuid}`) is load-bearing
+for correctness, not just for readability.
 
 A related consequence: interrupting a sweep leaves a half-written run
 directory that later counts as done if `metrics.json` happens to exist. This
@@ -60,7 +61,7 @@ to be removed by hand.
 
 ## 3. Analysis is not part of the project
 
-`experiments/results` is gitignored (`.gitignore:38`). Every analysis this
+`experiments/results` is gitignored (`.gitignore:39`). Every analysis this
 session produced lives outside the repo: **26 Python scripts** in a session
 scratchpad under `/tmp`, producing figures that were copied into the ignored
 `experiments/results/` tree.
