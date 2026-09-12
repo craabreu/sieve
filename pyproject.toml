@@ -129,9 +129,12 @@ invalid-argument-type = "ignore"
 # - AllChem.GetMorganFingerprintAsBitVect (prepare_dash.py's clustering
 #   fingerprint step) -- a real, long-standing AllChem function the stubs
 #   simply omit.
+# - AllChem.Compute2DCoords (test_prepare_dash.py's own synthetic-molecule
+#   fixture, _sdf_record_from_smiles) -- same class of omission.
 include = [
     "experiments/experiments/data.py",
     "experiments/experiments/prepare_dash.py",
+    "experiments/tests/test_prepare_dash.py",
     # Same Chem.Mol(bytes) gap: _deserialize_mol's own worker-side
     # blob -> Mol reconstruction for parallel featurization (n_jobs).
     "src/sieve/io/rdkit_adapter.py",

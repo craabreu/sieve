@@ -1,0 +1,47 @@
+# The Sieve-charges series' own config -- what
+# experiments/workflows/sieve_charges.sh drives. Separate from the two
+# sieve-*-charge-example.yaml configs, which are illustrative and stay
+# as they are.
+#
+# This is a config file rather than a set of --set overrides on an
+# example config because `attributes`/`edge_attributes` are *lists*, and
+# `--set` cannot express one: config._parse_scalar falls through to a
+# plain string for anything non-numeric, so
+# `predictor.params.attributes=element` would silently resolve to the
+# 7-tuple ('e','l','e','m','e','n','t'), and an empty list has no --set
+# spelling at all. Everything the workflow does vary per stage (store,
+# depth, experiment, batch_id, normalization) is a scalar, and stays an
+# override.
+run:
+  experiment: sieve-depth-sweep  # overridden per stage
+  seed: 0
+data:
+  store: dash-molecules  # overridden per stage/fold
+  split_column: split
+target:
+  atom_property: MBIScharge
+  molecule_property: net_charge
+  label: charge (e)
+predictor:
+  name: sieve
+  params:
+    # One node attribute and no edge attributes: refinement past level 0
+    # is pure graph topology (see rdkit_adapter.build_codes on the empty
+    # edge_codes case), against element-only classes at level 0.
+    attributes: [element]
+    edge_attributes: []
+    max_wl_depth: 3  # overridden by the sweep
+    minimum_support: 1
+    # Kneser-Ney continuation counts: a non-deepest class estimates the
+    # unweighted mean of its children as units, not its atom-weighted
+    # pool -- calibrated for the population that actually reads it
+    # (backoff only). sieve/continuation.py's own docstring has the
+    # derivation.
+    class_estimator: continuation
+    # Normal-normal empirical Bayes, alpha estimated per level rather
+    # than swept, and the estimand's own unit of replication -- the
+    # measured-best pairing with continuation (+0.000105 vs flat
+    # continuation, t=21.7, 10/10 folds; sieve/config.py's own note).
+    # Deliberately no shrinkage_strength: this mode estimates its own
+    # alpha and *refuses* a supplied one rather than ignoring it.
+    shrinkage_weight: empirical_bayes

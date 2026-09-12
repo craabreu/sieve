@@ -60,7 +60,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_dash_depth_sweep(args: argparse.Namespace) -> int:
     depths = [int(d) for d in args.depths.split(",")]
-    if args.fold is not None:
+    if args.store is not None:
+        if args.fold is not None:
+            raise SystemExit("--store and --fold are mutually exclusive")
+        from experiments.dash_depth_sweep import run_store
+
+        results = run_store(
+            config_path=args.config,
+            store=args.store,
+            depths=depths,
+            experiment=args.experiment,
+            label=args.label,
+            runs_root=DEFAULT_RUNS_ROOT,
+            allow_dirty=args.allow_dirty,
+            limit=args.limit,
+        )
+    elif args.fold is not None:
         from experiments.dash_depth_sweep import run_fold
 
         results = run_fold(
@@ -136,7 +151,80 @@ def _cmd_promote_run(args: argparse.Namespace) -> int:
 def _cmd_prepare_store(args: argparse.Namespace) -> int:
     from experiments.prepare_dash import prepare_store
 
-    prepare_store(args.store, stores_root=DEFAULT_STORES_ROOT, sdf_path=args.sdf_path)
+    prepare_store(
+        args.store,
+        stores_root=DEFAULT_STORES_ROOT,
+        sdf_path=args.sdf_path,
+        n_shards=args.n_shards,
+    )
+    return 0
+
+
+def _cmd_cluster_report(args: argparse.Namespace) -> int:
+    from experiments.prepare_dash import cluster_size_report
+
+    candidates = tuple(int(n) for n in args.candidates.split(","))
+    report = cluster_size_report(
+        DEFAULT_STORES_ROOT / args.store,
+        train=args.train,
+        test=args.test,
+        candidate_n_shards=candidates,
+    )
+    print(report)
+    return 0
+
+
+def _cmd_build_sieve_codes(args: argparse.Namespace) -> int:
+    from experiments.config import TargetCfg
+    from experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+        save_codes,
+    )
+    from experiments.runner import load_molecule_set
+
+    attributes = (
+        tuple(args.attributes.split(","))
+        if args.attributes is not None
+        else DEFAULT_ATTRIBUTES
+    )
+    edge_attributes = (
+        tuple(a for a in args.edge_attributes.split(",") if a)
+        if args.edge_attributes is not None
+        else ("bond_type",)
+    )
+
+    mset, masks = load_molecule_set(
+        args.store,
+        target=TargetCfg(atom_property=args.atom_property),
+        split_column=args.split_column,
+        splits=(args.train_split,),
+    )
+    train = mset.select(masks[args.train_split])
+
+    config = _build_config(
+        train.mols,
+        attributes=attributes,
+        edge_attributes=edge_attributes,
+        target_dim=1,
+        max_wl_depth=0,  # irrelevant to code discovery; SieveConfig needs one
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    save_codes(config.attribute_codes, config.edge_codes, args.out)
+    print(f"wrote codes: {args.out}")
+    return 0
+
+
+def _cmd_merge_states(args: argparse.Namespace) -> int:
+    from experiments.predictors import build as build_predictor
+
+    predictor = build_predictor(args.predictor, {})
+    merge_states = getattr(predictor, "merge_states", None)
+    if merge_states is None:
+        raise SystemExit(f"predictor {args.predictor!r} has no merge_states method")
+    merge_states(args.shard, args.out)
+    print(f"merged {len(args.shard)} shard(s) -> {args.out}")
     return 0
 
 
@@ -193,6 +281,155 @@ def _cmd_to_united_atom(args: argparse.Namespace) -> int:
         atom_property=args.atom_property,
     )
     print(f"wrote {args.dest!r} (united-atom version of {args.source!r})")
+    return 0
+
+
+def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
+    from experiments.cv import run_dash_shard_fits
+
+    paths = run_dash_shard_fits(
+        store=args.store,
+        n_shards=args.n_shards,
+        max_depth=args.max_depth,
+        seed=args.seed,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+    )
+    for p in paths:
+        print(p)
+    return 0
+
+
+def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.cv import run_sieve_shard_fits
+
+    depths = [int(d) for d in args.depths.split(",")]
+    predictor_params = (
+        _json.loads(args.predictor_params) if args.predictor_params else {}
+    )
+    result = run_sieve_shard_fits(
+        store=args.store,
+        n_shards=args.n_shards,
+        depths=depths,
+        codes_path=args.codes_path,
+        config_label=args.config_label,
+        predictor_params=predictor_params,
+        seed=args.seed,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+    )
+    for depth, paths in result.items():
+        for p in paths:
+            print(f"w{depth}: {p}")
+    return 0
+
+
+def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
+    from experiments.cv import run_dash_cv
+
+    depths = [int(d) for d in args.depths.split(",")]
+    repeats = [int(r) for r in args.repeats.split(",")]
+    results = run_dash_cv(
+        store=args.store,
+        n_shards=args.n_shards,
+        depths=depths,
+        repeats=repeats,
+        k=args.k,
+        max_depth=args.max_depth,
+        normalization=args.normalization,
+        method=args.method,
+        experiment=args.experiment,
+        seed=args.seed,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+    )
+    if not results:
+        print("nothing to do -- every (repeat, fold, depth) already done")
+        return 0
+    for r in results:
+        print(f"{r.run_dir}: mae={r.metrics.get('mae')}")
+    return 0
+
+
+def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.cv import run_sieve_cv
+
+    depths = [int(d) for d in args.depths.split(",")]
+    repeats = [int(r) for r in args.repeats.split(",")]
+    predictor_params = (
+        _json.loads(args.predictor_params) if args.predictor_params else {}
+    )
+    results = run_sieve_cv(
+        store=args.store,
+        n_shards=args.n_shards,
+        depths=depths,
+        repeats=repeats,
+        codes_path=args.codes_path,
+        config_label=args.config_label,
+        predictor_params=predictor_params,
+        k=args.k,
+        normalization=args.normalization,
+        method=args.method,
+        experiment=args.experiment,
+        seed=args.seed,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+    )
+    if not results:
+        print("nothing to do -- every (repeat, fold, depth) already done")
+        return 0
+    for r in results:
+        print(f"{r.run_dir}: mae={r.metrics.get('mae')}")
+    return 0
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.compare import read_cv_table, repeated_measures_anova, tukey_hsd
+
+    experiments_ = args.experiment
+    depth_by_method = (
+        _json.loads(args.depth_by_method) if args.depth_by_method else None
+    )
+
+    methods, table = read_cv_table(
+        DEFAULT_RUNS_ROOT,
+        experiments_,
+        depth_by_method=depth_by_method,
+        metric=args.metric,
+    )
+    anova = repeated_measures_anova(methods, table)
+    print(
+        f"ANOVA: F({anova.df_method},{anova.df_error})={anova.f_stat:.4g} "
+        f"p={anova.p_value:.4g}"
+    )
+    for m in methods:
+        print(f"  mean {args.metric}[{m}] = {anova.method_means[m]:.6g}")
+
+    comparisons = tukey_hsd(methods, table, alpha=args.alpha, anova=anova)
+    for c in comparisons:
+        print(
+            f"  {c.a} - {c.b}: diff={c.diff:.6g} "
+            f"CI=[{c.ci_lo:.6g}, {c.ci_hi:.6g}] p={c.p_value:.4g}"
+        )
+
+    if args.out is not None:
+        from experiments.compare import write_tukey_plot
+
+        provenance = f"store(s): {', '.join(experiments_)}; n={table.shape[0]}"
+        write_tukey_plot(
+            comparisons,
+            args.out,
+            title=f"Tukey HSD ({args.metric})",
+            metric_label=f"{args.metric} difference",
+            provenance=provenance,
+        )
+        print(f"wrote {args.out}")
     return 0
 
 
@@ -359,6 +596,19 @@ def build_parser() -> argparse.ArgumentParser:
         "for dispatching folds to separate, parallel processes",
     )
     p_dds.add_argument(
+        "--store",
+        default=None,
+        help="sweep this one store instead of a fold partition -- e.g. the "
+        "whole corpus (dash-molecules). Mutually exclusive with --fold; "
+        "--store-prefix/--n-folds are ignored when it is given",
+    )
+    p_dds.add_argument(
+        "--label",
+        default="full",
+        help="run.batch_id suffix for a --store sweep, giving d<depth>-<label> "
+        "(default: full); ignored for fold sweeps, which label by fold",
+    )
+    p_dds.add_argument(
         "--depths",
         default="1,2,4,6,8,10,12,14,16",
         help="comma-separated max_depth values to sweep "
@@ -430,7 +680,186 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="use an already-downloaded SDF instead of downloading a fresh copy",
     )
+    p_prepare.add_argument(
+        "--n-shards",
+        type=int,
+        default=25,
+        help="cluster-clean train shards for CV (s00..s{n-1}); choose via "
+        "cluster-report first (default: 25)",
+    )
     p_prepare.set_defaults(func=_cmd_prepare_store)
+
+    p_cluster_report = sub.add_parser(
+        "cluster-report",
+        help="report train-split cluster sizes and achieved shard balance "
+        "for candidate n_shards values, to choose one before splitting",
+    )
+    p_cluster_report.add_argument("store", nargs="?", default="dash-molecules")
+    p_cluster_report.add_argument("--train", type=float, default=0.9)
+    p_cluster_report.add_argument("--test", type=float, default=0.1)
+    p_cluster_report.add_argument(
+        "--candidates",
+        default="10,25,50,100",
+        help="comma-separated candidate n_shards values (default: 10,25,50,100)",
+    )
+    p_cluster_report.set_defaults(func=_cmd_cluster_report)
+
+    p_build_codes = sub.add_parser(
+        "build-sieve-codes",
+        help="freeze a Sieve attribute/edge vocabulary over a store's whole "
+        "train split, for CV shard fits to share (sieve_predictor.SievePredictor's "
+        "own codes_path) -- without this, shards fit on disjoint molecule "
+        "sets can discover different vocabularies and refuse to merge",
+    )
+    p_build_codes.add_argument("store", nargs="?", default="dash-molecules")
+    p_build_codes.add_argument("--split-column", default="split")
+    p_build_codes.add_argument("--train-split", default="train")
+    p_build_codes.add_argument("--atom-property", default="MBIScharge")
+    p_build_codes.add_argument(
+        "--attributes",
+        default=None,
+        help="comma-separated attribute names (default: sieve_predictor's "
+        "own DEFAULT_ATTRIBUTES)",
+    )
+    p_build_codes.add_argument(
+        "--edge-attributes",
+        default=None,
+        help="comma-separated edge attribute names, empty string for none "
+        "(default: bond_type)",
+    )
+    p_build_codes.add_argument("--out", required=True, type=Path)
+    p_build_codes.set_defaults(func=_cmd_build_sieve_codes)
+
+    p_merge_states = sub.add_parser(
+        "merge-states",
+        help="merge N saved predictor model-state shards (tree_stats.npz) "
+        "into one, exact, no re-fit -- generalizes merge-shards to either "
+        "predictor via its own merge_states",
+    )
+    p_merge_states.add_argument(
+        "--predictor", required=True, choices=("dash", "sieve"), help="which predictor"
+    )
+    p_merge_states.add_argument(
+        "shard", nargs="+", type=Path, help="shard tree_stats.npz path(s) to merge"
+    )
+    p_merge_states.add_argument("--out", required=True, type=Path)
+    p_merge_states.set_defaults(func=_cmd_merge_states)
+
+    p_cv_fit_dash = sub.add_parser(
+        "cv-fit-dash-shards",
+        help="fit DASH on each of a store's s00..s{n-1} shards, predicting "
+        "nothing (a shard is only ever used merged)",
+    )
+    p_cv_fit_dash.add_argument("store", nargs="?", default="dash-molecules")
+    p_cv_fit_dash.add_argument("--n-shards", type=int, required=True)
+    p_cv_fit_dash.add_argument(
+        "--max-depth",
+        type=int,
+        required=True,
+        help="the deepest depth the CV sweep will need -- one fit serves "
+        "every shallower depth (node stats are depth-invariant)",
+    )
+    p_cv_fit_dash.add_argument("--seed", type=int, default=0)
+    p_cv_fit_dash.add_argument("--allow-dirty", action="store_true")
+    p_cv_fit_dash.set_defaults(func=_cmd_cv_fit_dash_shards)
+
+    p_cv_fit_sieve = sub.add_parser(
+        "cv-fit-sieve-shards",
+        help="fit Sieve on each of a store's s00..s{n-1} shards, one shard "
+        "set per depth (continuation's estimate depends on its own "
+        "deepest level, so shallow depths are not derivable from a deep fit)",
+    )
+    p_cv_fit_sieve.add_argument("store", nargs="?", default="dash-molecules")
+    p_cv_fit_sieve.add_argument("--n-shards", type=int, required=True)
+    p_cv_fit_sieve.add_argument(
+        "--depths", required=True, help="comma-separated max_wl_depth values"
+    )
+    p_cv_fit_sieve.add_argument(
+        "--codes-path", required=True, type=Path, help="from build-sieve-codes"
+    )
+    p_cv_fit_sieve.add_argument(
+        "--config-label",
+        required=True,
+        help="names this Sieve configuration's own shards (e.g. element-eb)",
+    )
+    p_cv_fit_sieve.add_argument(
+        "--predictor-params",
+        default=None,
+        help="JSON object of SievePredictor kwargs other than max_wl_depth/"
+        "codes_path (e.g. attributes, class_estimator, shrinkage_weight)",
+    )
+    p_cv_fit_sieve.add_argument("--seed", type=int, default=0)
+    p_cv_fit_sieve.add_argument("--allow-dirty", action="store_true")
+    p_cv_fit_sieve.set_defaults(func=_cmd_cv_fit_sieve_shards)
+
+    p_cv_run_dash = sub.add_parser(
+        "cv-run-dash",
+        help="assemble each CV sample's training model by merging DASH's "
+        "own shards, evaluate at every requested depth",
+    )
+    p_cv_run_dash.add_argument("store", nargs="?", default="dash-molecules")
+    p_cv_run_dash.add_argument("--n-shards", type=int, required=True)
+    p_cv_run_dash.add_argument("--depths", required=True)
+    p_cv_run_dash.add_argument(
+        "--repeats", default="0", help="comma-separated repeat seeds (default: 0)"
+    )
+    p_cv_run_dash.add_argument("--k", type=int, default=5)
+    p_cv_run_dash.add_argument("--max-depth", type=int, required=True)
+    p_cv_run_dash.add_argument("--normalization", default="std_weighted")
+    p_cv_run_dash.add_argument("--method", default="dash")
+    p_cv_run_dash.add_argument("--experiment", default="dash-cv")
+    p_cv_run_dash.add_argument("--seed", type=int, default=0)
+    p_cv_run_dash.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_dash.set_defaults(func=_cmd_cv_run_dash)
+
+    p_cv_run_sieve = sub.add_parser(
+        "cv-run-sieve",
+        help="assemble each CV sample's training model by merging Sieve's "
+        "own shards (per depth), evaluate at every requested depth",
+    )
+    p_cv_run_sieve.add_argument("store", nargs="?", default="dash-molecules")
+    p_cv_run_sieve.add_argument("--n-shards", type=int, required=True)
+    p_cv_run_sieve.add_argument("--depths", required=True)
+    p_cv_run_sieve.add_argument("--repeats", default="0")
+    p_cv_run_sieve.add_argument(
+        "--codes-path", required=True, type=Path, help="from build-sieve-codes"
+    )
+    p_cv_run_sieve.add_argument("--config-label", required=True)
+    p_cv_run_sieve.add_argument("--predictor-params", default=None)
+    p_cv_run_sieve.add_argument("--k", type=int, default=5)
+    p_cv_run_sieve.add_argument("--normalization", default="equal_weighted")
+    p_cv_run_sieve.add_argument(
+        "--method", default=None, help="defaults to sieve-<config-label>"
+    )
+    p_cv_run_sieve.add_argument("--experiment", default="sieve-cv")
+    p_cv_run_sieve.add_argument("--seed", type=int, default=0)
+    p_cv_run_sieve.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_sieve.set_defaults(func=_cmd_cv_run_sieve)
+
+    p_compare = sub.add_parser(
+        "compare",
+        help="repeated-measures ANOVA + Tukey HSD across cv.py runs "
+        "(Ash/Wognum/Rodriguez-Perez JCIM 2025 protocol)",
+    )
+    p_compare.add_argument(
+        "--experiment",
+        action="append",
+        required=True,
+        help="a run.experiment to read CV runs from; repeatable (e.g. "
+        "--experiment dash-cv --experiment sieve-cv)",
+    )
+    p_compare.add_argument("--metric", default="mae")
+    p_compare.add_argument(
+        "--depth-by-method",
+        default=None,
+        help='JSON object, e.g. \'{"dash": 16, "sieve-element-eb": 6}\' -- '
+        "each method's own Study-A-selected depth",
+    )
+    p_compare.add_argument("--alpha", type=float, default=0.05)
+    p_compare.add_argument(
+        "--out", type=Path, default=None, help="write a Tukey CI plot here"
+    )
+    p_compare.set_defaults(func=_cmd_compare)
 
     p_subsample = sub.add_parser(
         "subsample-store",

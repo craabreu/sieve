@@ -454,3 +454,165 @@ def test_sweep_reports_no_match_instead_of_writing_an_empty_curve(
     assert cli.main(["sweep", "--x", "predictor.params.nonexistent"]) == 1
     assert "no runs matched" in capsys.readouterr().out
     assert not (tmp_path / "results").exists()
+
+
+def test_build_parser_prepare_store_defaults_n_shards():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["prepare-store"])
+    assert args.n_shards == 25
+
+
+def test_build_parser_cluster_report_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["cluster-report", "my-store"])
+    assert args.store == "my-store"
+    assert args.train == 0.9
+    assert args.test == 0.1
+    assert args.candidates == "10,25,50,100"
+
+
+def test_build_parser_build_sieve_codes_requires_out():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["build-sieve-codes"])
+    args = parser.parse_args(["build-sieve-codes", "--out", "codes.json"])
+    assert str(args.out) == "codes.json"
+    assert args.attributes is None
+    assert args.split_column == "split"
+    assert args.train_split == "train"
+
+
+def test_build_parser_merge_states_requires_predictor_and_out():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["merge-states", "a.npz", "b.npz"])
+    args = parser.parse_args(
+        ["merge-states", "--predictor", "dash", "--out", "m.npz", "a.npz", "b.npz"]
+    )
+    assert args.predictor == "dash"
+    assert [str(p) for p in args.shard] == ["a.npz", "b.npz"]
+
+
+def test_build_parser_merge_states_rejects_an_unknown_predictor():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["merge-states", "--predictor", "bogus", "--out", "m.npz", "a.npz"]
+        )
+
+
+def test_build_parser_cv_fit_dash_shards_requires_n_shards_and_max_depth():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["cv-fit-dash-shards"])
+    args = parser.parse_args(
+        ["cv-fit-dash-shards", "my-store", "--n-shards", "25", "--max-depth", "16"]
+    )
+    assert args.store == "my-store"
+    assert args.n_shards == 25
+    assert args.max_depth == 16
+    assert args.seed == 0
+    assert args.allow_dirty is False
+
+
+def test_build_parser_cv_fit_sieve_shards_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "cv-fit-sieve-shards",
+            "--n-shards",
+            "25",
+            "--depths",
+            "1,2,3",
+            "--codes-path",
+            "codes.json",
+            "--config-label",
+            "element-eb",
+        ]
+    )
+    assert args.n_shards == 25
+    assert args.depths == "1,2,3"
+    assert str(args.codes_path) == "codes.json"
+    assert args.config_label == "element-eb"
+    assert args.predictor_params is None
+
+
+def test_build_parser_cv_run_dash_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "cv-run-dash",
+            "--n-shards",
+            "25",
+            "--depths",
+            "1,2,16",
+            "--max-depth",
+            "16",
+        ]
+    )
+    assert args.repeats == "0"
+    assert args.k == 5
+    assert args.normalization == "std_weighted"
+    assert args.method == "dash"
+    assert args.experiment == "dash-cv"
+
+
+def test_build_parser_cv_run_sieve_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "cv-run-sieve",
+            "--n-shards",
+            "25",
+            "--depths",
+            "1,2,6",
+            "--codes-path",
+            "codes.json",
+            "--config-label",
+            "element-eb",
+        ]
+    )
+    assert args.repeats == "0"
+    assert args.k == 5
+    assert args.normalization == "equal_weighted"
+    assert args.method is None
+    assert args.experiment == "sieve-cv"
+
+
+def test_build_parser_compare_requires_experiment():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["compare"])
+    args = parser.parse_args(
+        ["compare", "--experiment", "dash-cv", "--experiment", "sieve-cv"]
+    )
+    assert args.experiment == ["dash-cv", "sieve-cv"]
+    assert args.metric == "mae"
+    assert args.alpha == 0.05
+    assert args.depth_by_method is None
+    assert args.out is None

@@ -181,3 +181,44 @@ class MoleculeSet:
             ids={k: [v[i] for i in idx] for k, v in self.ids.items()},
             split=None if self.split is None else [self.split[i] for i in idx],
         )
+
+
+def concat_molecule_sets(sets: list[MoleculeSet]) -> MoleculeSet:
+    """Concatenate several ``MoleculeSet``s' conformers into one, in the
+    given order -- the CV redesign's own union of a held-out group's shard
+    stores (each shard is loaded once via ``select``; a repeat's held-out
+    set is the union of a handful of them, not a fresh store read).
+
+    Every input must share one ``atom_property``/``molecule_property`` and
+    the same ``ids`` keys -- raises rather than silently dropping a
+    mismatched column, since ``predictions.npz`` would otherwise carry a
+    shorter array than every other id column with no indication why."""
+    if not sets:
+        raise ValueError("concat_molecule_sets needs at least one MoleculeSet")
+    first = sets[0]
+    for s in sets[1:]:
+        if s.atom_property != first.atom_property:
+            raise ValueError("all sets must share one atom_property")
+        if s.molecule_property != first.molecule_property:
+            raise ValueError("all sets must share one molecule_property")
+        if set(s.ids) != set(first.ids):
+            raise ValueError("all sets must carry the same id columns")
+
+    mols = [m for s in sets for m in s.mols]
+    ids = {k: [v for s in sets for v in s.ids[k]] for k in first.ids}
+    molecule_value = (
+        None
+        if first.molecule_property is None
+        else np.concatenate([np.asarray(s.molecule_value) for s in sets])
+    )
+    split: list[str] | None = None
+    if all(s.split is not None for s in sets):
+        split = [v for s in sets for v in (s.split or [])]
+    return MoleculeSet(
+        mols=mols,
+        atom_property=first.atom_property,
+        molecule_property=first.molecule_property,
+        molecule_value=molecule_value,
+        ids=ids,
+        split=split,
+    )

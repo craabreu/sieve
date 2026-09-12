@@ -40,6 +40,7 @@ from experiments.tree_artifact import (
     TreeNodeStats,
     apply_node_stats,
     compute_node_stats,
+    fold_node_stats,
     load_node_stats,
     save_node_stats,
 )
@@ -344,10 +345,35 @@ class DASHChargePredictor:
         """Loads the tree (fast -- reads the pinned clone's own data files,
         no atom matching) and applies a previously-saved stats artifact,
         skipping fit()'s own expensive match_new_atom walk over train
-        entirely."""
+        entirely.
+
+        ``reset_existing=True`` (see ``apply_node_stats``'s own docstring):
+        this predictor may be reused across several ``load_model_state``
+        calls in one process (a CV scheme predicting from a fresh merged
+        model per sample, without re-reading the tree from disk each
+        time), and without it a branch this call's own stats leave
+        unpopulated would silently keep an earlier call's values."""
         self._load_tree()
         self._stats = load_node_stats(path)
-        self._mean_props, self._std_props = apply_node_stats(self._tree, self._stats)
+        self._mean_props, self._std_props = apply_node_stats(
+            self._tree, self._stats, reset_existing=True
+        )
+
+    @staticmethod
+    def merge_states(paths: list[str | Path], out: str | Path) -> None:
+        """Merge N saved ``TreeNodeStats`` shards into one, via
+        ``tree_artifact.fold_node_stats`` -- exact, no re-fit. DASH-tree's
+        ``(branch_idx, node_id)`` keys come from the externally published
+        tree topology, identical across every shard by construction
+        (``merge_node_stats``'s own docstring), so unlike Sieve there is no
+        vocabulary to freeze first: any set of shards is mergeable. The
+        generic CLI seam (``experiments merge-states``) discovers this
+        method by name, mirroring ``save_model_state``/``load_model_state``'s
+        own duck-typed convention (predictors/base.py)."""
+        if not paths:
+            raise ValueError("merge_states needs at least one shard path")
+        merged = fold_node_stats(load_node_stats(p) for p in paths)
+        save_node_stats(merged, out)
 
 
 def _build(params: Mapping[str, Any]) -> DASHChargePredictor:
