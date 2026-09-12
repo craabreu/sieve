@@ -466,3 +466,80 @@ def test_run_dash_cv_refuses_a_depth_truncation_cannot_derive():
             max_depth=16,
             allow_dirty=True,
         )
+
+
+def _sieve_cv_kwargs(tmp_path, *, n_mol=20, n_shards=10, seed=9):
+    """Shared setup for the save_predictions tests: a tiny sharded store,
+    frozen codes, and one shard set fit at depth 1."""
+    from experiments.cv import run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=seed
+    )
+    runs_root = tmp_path / "runs"
+    whole = synthetic_molecule_set(n_mol=n_mol, seed=seed)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params: dict[str, Any] = {"attributes": ("element",), "edge_attributes": ()}
+
+    run_sieve_shard_fits(
+        store=store,
+        n_shards=n_shards,
+        max_depth=1,
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        runs_root=runs_root,
+        stores_root=stores_root,
+        allow_dirty=True,
+    )
+    return {
+        "store": store,
+        "n_shards": n_shards,
+        "depths": [1],
+        "repeats": [0],
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "k": 5,
+        "method": "sieve-cfg",
+        "runs_root": runs_root,
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+
+
+def test_cv_runs_write_no_predictions_by_default(tmp_path):
+    """A depth sweep repeats everything but atom_target_pred at every
+    depth of a given (repeat, fold) -- ~14GB of duplication on the real
+    corpus -- so predictions are opt-in, not the default."""
+    from experiments.cv import run_sieve_cv
+
+    results = run_sieve_cv(**_sieve_cv_kwargs(tmp_path))
+
+    assert results
+    for r in results:
+        assert not (r.run_dir / "predictions.npz").exists()
+        assert (r.run_dir / "metrics.json").exists()  # metrics still written
+
+
+def test_cv_runs_write_predictions_when_asked(tmp_path):
+    from experiments.cv import run_sieve_cv
+
+    results = run_sieve_cv(save_predictions=True, **_sieve_cv_kwargs(tmp_path, seed=11))
+
+    assert results
+    for r in results:
+        assert (r.run_dir / "predictions.npz").exists()

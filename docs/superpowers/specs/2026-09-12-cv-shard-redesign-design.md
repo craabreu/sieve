@@ -270,6 +270,14 @@ Two defects surfaced while rebuilding the real corpus, both now fixed:
   against such a store, but `prepare-store` always ran through to
   `assign_splits`; reaching it meant calling the module's stages by hand.
   `--stop-before-split` makes it a first-class, idempotent step.
+- **`predictions.npz` was specified opt-in and shipped opt-out.** The
+  `save_predictions` flag existed on the writer but was never threaded
+  through the drivers, so it defaulted to on: ~14GB for Study A and ~7.5GB
+  for Study B, most of it duplication (everything but `atom_target_pred` is
+  identical across the depths of one (repeat, fold)). Now threaded, default
+  off, and enabled by the workflow for Study B alone -- the one selected
+  depth per method, which is the set a per-atom error analysis actually
+  reads.
 - **The workflow was written sequential, discarding the old scripts' own
   parallel dispatch.** The pre-redesign scripts dispatched one process per
   fold with `xargs -P`, with concurrency defaults justified by measured RSS

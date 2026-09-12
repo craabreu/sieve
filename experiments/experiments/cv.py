@@ -557,7 +557,7 @@ def _write_cv_run(
     elapsed_s: dict[str, float],
     git_info: dict[str, Any],
     runs_root: Path,
-    save_predictions: bool = True,
+    save_predictions: bool = False,
 ) -> RunResult:
     """Write one CV sample's run directory. The ``manifest["config"]`` shape
     mirrors what ``config.to_dict``/``runner`` write (``predictor.name``,
@@ -620,6 +620,13 @@ def _write_cv_run(
         json.dumps(manifest, indent=2, sort_keys=True)
     )
     if save_predictions:
+        # Off by default for CV sweeps. Each of these is ~151MB on the real
+        # corpus, and across a depth sweep most of it is duplication:
+        # atom_target_true, the id columns, num_atoms and molecule_value are
+        # identical for every depth of a given (repeat, fold) -- only
+        # atom_target_pred differs. Worth writing where per-atom predictions
+        # are actually analysed (one selected depth), not for every point of
+        # a curve that is read as aggregate metrics.
         _savez_run(
             run_dir / "predictions.npz", held_out, Prediction(atom_value=raw.atom_value)
         )
@@ -651,6 +658,7 @@ def run_dash_cv(
     max_depth: int,
     normalization: str = "std_weighted",
     method: str = "dash",
+    save_predictions: bool = False,
     experiment: str = "dash-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -765,6 +773,7 @@ def run_dash_cv(
                         elapsed_s={"walk": walk_s, "predict": predict_s},
                         git_info=git_info,
                         runs_root=runs_root,
+                        save_predictions=save_predictions,
                     )
                 )
     return results
@@ -782,6 +791,7 @@ def run_sieve_cv(
     k: int = 5,
     normalization: str = "equal_weighted",
     method: str | None = None,
+    save_predictions: bool = False,
     experiment: str = "sieve-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -885,6 +895,7 @@ def run_sieve_cv(
                         elapsed_s={"featurize": featurize_s, "predict": predict_s},
                         git_info=git_info,
                         runs_root=runs_root,
+                        save_predictions=save_predictions,
                     )
                 )
     return results

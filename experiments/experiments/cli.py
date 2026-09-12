@@ -370,6 +370,7 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
         method=args.method,
         experiment=args.experiment,
         seed=args.seed,
+        save_predictions=args.save_predictions,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -404,6 +405,7 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         method=args.method,
         experiment=args.experiment,
         seed=args.seed,
+        save_predictions=args.save_predictions,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -859,6 +861,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cv_run_dash.add_argument("--normalization", default="std_weighted")
     p_cv_run_dash.add_argument("--method", default="dash")
     p_cv_run_dash.add_argument("--experiment", default="dash-cv")
+    p_cv_run_dash.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="write per-atom predictions.npz per run (~151MB each on the "
+        "real corpus). Off by default: across a depth sweep everything but "
+        "atom_target_pred is identical between depths of one (repeat, fold)",
+    )
     p_cv_run_dash.add_argument("--seed", type=int, default=0)
     p_cv_run_dash.add_argument("--allow-dirty", action="store_true")
     p_cv_run_dash.set_defaults(func=_cmd_cv_run_dash)
@@ -883,6 +892,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--method", default=None, help="defaults to sieve-<config-label>"
     )
     p_cv_run_sieve.add_argument("--experiment", default="sieve-cv")
+    p_cv_run_sieve.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="write per-atom predictions.npz per run (~151MB each on the "
+        "real corpus). Off by default: across a depth sweep everything but "
+        "atom_target_pred is identical between depths of one (repeat, fold)",
+    )
     p_cv_run_sieve.add_argument("--seed", type=int, default=0)
     p_cv_run_sieve.add_argument("--allow-dirty", action="store_true")
     p_cv_run_sieve.set_defaults(func=_cmd_cv_run_sieve)

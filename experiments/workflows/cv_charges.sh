@@ -224,6 +224,19 @@ CLUSTER_REPORT="experiments/results/cluster-report.txt"
 # Study B fixes each method at the depth Study A selected. Override once
 # Study A's curve has been read; the defaults are each series' own prior
 # best, not a result.
+# Per-atom predictions are written for Study B only, and only at each
+# method's one selected depth -- that is the set a per-element or
+# worst-atom error analysis actually reads. Study A deliberately does not:
+# across a depth sweep everything in predictions.npz except
+# atom_target_pred is identical between depths of a given (repeat, fold),
+# so it would write ~14GB to say the same thing 8-11 times over. Study B's
+# own cost is ~7.5GB (50 runs x ~151MB); set CV_SAVE_PREDICTIONS=0 to skip
+# it and rely on the final-holdout runs, which write theirs regardless.
+SAVE_PREDICTIONS_FLAG=""
+if [ "${CV_SAVE_PREDICTIONS:-1}" != "0" ]; then
+  SAVE_PREDICTIONS_FLAG="--save-predictions"
+fi
+
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
 SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-6}"
 
@@ -406,7 +419,8 @@ step study-b-dash \
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
     --depths "$DASH_SELECTED_DEPTH" --repeats "$STUDY_B_REPEATS" \
-    --normalization std_weighted --method dash --experiment "$DASH_STUDY_B"
+    --normalization std_weighted --method dash --experiment "$DASH_STUDY_B" \
+    $SAVE_PREDICTIONS_FLAG
 
 step study-b-sieve \
   "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
@@ -416,7 +430,8 @@ step study-b-sieve \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
-    --experiment "$SIEVE_STUDY_B"
+    --experiment "$SIEVE_STUDY_B" \
+    $SAVE_PREDICTIONS_FLAG
 
 # --- compare ---------------------------------------------------------------
 #
