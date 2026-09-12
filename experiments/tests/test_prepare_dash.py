@@ -459,3 +459,217 @@ def test_parse_dash_molecules_sets_cip_labeled_marker(tmp_path):
     df = pd.read_parquet(out_path)
     mol = blob_to_mol(df.loc[0, "mol"])
     assert mol.HasProp(CIP_LABELED_PROP)
+
+
+# --- conformer curation (DASH's own 0.4 e criterion, applied at parse time) ---
+#
+# The DASH paper filters conformers whose same-atom MBIS charge differs by
+# more than 0.4 e across a molecule's conformers. Their published code
+# implements only the per-element bound check (tree_constructor._check_charges,
+# which drops nothing on the distributed corpus); this criterion exists only
+# in the methods text, and 2,292 molecules of the released SDF violate it.
+
+
+def _store_with_charges(tmp_path, per_conformer_charges, dash_id="Rest_1"):
+    """A minimal molecules.parquet: one molecule, N conformers, 4 atoms each."""
+    import pandas as pd
+    from rdkit import Chem
+
+    from experiments.data import mol_to_blob
+
+    rows = []
+    for i, charges in enumerate(per_conformer_charges):
+        mol = Chem.AddHs(Chem.MolFromSmiles("C=O"))  # C, O, H, H
+        assert mol.GetNumAtoms() == len(charges), (mol.GetNumAtoms(), len(charges))
+        for atom, q in zip(mol.GetAtoms(), charges, strict=True):
+            atom.SetDoubleProp("MBIScharge", float(q))
+        rows.append(
+            {
+                "chembl_id": None,
+                "conf_id": f"conf_{i}",
+                "dash_id": dash_id,
+                "mol": mol_to_blob(mol),
+                "net_charge": 0.0,
+            }
+        )
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    pd.DataFrame(rows).to_parquet(store_dir / "molecules.parquet")
+    return store_dir
+
+
+def _kept_conf_ids(store_dir):
+    import pandas as pd
+
+    return sorted(pd.read_parquet(store_dir / "molecules.parquet")["conf_id"])
+
+
+def test_curate_conformers_keeps_a_mutually_consistent_molecule(tmp_path):
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    store = _store_with_charges(
+        tmp_path, [base, [q + 0.01 for q in base], [q - 0.01 for q in base]]
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1", "conf_2"]
+
+
+def test_curate_conformers_drops_only_the_conformer_that_disagrees_with_all(tmp_path):
+    """A failed MBIS partition disagrees with every sibling, so it is
+    identified without a tie-break; its siblings are kept."""
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    outlier = [3.00, 0.20, -0.30, 0.00]
+    store = _store_with_charges(tmp_path, [base, [q + 0.01 for q in base], outlier])
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
+
+
+def test_curate_conformers_keeps_a_smooth_continuum(tmp_path):
+    """A-B and A-C agree while B-C does not: the charge varies smoothly with
+    geometry and no conformer is isolated, so all three are kept. Removing
+    one would be arbitrary -- B and C are symmetric."""
+    from experiments.prepare_dash import curate_conformers
+
+    a = [0.00, 0.20, -0.30, 0.00]
+    b = [-0.30, 0.20, -0.30, 0.00]
+    c = [0.30, 0.20, -0.30, 0.00]  # |b - c| = 0.6 > 0.4, but both agree with a
+    store = _store_with_charges(tmp_path, [a, b, c])
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1", "conf_2"]
+
+
+def test_curate_conformers_drops_a_molecule_whose_conformers_all_disagree(tmp_path):
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(
+        tmp_path,
+        [
+            [0.00, 0.20, -0.30, 0.00],
+            [1.00, 0.20, -0.30, 0.00],
+            [2.00, 0.20, -0.30, 0.00],
+        ],
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == []
+
+
+def test_curate_conformers_drops_both_of_a_failing_pair(tmp_path):
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(
+        tmp_path, [[0.00, 0.20, -0.30, 0.00], [1.00, 0.20, -0.30, 0.00]]
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == []
+
+
+def test_curate_conformers_drops_a_single_conformer_molecule(tmp_path):
+    """A singleton has no pair to corroborate it. This never occurs in the
+    real corpus (minimum 2 conformers per molecule) but the rule cannot
+    admit an uncorroborated record, so the behaviour is pinned here."""
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(tmp_path, [[0.10, 0.20, -0.30, 0.00]])
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == []
+
+
+def test_curate_conformers_groups_on_dash_id_not_chembl_id(tmp_path):
+    """Half the corpus has no CHEMBL_ID; grouping on it would leave those
+    molecules uncorroborated and delete them."""
+    import pandas as pd
+
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    store = _store_with_charges(
+        tmp_path, [base, [q + 0.01 for q in base]], dash_id="Rest_7"
+    )
+    df = pd.read_parquet(store / "molecules.parquet")
+    assert df["chembl_id"].isna().all()
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
+
+
+def test_curate_conformers_is_idempotent(tmp_path):
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    outlier = [3.00, 0.20, -0.30, 0.00]
+    store = _store_with_charges(tmp_path, [base, [q + 0.01 for q in base], outlier])
+    first = curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
+    second = curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
+    assert "already curated" in second.lower() or second == first
+
+
+def test_curate_conformers_writes_a_summary(tmp_path):
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    outlier = [3.00, 0.20, -0.30, 0.00]
+    store = _store_with_charges(tmp_path, [base, [q + 0.01 for q in base], outlier])
+    curate_conformers(store)
+    summary = (store / "curation_summary.txt").read_text()
+    assert "0.4" in summary
+    assert "1" in summary  # one conformer removed
+
+
+def test_prepare_store_curates_before_splitting(tmp_path):
+    """The split must be computed on the curated population, so that no fold
+    can inherit a record the criterion rejects."""
+    import pandas as pd
+
+    from experiments.prepare_dash import prepare_store
+
+    sdf = tmp_path / "tiny.sdf"
+    good = _TINY_SDF_DASH_ID
+    outlier = _TINY_SDF_DASH_ID.replace(
+        "-0.3034|0.3806|-0.3975|0.3204", "2.9000|0.3806|-0.3975|0.3204"
+    )
+    sdf.write_text(good + good.replace("Rest_2", "Rest_2") + outlier)
+    prepare_store("s", stores_root=tmp_path / "stores", sdf_path=sdf)
+
+    df = pd.read_parquet(tmp_path / "stores" / "s" / "molecules.parquet")
+    assert len(df) == 2, df[["dash_id", "conf_id"]]
+    assert "split" in df.columns
+    assert set(df["conf_id"]) == {"conf_0", "conf_1"}
+    assert (tmp_path / "stores" / "s" / "curation_summary.txt").exists()
+
+
+def test_prepare_store_refuses_a_store_split_before_curation_existed(tmp_path):
+    """A store split from the uncurated population would end up with a split
+    that predates its own contents; refuse rather than silently produce it."""
+    import pytest
+
+    from experiments.prepare_dash import prepare_store
+
+    sdf = tmp_path / "tiny.sdf"
+    sdf.write_text(_TINY_SDF_DASH_ID + _TINY_SDF_DASH_ID)
+    stores = tmp_path / "stores"
+    prepare_store("s", stores_root=stores, sdf_path=sdf)
+    (stores / "s" / "curation_summary.txt").unlink()  # simulate a legacy store
+
+    with pytest.raises(RuntimeError, match="split before conformer curation"):
+        prepare_store("s", stores_root=stores, sdf_path=sdf)
+
+
+def test_prepare_store_is_idempotent_once_curated_and_split(tmp_path):
+    import pandas as pd
+
+    from experiments.prepare_dash import prepare_store
+
+    sdf = tmp_path / "tiny.sdf"
+    sdf.write_text(_TINY_SDF_DASH_ID + _TINY_SDF_DASH_ID)
+    stores = tmp_path / "stores"
+    prepare_store("s", stores_root=stores, sdf_path=sdf)
+    before = pd.read_parquet(stores / "s" / "molecules.parquet")
+    summary_before = (stores / "s" / "curation_summary.txt").read_text()
+    prepare_store("s", stores_root=stores, sdf_path=sdf)
+    after = pd.read_parquet(stores / "s" / "molecules.parquet")
+    assert len(before) == len(after)
+    assert (stores / "s" / "curation_summary.txt").read_text() == summary_before

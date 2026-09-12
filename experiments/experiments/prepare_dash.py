@@ -409,6 +409,112 @@ def assign_splits(
     return summary_text
 
 
+CURATION_THRESHOLD = 0.4
+CURATION_SUMMARY = "curation_summary.txt"
+
+
+def curate_conformers(
+    store_dir: Path, *, threshold: float = CURATION_THRESHOLD
+) -> str:
+    """Drop conformers whose MBIS charges disagree with *every* sibling, and
+    overwrite ``molecules.parquet`` in place; return the summary text.
+
+    This is the DASH paper's own conformer criterion -- "we used the
+    difference between the partial charge of the same atom in the three
+    conformers to discard conformers with differences larger than 0.4 e" --
+    applied here at parse time, before the split. It is a reconstruction,
+    not a port: the published DASH-tree code implements only their
+    *other* filter, a per-element charge-range check
+    (``tree_develop/tree_constructor.py::_check_charges``), which is gated
+    behind a ``sanitize_charges=False`` default, runs at tree-construction
+    time, and drops zero of the released corpus's 43,248,638 atoms -- its
+    bounds (C within (-2, 4), for instance) are wide enough to admit the
+    +2.975 e aromatic carbon that motivated this function. No
+    implementation of the 0.4 e criterion appears anywhere in that repo,
+    and 2,292 molecules of the distributed SDF violate it, for reasons
+    this code cannot determine.
+
+    **The rule.** For each molecule, compare every *pair* of conformers
+    atom by atom; a pair agrees when no atom's charge differs by more than
+    ``threshold``. A conformer is removed exactly when it agrees with none
+    of its siblings.
+
+    Stated the other way round: a failed MBIS partition is wrong in its
+    own particular way, so it disagrees with everything and is identified
+    without a tie-break. Charges that vary smoothly with geometry leave
+    every conformer agreeing with at least one neighbour, so a molecule
+    spread along a continuum is kept whole -- the A-B and A-C agree while
+    B-C does not case, where deleting either B or C would be arbitrary
+    (141 molecules of the real corpus). Requiring instead that *all* pairs
+    agree would discard those molecules for being smoothly variable.
+
+    Survivors come in pairs by construction, so a molecule ends with
+    0, 2 or 3 conformers and never a lone one; no separate guard is
+    needed for that. A molecule with a single conformer in the *input*
+    has no pair to corroborate it and is therefore removed -- which never
+    occurs in the real corpus (minimum 2 conformers per molecule), but is
+    pinned by test rather than left to chance.
+
+    Grouping is by ``dash_id``, the only identity present on every record:
+    49.6% of the corpus has no ``CHEMBL_ID``, and grouping on that would
+    leave half the molecules uncorroborated and delete them.
+
+    On the real store this removes 2,247 of 1,029,785 conformers (0.218%)
+    and 86 molecules outright. Idempotent: skips when
+    ``curation_summary.txt`` already exists.
+    """
+    import pandas as pd
+
+    from experiments.data import blob_to_mol
+
+    summary_path = store_dir / CURATION_SUMMARY
+    if summary_path.exists():
+        text = summary_path.read_text().strip()
+        logger.info("%s already curated; skipping", store_dir)
+        return f"already curated\n{text}"
+
+    molecules_path = store_dir / "molecules.parquet"
+    df = pd.read_parquet(molecules_path)
+    charges = [
+        np.array(
+            [a.GetDoubleProp("MBIScharge") for a in blob_to_mol(b).GetAtoms()],
+            dtype=np.float64,
+        )
+        for b in df["mol"]
+    ]
+
+    keep = np.zeros(len(df), dtype=bool)
+    n_molecules_dropped = 0
+    for _, positions in df.groupby("dash_id", sort=False).groups.items():
+        rows = list(positions)
+        survivors: set[int] = set()
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                a, b = charges[rows[i]], charges[rows[j]]
+                if a.shape != b.shape:
+                    # Same molecule id with differing atom counts cannot be
+                    # compared atom-by-atom; treat the pair as disagreeing
+                    # rather than crashing or silently broadcasting.
+                    continue
+                if float(np.abs(a - b).max()) <= threshold:
+                    survivors.update((rows[i], rows[j]))
+        if not survivors:
+            n_molecules_dropped += 1
+        for r in survivors:
+            keep[r] = True
+
+    n_before = len(df)
+    df.loc[keep].reset_index(drop=True).to_parquet(molecules_path)
+    summary_text = (
+        f"conformer curation at threshold {threshold} e\n"
+        f"conformers: {n_before} -> {int(keep.sum())} "
+        f"({n_before - int(keep.sum())} removed)\n"
+        f"molecules removed entirely: {n_molecules_dropped}"
+    )
+    summary_path.write_text(summary_text + "\n")
+    return summary_text
+
+
 def prepare_store(
     store_name: str,
     *,
@@ -418,12 +524,22 @@ def prepare_store(
     test: float = 0.1,
     sdf_path: Path | None = None,
 ) -> None:
-    """Ensure ``store_name`` is downloaded, parsed, and has a ``split``
-    column. Idempotent at each stage, mirroring
+    """Ensure ``store_name`` is downloaded, parsed, curated, and has a
+    ``split`` column. Idempotent at each stage, mirroring
     cosmo_experiments/sieve_experiments/prepare_store.py's own
     ``prepare_store``. If ``sdf_path`` is given, it is used directly for
     parsing instead of downloading a fresh copy via ``download_dash_sdf``
-    (a ``ValueError`` is raised if it does not exist)."""
+    (a ``ValueError`` is raised if it does not exist).
+
+    ``curate_conformers`` runs *between* parse and split, which is the whole
+    point of doing it here rather than at fitting time: the split is then
+    computed on the population that survives curation, so no fold inherits a
+    record the criterion rejects, and nothing downstream has to remember to
+    filter. A store parsed before curation existed has no
+    ``curation_summary.txt`` and is curated in place on the next call --
+    which changes its row set, so any split already written from the
+    uncurated population is stale. That case is refused rather than silently
+    producing a store whose split predates its own contents."""
     store_dir = stores_root / store_name
     store_dir.mkdir(parents=True, exist_ok=True)
 
@@ -442,9 +558,22 @@ def prepare_store(
     import pyarrow.parquet as pq
 
     already_split = "split" in pq.ParquetFile(molecules_path).schema.names
-    if already_split:
-        logger.info("%s already has a split column; nothing to do", molecules_path)
+    already_curated = (store_dir / CURATION_SUMMARY).exists()
+    if already_split and already_curated:
+        logger.info("%s already curated and split; nothing to do", molecules_path)
         return
+    if already_split and not already_curated:
+        raise RuntimeError(
+            f"{molecules_path} was split before conformer curation existed. "
+            f"Curating now would drop rows the split was computed from, "
+            f"leaving a stale split. Delete the store and rebuild it, or "
+            f"curate and re-run assign_splits deliberately."
+        )
+
+    # curate_conformers writes CURATION_SUMMARY itself; writing it again
+    # here would stamp its own "already curated" prefix into the file on a
+    # re-run.
+    logger.info("curated %s:\n%s", store_name, curate_conformers(store_dir))
 
     summary_text = assign_splits(store_dir, train=train, val=val, test=test)
     (store_dir / "split_summary.txt").write_text(summary_text + "\n")
