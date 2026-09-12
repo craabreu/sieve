@@ -25,6 +25,38 @@ DFT Mulliken, DFT Löwdin and GFN2 Mulliken charges on that same atom read
 MBIS partition is wrong, and only for one conformer. All three still sum to the
 formal charge to 1e-4, so the sum rule does not detect it.
 
+### The mechanism is documented, not hypothetical
+
+MBIS is an *iterative* stockholder partition: the pro-atom parameters are refined
+to self-consistency [Verstraelen2016MBIS]. Its reference implementation stops
+when the largest change in any charge between iterations falls below `threshold`
+(default 1e-06) or when `maxiter` (default 500) is reached, and the HORTON
+documentation for the method states plainly that **"if no convergence is reached
+in the end, no warning is given"**
+(<https://theochem.github.io/horton/2.1.1/lib/mod_horton_part_mbis.html>). A
+record that hits the iteration cap is therefore written out with the last
+iteration's charges, indistinguishable from a converged one. MBIS is also known
+not to converge uniquely, unlike Hirshfeld-I.
+
+That also explains the one observation that otherwise looks contradictory — the
+sum rule holding to 1e-4 on a record where 34 of 37 atoms are wrong. This part is
+inference from the method's structure rather than a quoted result: a stockholder
+scheme divides the density by pro-atom weights that sum to 1 at *every* iteration,
+so the total charge is conserved by construction whether or not the parameters
+have converged. Non-convergence corrupts how the density is split *between*
+atoms while leaving the total exact.
+
+The QMugs half of the corpus was computed with Psi4 at ωB97X-D/def2-SVP
+[Isert2022QMugs]. Psi4 exposes `MBIS_MAXITER` and `MBIS_D_CONVERGENCE`, and also
+computes per-atom valence widths and volume ratios — quantities that would
+diagnose a failed partition directly. None of them survive into the distributed
+SDF, which carries only the resulting charges.
+
+**So this spec reconstructs, from published outputs, a convergence flag the
+producing pipeline had and discarded.** That is worth stating because it explains
+both why every detector we built tops out short of perfect and where the real fix
+belongs: upstream, in a pipeline that records whether each MBIS solve converged.
+
 Prevalence on the test split (103,033 conformers), by deviation from the sibling
 median: **2.12%** above 0.1 e, **0.375%** above 0.3 e, **0.137%** above 0.5 e.
 Failures occur in both source pipelines, about 2.3× more often in the
@@ -239,7 +271,7 @@ label; all are rejected in favour of the plain rule.
 |---|---|
 | Cross-scheme z as the *primary* criterion | AUC 0.9986, the best detector — but needs a 7.8 GB SDF re-parse, ~38 per-class calibration constants, and a second data source. Kept as validation, not as the criterion. |
 | Dipole difference ‖Σ Δqᵢ(rᵢ−r̄)‖ | AUC 0.9556, *worse* than the per-atom cross-check; ANDing it with stage 1 cut recall to 73%. A global summary is blind to a large error near the centroid. |
-| Dipole *ratio* \|μ_MBIS\|/\|μ_xTB\| | Rejected: normal records reach 5.18 against the anomaly's 5.79. Ratios blow up for near-zero denominators. |
+| Dipole *ratio* \|μ_MBIS\|/\|μ_xTB\| | Rejected: normal records reach 5.18 against the anomaly's 5.79. Ratios blow up for near-zero denominators. A dipole check also has a known systematic baseline — MBIS charges overestimate molecular dipole and quadrupole moments by ~10% [Mikkelsen2025MBISMultipole] — though the offset measured here was ~35% (ratio 1.35 median over 273 QMugs records), a discrepancy this spec does not explain. |
 | Per-element charge z (intrinsic) | AUC 0.769 with element classes; 0.900 with DASH-tuple classes and mean aggregation. Useful only if a future store lacks auxiliary charges. |
 | Per-bond-type charge jump | AUC 0.867 after per-bond-type normalization (0.751 raw). Real polar bonds reach 2.5 e, which swamps the signal. |
 | Per-element normalization of the sibling deviation | AUC 0.9623 vs 0.9605 raw; at matched budget identical at the operating point. The null spread is element-independent, so there is nothing to normalize. |
@@ -274,8 +306,11 @@ confirm the corpus-wide counts match those recorded here (2.12% / 0.375% /
   flag exists so future analyses can choose.
 - The cross-scheme, dipole and intrinsic detectors as production code. They were
   built to validate the criterion and stay as throwaway analysis scripts.
-- Reporting the anomalies upstream to the DASH authors. Worth doing, and the
-  extracted SDFs exist, but it is not a code change.
+- Reporting the anomalies upstream to the DASH and QMugs authors. Worth doing,
+  the extracted SDFs exist, and the literature above makes the ask concrete:
+  whether their MBIS runs recorded convergence, since the reference
+  implementation's default is to reach `maxiter` silently. Not a code change
+  here.
 
 ## Open questions
 
@@ -295,3 +330,18 @@ confirm the corpus-wide counts match those recorded here (2.12% / 0.375% /
 4. **Whether `exclude_anomalous` should default to `true` for new experiment
    series** once the flag exists, with the current default kept only for
    reproducing existing runs.
+
+## References
+
+Registered in `references/doi_list.txt`; the bibliography is generated, never
+hand-edited.
+
+- `Verstraelen2016MBIS` — the MBIS method, 10.1021/acs.jctc.6b00456
+- `Mikkelsen2025MBISMultipole` — multipole-constrained MBIS, 10.1021/acs.jctc.4c01297
+- `Isert2022QMugs` — the QMugs dataset, 10.1038/s41597-022-01390-7
+- `Lehner2023DASH` — the DASH tree (already registered), 10.1021/acs.jcim.3c00800
+
+Not registered, deliberately: the HORTON and Psi4 documentation pages cited above
+are software documentation with no DOI, and the 2017 Comment on the MBIS paper
+(arXiv:1701.01714) is cited in discussion but its published DOI could not be
+verified, so no guess was registered for it.
