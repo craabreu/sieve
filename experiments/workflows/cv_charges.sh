@@ -107,13 +107,19 @@ step() {
 }
 
 summarize_steps() {
+  local status=$?
   echo
   echo "=== workflow summary ==="
   echo "ran:     ${#STEPS_RUN[@]} step(s)${STEPS_RUN[*]+: ${STEPS_RUN[*]}}"
   echo "skipped: ${#STEPS_SKIPPED[@]} step(s)${STEPS_SKIPPED[*]+: ${STEPS_SKIPPED[*]}}"
   # A CV_UNTIL naming no step at all would otherwise run the whole
-  # workflow silently -- the opposite of what was asked for.
-  if [ -n "$CV_UNTIL" ] && ! $_until_matched; then
+  # workflow silently -- the opposite of what was asked for. Only a clean
+  # exit proves that, though: a step that died before CV_UNTIL's step was
+  # reached leaves _until_matched false for an entirely different reason,
+  # and blaming the name there hides the actual failure.
+  if [ "$status" -ne 0 ]; then
+    echo "!! workflow exited $status -- a step failed; see the traceback above" >&2
+  elif [ -n "$CV_UNTIL" ] && ! $_until_matched; then
     echo "!! CV_UNTIL=$CV_UNTIL matched no step; the whole workflow ran" >&2
   fi
 }
@@ -402,6 +408,7 @@ step study-a-sieve \
     --n-shards "$N_SHARDS" --k "$K" \
     --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
@@ -433,6 +440,7 @@ run_sieve_repeat() {
     --n-shards "$N_SHARDS" --k "$K" \
     --depths "$SIEVE_SELECTED_DEPTH" --repeats "$1" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_B" \

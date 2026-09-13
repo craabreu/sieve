@@ -399,6 +399,7 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         repeats=repeats,
         codes_path=args.codes_path,
         config_label=args.config_label,
+        fit_depth=args.fit_depth,
         predictor_params=predictor_params,
         k=args.k,
         normalization=args.normalization,
@@ -885,6 +886,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--codes-path", required=True, type=Path, help="from build-sieve-codes"
     )
     p_cv_run_sieve.add_argument("--config-label", required=True)
+    p_cv_run_sieve.add_argument(
+        "--fit-depth",
+        type=int,
+        default=None,
+        help=(
+            "depth the shard fits on disk were made at; defaults to max(--depths). "
+            "Set it when reusing deeper shard fits for a shallower study."
+        ),
+    )
     p_cv_run_sieve.add_argument("--predictor-params", default=None)
     p_cv_run_sieve.add_argument("--k", type=int, default=5)
     p_cv_run_sieve.add_argument("--normalization", default="equal_weighted")

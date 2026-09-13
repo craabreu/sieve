@@ -787,6 +787,7 @@ def run_sieve_cv(
     repeats: Sequence[int],
     codes_path: str | Path,
     config_label: str,
+    fit_depth: int | None = None,
     predictor_params: dict[str, Any] | None = None,
     k: int = 5,
     normalization: str = "equal_weighted",
@@ -812,8 +813,12 @@ def run_sieve_cv(
     the other direction: its paths are prefix-nested, so one walk serves
     every depth.
 
-    Requires every shard already fit at ``max(depths)``
-    (``run_sieve_shard_fits``); raises naming any that are missing.
+    ``fit_depth`` is the depth the shards on disk were actually fit at,
+    which need not equal ``max(depths)``: a Study-A sweep fits once at the
+    deepest depth it sweeps, and a later study asking for one shallower
+    depth truncates those same fits rather than refitting. It defaults to
+    ``max(depths)`` and must not be smaller. Raises naming any shard whose
+    fit is missing.
     """
     import sieve
     from experiments.predictors.sieve_predictor import SievePredictor
@@ -822,7 +827,13 @@ def run_sieve_cv(
 
     method = method or f"sieve-{config_label}"
     ids = shard_ids(n_shards)
-    fit_depth = max(depths)
+    if fit_depth is None:
+        fit_depth = max(depths)
+    elif fit_depth < max(depths):
+        raise ValueError(
+            f"fit_depth={fit_depth} is shallower than the deepest requested depth "
+            f"{max(depths)}; truncation can only remove levels"
+        )
 
     paths_or_none = {
         s: _shard_fit_done(runs_root, sieve_shard_batch_id(config_label, fit_depth, s))

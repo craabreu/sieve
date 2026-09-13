@@ -543,3 +543,79 @@ def test_cv_runs_write_predictions_when_asked(tmp_path):
     assert results
     for r in results:
         assert (r.run_dir / "predictions.npz").exists()
+
+
+def test_run_sieve_cv_reuses_shard_fits_deeper_than_the_requested_depth(tmp_path):
+    """Study B asks for one depth shallower than Study A swept, so the shard
+    fits on disk are deeper than ``max(depths)``. An earlier revision derived
+    the lookup depth from ``max(depths)`` alone and so failed to find them --
+    which is what stopped Study B's Sieve arm after its DASH arm had already
+    finished. ``fit_depth`` names the depth on disk; truncation supplies the
+    rest.
+    """
+    from experiments.cv import run_sieve_cv, run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    n_mol, n_shards, k = 20, 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    runs_root = tmp_path / "runs"
+
+    whole = synthetic_molecule_set(n_mol=n_mol, seed=2)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=2,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+
+    # Fit at depth 2, the way a sweep would.
+    run_sieve_shard_fits(
+        store=store,
+        n_shards=n_shards,
+        max_depth=2,
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        runs_root=runs_root,
+        stores_root=stores_root,
+        allow_dirty=True,
+    )
+
+    kwargs: dict[str, Any] = {
+        "store": store,
+        "n_shards": n_shards,
+        "depths": [1],
+        "repeats": [0],
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "k": k,
+        "method": "sieve-cfg",
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+
+    # Without fit_depth the lookup goes to depth 1, where nothing was fit.
+    with pytest.raises(FileNotFoundError, match="no shard fit"):
+        run_sieve_cv(runs_root=tmp_path / "runs-miss", **kwargs)
+
+    results = run_sieve_cv(fit_depth=2, runs_root=runs_root, **kwargs)
+    assert len(results) == k
+
+    # And it must not silently accept fits shallower than what is asked for.
+    with pytest.raises(ValueError, match="shallower"):
+        run_sieve_cv(
+            fit_depth=1,
+            runs_root=tmp_path / "runs-shallow",
+            **{**kwargs, "depths": [2]},
+        )
