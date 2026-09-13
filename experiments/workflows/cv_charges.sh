@@ -194,6 +194,20 @@ runs_count_is() {
   [ "$found" -eq "$expected" ]
 }
 
+# file_exists is the wrong guard for a *derived* artifact: it cannot tell
+# that the runs the artifact was derived from have changed. compare's plots
+# survived a study growing from 2 arms to 7, and the step skipped. This
+# compares mtimes instead: the artifact is up to date only if nothing it
+# reads is newer than it.
+file_is_newer_than_runs() {
+  local artifact=$1
+  shift
+  [ -f "$artifact" ] || return 1
+  local newer
+  newer=$(find "$@" -name metrics.json -newer "$artifact" -print -quit 2>/dev/null)
+  [ -z "$newer" ]
+}
+
 shard_fits_count_is() {
   local prefix=$1 expected=$2 found
   found=$(ls -d experiments/runs/cv-shard-fits/"$prefix"*__*/tree_stats.npz 2>/dev/null | wc -l)
@@ -584,7 +598,8 @@ print(json.dumps(out))
 export DEPTH_BY_METHOD  # the compare step runs in a child bash -c
 
 step compare \
-  "file_exists $TUKEY_PLOT && file_exists $SIMULTANEOUS_PLOT" -- \
+  "file_is_newer_than_runs $TUKEY_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B \
+   && file_is_newer_than_runs $SIMULTANEOUS_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B" -- \
   bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$TUKEY_PLOT')\" && \
            '$PYTHON' -m experiments compare \
              --experiment '$DASH_STUDY_B' --experiment '$SIEVE_STUDY_B' \
