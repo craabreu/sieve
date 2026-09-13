@@ -259,6 +259,13 @@ SIEVE_METHOD="sieve-element-continuation-eb"
 # schema_version excludes, so this costs no refit, no re-merge and not even a
 # re-featurization: the variants share the merged model and the eval batch.
 #
+# The cutoff arm is the hard-threshold counterpart to shrinkage: a class is
+# used only once it has minimum_support observations, otherwise the search
+# backs off. 12 is a multiple of 3, the typical conformer count per molecule,
+# so the threshold is "at least four molecules" rather than an arbitrary count
+# of correlated conformers. It is given shrinkage_weight null so that it
+# differs from sieve-element-continuation in the cutoff alone.
+#
 # These PATCH the fitted config (SIEVE_PREDICTOR_PARAMS above), so the
 # non-shrinking variants must say "shrinkage_weight": null explicitly --
 # omitting it would inherit the fit's empirical_bayes and quietly make
@@ -275,7 +282,8 @@ SIEVE_VARIANTS='[
   {"method": "sieve-element-continuation",    "class_estimator": "continuation",           "shrinkage_weight": null},
   {"method": "sieve-element-continuation-eb", "class_estimator": "continuation",           "shrinkage_weight": "empirical_bayes"},
   {"method": "sieve-element-recursive",       "class_estimator": "continuation_recursive", "shrinkage_weight": null},
-  {"method": "sieve-element-recursive-eb",    "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"}
+  {"method": "sieve-element-recursive-eb",    "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-continuation-cutoff", "class_estimator": "continuation",        "shrinkage_weight": null, "minimum_support": 12}
 ]'
 # Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
 # once, on SIEVE_METHOD alone (Study A below); the variants are a comparison
