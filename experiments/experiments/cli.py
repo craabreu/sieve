@@ -454,14 +454,18 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             f"CI=[{c.ci_lo:.6g}, {c.ci_hi:.6g}] p={c.p_value:.4g}"
         )
 
+    if args.out is None and args.out_simultaneous is None:
+        return 0
+
+    commits = run_commits(DEFAULT_RUNS_ROOT, experiments_)
+    provenance = (
+        f"experiments: {', '.join(experiments_)}; n={table.shape[0]}; "
+        f"metric: {args.metric}; commit: {', '.join(commits) or 'unknown'}"
+    )
+
     if args.out is not None:
         from experiments.compare import write_tukey_plot
 
-        commits = run_commits(DEFAULT_RUNS_ROOT, experiments_)
-        provenance = (
-            f"experiments: {', '.join(experiments_)}; n={table.shape[0]}; "
-            f"metric: {args.metric}; commit: {', '.join(commits) or 'unknown'}"
-        )
         write_tukey_plot(
             comparisons,
             args.out,
@@ -470,6 +474,34 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             provenance=provenance,
         )
         print(f"wrote {args.out}")
+
+    if args.out_simultaneous is not None:
+        from experiments.compare import simultaneous_ci, write_simultaneous_ci_plot
+
+        ci = simultaneous_ci(methods, table, alpha=args.alpha, anova=anova)
+        # Default the reference to the best method, as Walters' ADME
+        # comparison notebook does -- lower is better for an error metric,
+        # higher for a score, so the caller says which rather than us
+        # guessing from the metric's name.
+        reference: str | None = args.reference
+        if reference == "best":
+            pick = max if args.higher_is_better else min
+            reference = pick(methods, key=lambda m: ci.means[methods.index(m)])
+        elif reference == "none":
+            reference = None
+        write_simultaneous_ci_plot(
+            ci,
+            args.out_simultaneous,
+            comparison_name=reference,
+            title=f"Multiple Comparisons Between All Pairs (Tukey), {args.metric}",
+            xlabel=args.metric,
+            provenance=provenance,
+        )
+        if reference is not None:
+            for m, differs in ci.differs_from(reference).items():
+                verdict = "differs from" if differs else "overlaps"
+                print(f"  {m} {verdict} {reference}")
+        print(f"wrote {args.out_simultaneous}")
     return 0
 
 
@@ -943,7 +975,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_compare.add_argument("--alpha", type=float, default=0.05)
     p_compare.add_argument(
-        "--out", type=Path, default=None, help="write a Tukey CI plot here"
+        "--out",
+        type=Path,
+        default=None,
+        help="write the pairwise Tukey CI plot here (one interval per pair, "
+        "on a difference scale)",
+    )
+    p_compare.add_argument(
+        "--out-simultaneous",
+        type=Path,
+        default=None,
+        help="write a simultaneous-CI plot here (one interval per method, on "
+        "the metric's own scale) -- statsmodels' plot_simultaneous layout, "
+        "which stays readable as methods are added",
+    )
+    p_compare.add_argument(
+        "--reference",
+        default="best",
+        help="method to colour-code --out-simultaneous against: a method "
+        "name, 'best' (the default; see --higher-is-better), or 'none'",
+    )
+    p_compare.add_argument(
+        "--higher-is-better",
+        action="store_true",
+        help="treat --metric as a score rather than an error, when resolving "
+        "--reference best",
     )
     p_compare.set_defaults(func=_cmd_compare)
 

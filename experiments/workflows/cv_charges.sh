@@ -254,6 +254,13 @@ SIEVE_STUDY_B=sieve-cv-study-b
 # observation 3), and the Tukey plot is the study's headline result, not an
 # intermediate. It carries its own provenance header (store, commit, run ids).
 TUKEY_PLOT=experiments/docs/figures/tukey-study-b.png
+# The same test drawn the other way: one interval per method on the metric's
+# own scale rather than one per pair on a difference scale (statsmodels'
+# plot_simultaneous layout, as used in Pat Walters' ADME model comparison).
+# Two methods make a thin plot; it earns its keep once the open-ended list of
+# Sieve configs in the design has more than one entry, because it grows as k
+# rather than as k-choose-2.
+SIMULTANEOUS_PLOT=experiments/docs/figures/simultaneous-study-b.png
 
 # ===========================================================================
 # Steps
@@ -497,13 +504,14 @@ step study-b-sieve \
 # anything.
 COMPARE_METRIC="${COMPARE_METRIC:-rmse}"
 step compare \
-  "file_exists $TUKEY_PLOT" -- \
+  "file_exists $TUKEY_PLOT && file_exists $SIMULTANEOUS_PLOT" -- \
   bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$TUKEY_PLOT')\" && \
            '$PYTHON' -m experiments compare \
              --experiment '$DASH_STUDY_B' --experiment '$SIEVE_STUDY_B' \
              --metric "$COMPARE_METRIC" \
              --depth-by-method '{\"dash\": $DASH_SELECTED_DEPTH, \"$SIEVE_METHOD\": $SIEVE_SELECTED_DEPTH}' \
-             --out '$TUKEY_PLOT'"
+             --out '$TUKEY_PLOT' \
+             --out-simultaneous '$SIMULTANEOUS_PLOT'"
 
 # --- final held-out evaluation ---------------------------------------------
 #

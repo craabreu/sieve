@@ -247,3 +247,117 @@ def test_write_tukey_plot_writes_a_file(tmp_path):
     write_tukey_plot(comparisons, out, provenance="store=test git=deadbeef n=1")
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def _oneway_anova_result(methods, table):
+    """statsmodels' error term: pooled within-group variance on N - k df.
+
+    ``simultaneous_ci`` defaults to the repeated-measures one instead, so a
+    comparison against statsmodels has to hand it this.
+    """
+    from experiments.compare import ANOVAResult
+
+    n, k = table.shape
+    ms_within = float(((table - table.mean(axis=0)) ** 2).sum() / (n * k - k))
+    return ANOVAResult(
+        f_stat=float("nan"),
+        p_value=float("nan"),
+        df_method=k - 1,
+        df_subject=0,
+        df_error=n * k - k,
+        ms_error=ms_within,
+        grand_mean=float(table.mean()),
+        method_means={
+            m: float(v) for m, v in zip(methods, table.mean(axis=0), strict=True)
+        },
+    )
+
+
+# statsmodels 0.15.0, pairwise_tukeyhsd(alpha=0.05) -> res.halfwidths, for the
+# table each (k, n) key reproduces below. Every group shares one halfwidth
+# because n is equal across groups; the value still depends on k and n through
+# q_crit and Hochberg's weights, which is what makes this a real check.
+_STATSMODELS_HALFWIDTHS = {
+    (2, 5): 0.586141113212,
+    (2, 25): 0.319306557317,
+    (3, 5): 0.752352154651,
+    (3, 25): 0.328589907809,
+    (5, 5): 1.098248191769,
+    (5, 25): 0.391618510205,
+    (8, 5): 0.884865720564,
+    (8, 25): 0.433000600404,
+}
+
+
+@pytest.mark.parametrize(("k", "n"), sorted(_STATSMODELS_HALFWIDTHS))
+def test_simultaneous_ci_reproduces_statsmodels_halfwidths(k, n):
+    """The Hochberg-Tamhane interval behind statsmodels'
+    ``TukeyHSDResults.plot_simultaneous``, computed with scipy alone.
+
+    Fed statsmodels' own one-way error term, the two agree to floating point
+    -- including the k == 2 branch, where Hochberg's weights are undefined
+    and statsmodels splits the single pairwise distance evenly.
+    """
+    from experiments.compare import simultaneous_ci
+
+    rng = np.random.default_rng(k * 100 + n)
+    table = rng.normal(0, 1, size=(n, k)) + np.arange(k) * 0.7
+    methods = [f"m{i}" for i in range(k)]
+
+    ci = simultaneous_ci(methods, table, anova=_oneway_anova_result(methods, table))
+
+    expected = _STATSMODELS_HALFWIDTHS[(k, n)]
+    assert ci.halfwidths.shape == (k,)
+    np.testing.assert_allclose(ci.halfwidths, expected, rtol=1e-11)
+    np.testing.assert_allclose(ci.means, table.mean(axis=0), rtol=0, atol=0)
+
+
+def test_simultaneous_ci_overlap_agrees_with_the_pairwise_tukey_verdict():
+    """The layout's whole claim: reading overlap off the plot gives the same
+    answer as running the pairwise test. Checked on a table built to straddle
+    the threshold, so both verdicts actually occur.
+    """
+    from experiments.compare import simultaneous_ci, tukey_hsd
+
+    rng = np.random.default_rng(7)
+    n, k = 25, 4
+    table = rng.normal(0, 1, size=(n, k)) + np.array([0.0, 0.05, 0.9, 2.5])
+    methods = ["a", "b", "c", "d"]
+
+    ci = simultaneous_ci(methods, table, alpha=0.05)
+    pairwise = {
+        (c.a, c.b): c.p_value < 0.05 for c in tukey_hsd(methods, table, alpha=0.05)
+    }
+    assert set(pairwise.values()) == {True, False}, "need both verdicts to be a test"
+
+    for ref in methods:
+        for other, differs in ci.differs_from(ref).items():
+            key = (ref, other) if (ref, other) in pairwise else (other, ref)
+            assert differs == pairwise[key], (ref, other)
+
+
+def test_simultaneous_ci_rejects_an_unknown_comparison_name(tmp_path):
+    from experiments.compare import simultaneous_ci, write_simultaneous_ci_plot
+
+    rng = np.random.default_rng(3)
+    table = rng.normal(0, 1, size=(10, 3))
+    ci = simultaneous_ci(["a", "b", "c"], table)
+    with pytest.raises(ValueError, match="not one of"):
+        write_simultaneous_ci_plot(ci, tmp_path / "p.png", comparison_name="nope")
+
+
+def test_write_simultaneous_ci_plot_writes_a_file(tmp_path):
+    pytest.importorskip("matplotlib")
+    from experiments.compare import simultaneous_ci, write_simultaneous_ci_plot
+
+    rng = np.random.default_rng(4)
+    table = rng.normal(0, 1, size=(10, 3)) + np.array([0.0, 0.5, 3.0])
+    ci = simultaneous_ci(["a", "b", "c"], table)
+
+    plain = tmp_path / "plain.png"
+    write_simultaneous_ci_plot(ci, plain)
+    assert plain.stat().st_size > 0
+
+    keyed = tmp_path / "nested" / "keyed.png"
+    write_simultaneous_ci_plot(ci, keyed, comparison_name="c", provenance="x")
+    assert keyed.stat().st_size > 0

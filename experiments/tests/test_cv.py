@@ -594,7 +594,6 @@ def test_run_sieve_cv_reuses_shard_fits_deeper_than_the_requested_depth(tmp_path
     kwargs: dict[str, Any] = {
         "store": store,
         "n_shards": n_shards,
-        "depths": [1],
         "repeats": [0],
         "codes_path": codes_path,
         "config_label": "cfg",
@@ -607,15 +606,16 @@ def test_run_sieve_cv_reuses_shard_fits_deeper_than_the_requested_depth(tmp_path
 
     # Without fit_depth the lookup goes to depth 1, where nothing was fit.
     with pytest.raises(FileNotFoundError, match="no shard fit"):
-        run_sieve_cv(runs_root=tmp_path / "runs-miss", **kwargs)
+        run_sieve_cv(depths=[1], runs_root=tmp_path / "runs-miss", **kwargs)
 
-    results = run_sieve_cv(fit_depth=2, runs_root=runs_root, **kwargs)
+    results = run_sieve_cv(depths=[1], fit_depth=2, runs_root=runs_root, **kwargs)
     assert len(results) == k
 
     # And it must not silently accept fits shallower than what is asked for.
     with pytest.raises(ValueError, match="shallower"):
         run_sieve_cv(
+            depths=[2],
             fit_depth=1,
             runs_root=tmp_path / "runs-shallow",
-            **{**kwargs, "depths": [2]},
+            **kwargs,
         )
