@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from experiments.config import load_config
+from experiments.cv import DEFAULT_MODEL_CACHE
 from experiments.data import DEFAULT_STORES_ROOT
 from experiments.runner import (
     DEFAULT_ARTIFACT_ROOT,
@@ -364,6 +365,7 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
         n_shards=args.n_shards,
         depths=depths,
         repeats=repeats,
+        model_cache=args.model_cache,
         k=args.k,
         max_depth=args.max_depth,
         normalization=args.normalization,
@@ -407,6 +409,7 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         fit_depth=args.fit_depth,
         predictor_params=predictor_params,
         variants=variants,
+        model_cache=args.model_cache,
         k=args.k,
         normalization=args.normalization,
         method=args.method,
@@ -917,6 +920,19 @@ def build_parser() -> argparse.ArgumentParser:
         "atom_target_pred is identical between depths of one (repeat, fold)",
     )
     p_cv_run_dash.add_argument("--seed", type=int, default=0)
+    p_cv_run_dash.add_argument(
+        "--model-cache",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_MODEL_CACHE,
+        default=None,
+        help=(
+            "persist the assembled CV training models here and reuse them on "
+            "a later call, skipping both the shard load and the merge "
+            "(~123s and 30GB peak per repeat at N=50). Bare flag uses "
+            f"{DEFAULT_MODEL_CACHE}. Off by default: it trades disk for time."
+        ),
+    )
     p_cv_run_dash.add_argument("--allow-dirty", action="store_true")
     p_cv_run_dash.set_defaults(func=_cmd_cv_run_dash)
 
@@ -970,6 +986,19 @@ def build_parser() -> argparse.ArgumentParser:
         "atom_target_pred is identical between depths of one (repeat, fold)",
     )
     p_cv_run_sieve.add_argument("--seed", type=int, default=0)
+    p_cv_run_sieve.add_argument(
+        "--model-cache",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_MODEL_CACHE,
+        default=None,
+        help=(
+            "persist the assembled CV training models here and reuse them on "
+            "a later call, skipping both the shard load and the merge "
+            "(~123s and 30GB peak per repeat at N=50). Bare flag uses "
+            f"{DEFAULT_MODEL_CACHE}. Off by default: it trades disk for time."
+        ),
+    )
     p_cv_run_sieve.add_argument("--allow-dirty", action="store_true")
     p_cv_run_sieve.set_defaults(func=_cmd_cv_run_sieve)
 

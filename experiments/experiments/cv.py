@@ -133,6 +133,110 @@ def leave_one_group_out(groups: Sequence[T], *, merge: Callable[[T, T], T]) -> l
 
 
 # ---------------------------------------------------------------------------
+# Optional cache of assembled CV training models
+# ---------------------------------------------------------------------------
+
+DEFAULT_MODEL_CACHE = REPO_ROOT / "experiments" / "results" / "cv-model-cache"
+
+
+def cv_model_cache_dir(cache_root: str | Path, predictor: str, key: str) -> Path:
+    """Where one (predictor, configuration) family's assembled models live.
+
+    ``key`` must name everything outside ``(repeat, fold)`` that changes the
+    model -- shard count, fold count, and for Sieve the config label and fit
+    depth -- so two families can never collide in one cache root.
+    """
+    return Path(cache_root) / predictor / key
+
+
+def _cache_entry(cache_dir: Path, repeat: int, fold: int) -> tuple[Path, Path]:
+    stem = cache_dir / f"r{repeat}-f{fold}"
+    return stem.with_suffix(".npz"), stem.with_suffix(".json")
+
+
+def _write_cache_sidecar(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _check_cache_sidecar(path: Path, expected: dict[str, Any]) -> None:
+    """Refuse a cache entry that does not describe the model being asked for.
+
+    Rebuilding silently would be worse than failing: a mismatch means either
+    the partition rule changed (so every cached model is now mislabelled) or
+    two incompatible studies are sharing one cache root, and in both cases
+    overwriting destroys the other party's work. The message says how to
+    recover, which is simply to delete the directory.
+    """
+    try:
+        found = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"unreadable cache sidecar {path}: {exc}") from exc
+    bad = {k: (v, found.get(k)) for k, v in expected.items() if found.get(k) != v}
+    if bad:
+        raise RuntimeError(
+            f"cached model {path.with_suffix('.npz')} does not match what was "
+            f"asked for (expected vs cached: {bad}); the partition rule or the "
+            "shard fits have changed. Delete the cache directory to rebuild."
+        )
+
+
+def _load_cached_train_models(
+    cache_dir: Path,
+    *,
+    repeat: int,
+    plan: CVPlan,
+    load_one: Callable[[Path], T],
+    sidecar_extra: dict[str, Any],
+) -> list[T] | None:
+    """Every fold of ``repeat``, or ``None`` if any one is absent.
+
+    All-or-nothing on purpose: a partially cached repeat still has to load
+    the shards and merge, and at that point reusing the few cached folds
+    saves a merge each but risks mixing entries written by different code.
+    """
+    entries = [_cache_entry(cache_dir, repeat, f) for f in range(len(plan.groups))]
+    if not all(npz.exists() and side.exists() for npz, side in entries):
+        return None
+    out: list[T] = []
+    for fold, (npz, side) in enumerate(entries):
+        _check_cache_sidecar(
+            side, {**sidecar_extra, "train_shards": _train_shards(plan, fold)}
+        )
+        out.append(load_one(npz))
+    logger.info(
+        "repeat %d: loaded %d training models from %s", repeat, len(out), cache_dir
+    )
+    return out
+
+
+def _save_train_models(
+    cache_dir: Path,
+    *,
+    repeat: int,
+    plan: CVPlan,
+    models: Sequence[T],
+    save_one: Callable[[T, Path], None],
+    sidecar_extra: dict[str, Any],
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for fold, model in enumerate(models):
+        npz, side = _cache_entry(cache_dir, repeat, fold)
+        save_one(model, npz)
+        # Sidecar last: its presence is what marks the entry complete, so an
+        # interrupted save leaves a miss rather than a truncated hit.
+        _write_cache_sidecar(
+            side, {**sidecar_extra, "train_shards": _train_shards(plan, fold)}
+        )
+    logger.info(
+        "repeat %d: cached %d training models in %s", repeat, len(models), cache_dir
+    )
+
+
+def _train_shards(plan: CVPlan, fold: int) -> list[str]:
+    return sorted(s for g, group in enumerate(plan.groups) if g != fold for s in group)
+
+
+# ---------------------------------------------------------------------------
 # Batch-id / experiment-name conventions
 # ---------------------------------------------------------------------------
 
@@ -723,6 +827,7 @@ def run_dash_cv(
     n_shards: int,
     depths: Sequence[int],
     repeats: Sequence[int],
+    model_cache: str | Path | None = None,
     k: int = 5,
     max_depth: int,
     normalization: str = "std_weighted",
@@ -740,7 +845,15 @@ def run_dash_cv(
     every requested depth against that fold's held-out group.
 
     Requires every shard already fit (``run_dash_shard_fits`` at
-    ``max_depth``); raises naming any that are missing. One tree load, one
+    ``max_depth``); raises naming any that are missing.
+
+    ``model_cache`` persists the assembled training models under
+    ``<cache>/dash/n<N>-k<k>/r<repeat>-f<fold>.npz`` and reuses them on a
+    later call, skipping both the shard load and the merge. DASH node stats
+    are depth-invariant, so the key carries no depth and one cached repeat
+    serves every depth. Off by default -- it trades disk for time.
+
+    One tree load, one
     ``match_paths`` walk per (repeat, fold) -- shared across every depth,
     the same saving ``dash_depth_sweep`` already relies on for a single
     fold sweep.
@@ -773,6 +886,7 @@ def run_dash_cv(
         fold_node_stats,
         load_node_stats,
         merge_node_stats,
+        save_node_stats,
     )
 
     ids = shard_ids(n_shards)
@@ -787,7 +901,23 @@ def run_dash_cv(
     shard_paths: dict[str, Path] = {
         s: p for s, p in shard_paths_or_none.items() if p is not None
     }
-    stats_by_shard = {s: load_node_stats(p) for s, p in shard_paths.items()}
+    # Lazy for the same reason as Sieve's: a fully cached repeat need not open
+    # a single shard. Node stats are depth-invariant, so the cache key carries
+    # no depth -- one cached repeat serves every depth this driver scores.
+    _stats_by_shard: dict[str, Any] = {}
+
+    def stats_by_shard() -> dict[str, Any]:
+        if not _stats_by_shard:
+            _stats_by_shard.update(
+                {s: load_node_stats(p) for s, p in shard_paths.items()}
+            )
+        return _stats_by_shard
+
+    cache_dir = (
+        None
+        if model_cache is None
+        else cv_model_cache_dir(model_cache, "dash", f"n{n_shards}-k{k}")
+    )
 
     mset_by_shard = load_shards(store, ids, stores_root=stores_root)
     git_info = _check_clean(allow_dirty)
@@ -798,10 +928,29 @@ def run_dash_cv(
     results: list[RunResult] = []
     for repeat in repeats:
         plan = build_cv_plan(ids, k=k, repeat=repeat)
-        group_stats = [
-            fold_node_stats(stats_by_shard[s] for s in g) for g in plan.groups
-        ]
-        train_stats = leave_one_group_out(group_stats, merge=merge_node_stats)
+
+        train_stats = None
+        if cache_dir is not None:
+            train_stats = _load_cached_train_models(
+                cache_dir,
+                repeat=repeat,
+                plan=plan,
+                load_one=load_node_stats,
+                sidecar_extra={},
+            )
+        if train_stats is None:
+            shards = stats_by_shard()
+            group_stats = [fold_node_stats(shards[s] for s in g) for g in plan.groups]
+            train_stats = leave_one_group_out(group_stats, merge=merge_node_stats)
+            if cache_dir is not None:
+                _save_train_models(
+                    cache_dir,
+                    repeat=repeat,
+                    plan=plan,
+                    models=train_stats,
+                    save_one=save_node_stats,
+                    sidecar_extra={},
+                )
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
@@ -859,6 +1008,7 @@ def run_sieve_cv(
     fit_depth: int | None = None,
     predictor_params: dict[str, Any] | None = None,
     variants: Sequence[EstimatorVariant] | None = None,
+    model_cache: str | Path | None = None,
     k: int = 5,
     normalization: str = "equal_weighted",
     method: str | None = None,
@@ -897,6 +1047,17 @@ def run_sieve_cv(
     merged, already truncated model, scored against the already featurized
     batch, and written under its own ``EstimatorVariant.method``. Omitted,
     the model is scored as fitted, under ``method``.
+
+    ``model_cache`` persists the assembled training models under
+    ``<cache>/sieve/<config>-w<fit_depth>-n<N>-k<k>/r<repeat>-f<fold>.npz``
+    and reuses them on a later call. Assembling one repeat's k models costs
+    ~123 s and 30 GB of peak RSS at N=50 (load 2.6 s, fold into k groups
+    27.3 s, leave-one-group-out 92.9 s), all of which a hit skips -- the
+    shard fits are not even opened. Models are cached **untruncated**, at
+    ``fit_depth``, so one cached repeat serves every depth and every variant.
+    Off by default: this trades a large amount of disk for that time, and
+    ``config.py`` records a previous 21 GB incident from persisting more than
+    was needed.
     """
     import sieve
     from experiments.predictors.sieve_predictor import SievePredictor
@@ -927,9 +1088,29 @@ def run_sieve_cv(
             f"no shard fit for {config_label!r} at depth {fit_depth}, shard(s) "
             f"{missing}; run run_sieve_shard_fits(max_depth={fit_depth}) first"
         )
-    models_by_shard = {
-        s: sieve.SieveModel.load(p) for s, p in paths_or_none.items() if p is not None
-    }
+    shard_paths = {s: p for s, p in paths_or_none.items() if p is not None}
+    # Loaded lazily: a fully cached repeat never needs the shards at all, and
+    # opening 50 of them is the first 2.6 s of the 123 s this cache exists to
+    # avoid. One is still read eagerly below, to pin schema_version.
+    _models_by_shard: dict[str, Any] = {}
+
+    def models_by_shard() -> dict[str, Any]:
+        if not _models_by_shard:
+            _models_by_shard.update(
+                {s: sieve.SieveModel.load(p) for s, p in shard_paths.items()}
+            )
+        return _models_by_shard
+
+    cache_dir = None
+    sidecar: dict[str, Any] = {}
+    if model_cache is not None:
+        reference = sieve.SieveModel.load(shard_paths[ids[0]])
+        cache_dir = cv_model_cache_dir(
+            model_cache, "sieve", f"{config_label}-w{fit_depth}-n{n_shards}-k{k}"
+        )
+        # schema_version pins the vocabulary and depth the fits were built
+        # with; a cached model that disagrees is not the same model.
+        sidecar = {"schema_version": reference.config.schema_version}
 
     mset_by_shard = load_shards(store, ids, stores_root=stores_root)
     git_info = _check_clean(allow_dirty)
@@ -944,13 +1125,33 @@ def run_sieve_cv(
     for repeat in repeats:
         plan = build_cv_plan(ids, k=k, repeat=repeat)
 
-        # Merged once, at fit_depth; every requested depth is a truncation
-        # of these, not a separate merge of a separate shard set.
-        group_models = [
-            sieve_fold([models_by_shard[s] for s in g], models_by_shard[g[0]].config)
-            for g in plan.groups
-        ]
-        train_models = leave_one_group_out(group_models, merge=merge_models)
+        train_models = None
+        if cache_dir is not None:
+            train_models = _load_cached_train_models(
+                cache_dir,
+                repeat=repeat,
+                plan=plan,
+                load_one=sieve.SieveModel.load,
+                sidecar_extra=sidecar,
+            )
+        if train_models is None:
+            # Merged once, at fit_depth; every requested depth is a truncation
+            # of these, not a separate merge of a separate shard set.
+            shards = models_by_shard()
+            group_models = [
+                sieve_fold([shards[s] for s in g], shards[g[0]].config)
+                for g in plan.groups
+            ]
+            train_models = leave_one_group_out(group_models, merge=merge_models)
+            if cache_dir is not None:
+                _save_train_models(
+                    cache_dir,
+                    repeat=repeat,
+                    plan=plan,
+                    models=train_models,
+                    save_one=lambda m, path: m.save(path),
+                    sidecar_extra=sidecar,
+                )
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])

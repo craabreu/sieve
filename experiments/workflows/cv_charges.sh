@@ -263,6 +263,18 @@ if [ "${CV_SAVE_PREDICTIONS:-1}" != "0" ]; then
   SAVE_PREDICTIONS_FLAG="--save-predictions"
 fi
 
+# Persist the assembled CV training models and reuse them across studies.
+# Assembling one repeat's K models costs ~123s and 30GB of peak RSS at N=50
+# (load 2.6s, fold into K groups 27.3s, leave-one-group-out 92.9s, measured on
+# the real shards), and Study A and Study B share repeat 0's partition, so
+# without this that repeat is assembled twice. Set CV_MODEL_CACHE= (empty) to
+# turn it off and trade the disk back for the time.
+CV_MODEL_CACHE="${CV_MODEL_CACHE-experiments/results/cv-model-cache}"
+MODEL_CACHE_FLAG=""
+if [ -n "$CV_MODEL_CACHE" ]; then
+  MODEL_CACHE_FLAG="--model-cache $CV_MODEL_CACHE"
+fi
+
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
 SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-6}"
 
@@ -430,6 +442,7 @@ step study-a-dash \
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
     --depths "$DASH_DEPTHS" --repeats "$STUDY_A_REPEATS" \
+    $MODEL_CACHE_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
 step study-a-sieve \
@@ -440,6 +453,7 @@ step study-a-sieve \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
+    $MODEL_CACHE_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
 
@@ -461,6 +475,7 @@ run_dash_repeat() {
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
     --depths "$DASH_SELECTED_DEPTH" --repeats "$1" \
+    $MODEL_CACHE_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_B" \
     $SAVE_PREDICTIONS_FLAG
 }
@@ -478,6 +493,7 @@ run_sieve_repeat() {
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --variants "$SIEVE_VARIANTS" \
+    $MODEL_CACHE_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_B" \
     $SAVE_PREDICTIONS_FLAG
@@ -485,7 +501,7 @@ run_sieve_repeat() {
 export -f run_dash_repeat run_sieve_repeat
 export DASH_SELECTED_DEPTH SIEVE_SELECTED_DEPTH SAVE_PREDICTIONS_FLAG
 export DASH_STUDY_B SIEVE_STUDY_B SIEVE_METHOD K DASH_MAX_DEPTH
-export SIEVE_VARIANTS SIEVE_SELECTED_DEPTH SIEVE_MAX_DEPTH
+export SIEVE_VARIANTS SIEVE_SELECTED_DEPTH SIEVE_MAX_DEPTH MODEL_CACHE_FLAG
 
 each_repeat() { echo "$STUDY_B_REPEATS" | tr ',' '\n'; }
 

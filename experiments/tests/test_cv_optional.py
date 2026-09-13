@@ -230,3 +230,71 @@ def test_run_dash_cv_does_not_leak_state_across_repeats(tmp_path):
     # broader smoke check that repeats don't corrupt each other.
     for r in results:
         assert "mae" in r.metrics
+
+
+def test_run_dash_cv_model_cache_hit_scores_identically_to_a_miss(tmp_path):
+    """A cache hit must be indistinguishable from a miss, and must not need
+    the shard fits at all -- proven by deleting them for the warm call."""
+    import json as _json
+    import shutil
+
+    from experiments.cv import run_dash_cv, run_dash_shard_fits
+
+    n_mol, n_shards, k, max_depth = 20, 10, 5, 3
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=4
+    )
+    fits_root = tmp_path / "fits"
+    cache = tmp_path / "cache"
+
+    run_dash_shard_fits(
+        store=store,
+        n_shards=n_shards,
+        max_depth=max_depth,
+        runs_root=fits_root,
+        stores_root=stores_root,
+        allow_dirty=True,
+    )
+
+    def _run(runs_root, model_cache):
+        return run_dash_cv(
+            store=store,
+            n_shards=n_shards,
+            depths=[max_depth],
+            repeats=[0],
+            k=k,
+            max_depth=max_depth,
+            method="dash",
+            model_cache=model_cache,
+            runs_root=runs_root,
+            stores_root=stores_root,
+            allow_dirty=True,
+        )
+
+    def _scores(results):
+        out = {}
+        for r in results:
+            manifest = _json.loads((r.run_dir / "manifest.json").read_text())
+            out[manifest["config"]["run"]["batch_id"]] = {
+                key: v for key, v in r.metrics.items() if not key.startswith("time/")
+            }
+        return out
+
+    cold_root = tmp_path / "cold"
+    shutil.copytree(fits_root, cold_root)
+    cold = _run(cold_root, cache)
+    assert len(cold) == k
+    assert len(list(cache.rglob("*.npz"))) == k
+
+    # Node stats are depth-invariant, so the key carries no depth.
+    assert [p.parent.name for p in cache.rglob("*.npz")] == [f"n{n_shards}-k{k}"] * k
+
+    warm_root = tmp_path / "warm"
+    shutil.copytree(fits_root, warm_root)
+    shutil.rmtree(warm_root / "cv-shard-fits")
+    with pytest.raises(FileNotFoundError):
+        _run(warm_root, cache)
+
+    warm_root2 = tmp_path / "warm2"
+    shutil.copytree(fits_root, warm_root2)
+    assert _scores(cold) == _scores(_run(warm_root2, cache))

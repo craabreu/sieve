@@ -836,3 +836,148 @@ def test_run_sieve_cv_rejects_variants_with_duplicate_method_names(tmp_path):
             runs_root=tmp_path / "runs",
             allow_dirty=True,
         )
+
+
+def _sieve_cv_cache_setup(tmp_path, *, n_mol=20, n_shards=10):
+    from experiments.cv import run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    config = _build_config(
+        synthetic_molecule_set(n_mol=n_mol, seed=2).mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+    fits_root = tmp_path / "fits"
+    run_sieve_shard_fits(
+        store=store,
+        n_shards=n_shards,
+        max_depth=1,
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        runs_root=fits_root,
+        stores_root=stores_root,
+        allow_dirty=True,
+    )
+    return {
+        "store": store,
+        "n_shards": n_shards,
+        "depths": [1],
+        "repeats": [0],
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "k": 5,
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }, fits_root
+
+
+def _metrics_by_batch(results):
+    """Scores only -- the ``time/*`` entries differ between a cache hit and a
+    miss by design, and comparing them would test the clock."""
+    import json as _json
+
+    out = {}
+    for r in results:
+        manifest = _json.loads((r.run_dir / "manifest.json").read_text())
+        out[manifest["config"]["run"]["batch_id"]] = {
+            k: v for k, v in r.metrics.items() if not k.startswith("time/")
+        }
+    return out
+
+
+def test_sieve_model_cache_hit_scores_identically_to_a_miss(tmp_path):
+    """A cache is only worth having if a hit is indistinguishable from a
+    miss. Same store, same partition, same metrics -- exactly."""
+    import shutil
+
+    from experiments.cv import run_sieve_cv
+
+    kwargs, fits_root = _sieve_cv_cache_setup(tmp_path)
+    cache = tmp_path / "cache"
+
+    # Cold: merges, and populates the cache.
+    cold = run_sieve_cv(
+        **kwargs, runs_root=_copy_runs(fits_root, tmp_path / "cold"), model_cache=cache
+    )
+    assert len(cold) == kwargs["k"]
+    cached = sorted(p.name for p in cache.rglob("*.npz"))
+    assert len(cached) == kwargs["k"], cached
+
+    # Warm: same answer, without opening a single shard fit. Proven by
+    # hiding them -- a cache miss here would raise FileNotFoundError.
+    warm_runs = _copy_runs(fits_root, tmp_path / "warm")
+    shutil.rmtree(warm_runs / "cv-shard-fits")
+    with pytest.raises(FileNotFoundError):
+        run_sieve_cv(**kwargs, runs_root=warm_runs, model_cache=cache)
+
+    # ... and with the fits present, the hit path is exercised and agrees.
+    warm = run_sieve_cv(
+        **kwargs, runs_root=_copy_runs(fits_root, tmp_path / "warm2"), model_cache=cache
+    )
+    assert _metrics_by_batch(cold) == _metrics_by_batch(warm)
+
+
+def test_model_cache_refuses_an_entry_for_a_different_partition(tmp_path):
+    """Silently rebuilding would destroy whatever wrote the mismatched entry;
+    the sidecar makes the disagreement visible instead."""
+    import json as _json
+
+    from experiments.cv import run_sieve_cv
+
+    kwargs, fits_root = _sieve_cv_cache_setup(tmp_path)
+    cache = tmp_path / "cache"
+    run_sieve_cv(
+        **kwargs, runs_root=_copy_runs(fits_root, tmp_path / "a"), model_cache=cache
+    )
+
+    sidecar = next(cache.rglob("*.json"))
+    payload = _json.loads(sidecar.read_text())
+    payload["train_shards"] = ["s99"]
+    sidecar.write_text(_json.dumps(payload))
+
+    with pytest.raises(RuntimeError, match="does not match what was asked for"):
+        run_sieve_cv(
+            **kwargs, runs_root=_copy_runs(fits_root, tmp_path / "b"), model_cache=cache
+        )
+
+
+def test_model_cache_treats_a_missing_sidecar_as_a_miss(tmp_path):
+    """The sidecar is written last, so an interrupted save must read as a
+    miss rather than as a truncated hit."""
+    from experiments.cv import run_sieve_cv
+
+    kwargs, fits_root = _sieve_cv_cache_setup(tmp_path)
+    cache = tmp_path / "cache"
+    first = run_sieve_cv(
+        **kwargs, runs_root=_copy_runs(fits_root, tmp_path / "a"), model_cache=cache
+    )
+
+    next(cache.rglob("*.json")).unlink()
+    second = run_sieve_cv(
+        **kwargs, runs_root=_copy_runs(fits_root, tmp_path / "b"), model_cache=cache
+    )
+    assert _metrics_by_batch(first) == _metrics_by_batch(second)
+    assert len(list(cache.rglob("*.json"))) == kwargs["k"]  # rewritten
+
+
+def _copy_runs(fits_root, dest):
+    """A fresh runs_root carrying the shard fits, so each call writes its own
+    CV runs instead of tripping the already-done guard."""
+    import shutil
+
+    shutil.copytree(fits_root, dest)
+    return dest
