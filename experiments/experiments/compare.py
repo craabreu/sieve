@@ -31,6 +31,31 @@ from pathlib import Path
 import numpy as np
 
 
+def run_commits(runs_root: Path, experiments: Sequence[str]) -> list[str]:
+    """The distinct git commits the compared runs were produced at, shortened.
+
+    The commit that belongs on the figure is the one the *runs* were made at,
+    not the one that happens to be checked out when the plot is drawn -- those
+    differ whenever a comparison is re-plotted later, which is exactly when
+    provenance matters (friction observation 4). More than one commit in the
+    list is a finding, not a formatting problem: it means the arms were not
+    produced by the same code.
+    """
+    import json
+
+    seen: set[str] = set()
+    for experiment in experiments:
+        for manifest in sorted((runs_root / experiment).glob("*__*/manifest.json")):
+            try:
+                info = json.loads(manifest.read_text()).get("git") or {}
+            except (OSError, json.JSONDecodeError):
+                continue
+            commit = info.get("commit")
+            if commit:
+                seen.add(commit[:8] + ("-dirty" if info.get("dirty") else ""))
+    return sorted(seen)
+
+
 def read_cv_table(
     runs_root: Path,
     experiments: Sequence[str],

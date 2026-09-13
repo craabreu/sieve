@@ -250,7 +250,10 @@ DASH_STUDY_A=dash-cv-study-a
 DASH_STUDY_B=dash-cv-study-b
 SIEVE_STUDY_A=sieve-cv-study-a
 SIEVE_STUDY_B=sieve-cv-study-b
-TUKEY_PLOT=experiments/results/compare/tukey.png
+# Tracked, deliberately: experiments/results is gitignored (friction
+# observation 3), and the Tukey plot is the study's headline result, not an
+# intermediate. It carries its own provenance header (store, commit, run ids).
+TUKEY_PLOT=experiments/docs/figures/tukey-study-b.png
 
 # ===========================================================================
 # Steps

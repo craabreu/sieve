@@ -421,7 +421,12 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
 def _cmd_compare(args: argparse.Namespace) -> int:
     import json as _json
 
-    from experiments.compare import read_cv_table, repeated_measures_anova, tukey_hsd
+    from experiments.compare import (
+        read_cv_table,
+        repeated_measures_anova,
+        run_commits,
+        tukey_hsd,
+    )
 
     experiments_ = args.experiment
     depth_by_method = (
@@ -452,7 +457,11 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     if args.out is not None:
         from experiments.compare import write_tukey_plot
 
-        provenance = f"store(s): {', '.join(experiments_)}; n={table.shape[0]}"
+        commits = run_commits(DEFAULT_RUNS_ROOT, experiments_)
+        provenance = (
+            f"experiments: {', '.join(experiments_)}; n={table.shape[0]}; "
+            f"metric: {args.metric}; commit: {', '.join(commits) or 'unknown'}"
+        )
         write_tukey_plot(
             comparisons,
             args.out,
