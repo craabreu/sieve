@@ -642,7 +642,7 @@ def test_respecify_model_matches_a_native_fit_with_that_estimator(
     what is stored. Checked against a native fit rather than assumed.
     """
     import numpy as np
-    from experiments.cv import EstimatorVariant, respecify_model
+    from experiments.cv import ModelVariant, respecify_model
     from experiments.predictors.sieve_predictor import SievePredictor
 
     from experiments.tests.helpers import synthetic_molecule_set
@@ -673,10 +673,12 @@ def test_respecify_model_matches_a_native_fit_with_that_estimator(
     fitted_other.fit(train, train, rng=np.random.default_rng(0))
     respecified = respecify_model(
         fitted_other._model,
-        EstimatorVariant(
+        ModelVariant(
             method="v",
-            class_estimator=class_estimator,
-            shrinkage_weight=shrinkage_weight,
+            params={
+                "class_estimator": class_estimator,
+                "shrinkage_weight": shrinkage_weight,
+            },
         ),
     )
     fitted_other.set_model(respecified)
@@ -687,7 +689,7 @@ def test_respecify_model_matches_a_native_fit_with_that_estimator(
 
 
 def test_respecify_model_preserves_schema_version_and_statistics():
-    from experiments.cv import EstimatorVariant, respecify_model
+    from experiments.cv import ModelVariant, respecify_model
     from experiments.predictors.sieve_predictor import SievePredictor
 
     from experiments.tests.helpers import synthetic_molecule_set
@@ -701,10 +703,12 @@ def test_respecify_model_preserves_schema_version_and_statistics():
 
     out = respecify_model(
         model,
-        EstimatorVariant(
+        ModelVariant(
             method="v",
-            class_estimator="continuation",
-            shrinkage_weight="empirical_bayes",
+            params={
+                "class_estimator": "continuation",
+                "shrinkage_weight": "empirical_bayes",
+            },
         ),
     )
     assert out.config.schema_version == model.config.schema_version
@@ -720,7 +724,7 @@ def test_run_sieve_cv_variants_share_one_shard_set(tmp_path):
     """
     import json as _json
 
-    from experiments.cv import EstimatorVariant, run_sieve_cv, run_sieve_shard_fits
+    from experiments.cv import ModelVariant, run_sieve_cv, run_sieve_shard_fits
     from experiments.predictors.sieve_predictor import _build_config, save_codes
 
     from experiments.tests.helpers import synthetic_molecule_set
@@ -764,10 +768,9 @@ def test_run_sieve_cv_variants_share_one_shard_set(tmp_path):
     assert n_fits == n_shards, "the count below is only a check if it counts"
 
     variants = [
-        EstimatorVariant(
+        ModelVariant(
             method=f"sieve-{ce}{'-eb' if sw else ''}",
-            class_estimator=ce,
-            shrinkage_weight=sw,
+            params={"class_estimator": ce, "shrinkage_weight": sw},
         )
         for ce, sw in _VARIANT_SPECS
     ]
@@ -794,7 +797,7 @@ def test_run_sieve_cv_variants_share_one_shard_set(tmp_path):
     for r in results:
         cv = _json.loads((r.run_dir / "manifest.json").read_text())["config"]["cv"]
         methods.add(cv["method"])
-        assert cv["class_estimator"] in {"pooled", "continuation"}
+        assert cv["param/class_estimator"] in {"pooled", "continuation"}
     assert methods == {v.method for v in variants}
 
     # Resuming does nothing, per variant as well as per (repeat, fold, depth).
@@ -818,11 +821,11 @@ def test_run_sieve_cv_variants_share_one_shard_set(tmp_path):
 
 
 def test_run_sieve_cv_rejects_variants_with_duplicate_method_names(tmp_path):
-    from experiments.cv import EstimatorVariant, run_sieve_cv
+    from experiments.cv import ModelVariant, run_sieve_cv
 
     dup = [
-        EstimatorVariant(method="same", class_estimator="pooled"),
-        EstimatorVariant(method="same", class_estimator="continuation"),
+        ModelVariant(method="same", params={"class_estimator": "pooled"}),
+        ModelVariant(method="same", params={"class_estimator": "continuation"}),
     ]
     with pytest.raises(ValueError, match="distinct method names"):
         run_sieve_cv(
@@ -981,3 +984,62 @@ def _copy_runs(fits_root, dest):
 
     shutil.copytree(fits_root, dest)
     return dest
+
+
+def test_model_variant_params_patch_the_fitted_config():
+    """``with_params`` semantics, which the workflow's variant table depends
+    on: a field left out keeps what it was fitted with. So "do not shrink"
+    must be spelled ``shrinkage_weight: None`` -- omitting it on a fit that
+    shrank silently inherits the shrinkage and mislabels the arm.
+    """
+    import json as _json
+
+    from experiments.cv import ModelVariant, respecify_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=16, seed=1)
+    p = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=2,
+        minimum_support=1,
+        class_estimator="continuation",
+        shrinkage_weight="empirical_bayes",
+    )
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    fitted = p._model
+    assert fitted.config.shrinkage_weight == "empirical_bayes"
+
+    spec = _json.loads(
+        '{"method": "x", "class_estimator": "pooled", "shrinkage_weight": null}'
+    )
+    explicit = respecify_model(fitted, ModelVariant.from_dict(spec))
+    assert explicit.config.class_estimator == "pooled"
+    assert explicit.config.shrinkage_weight is None
+
+    omitted = respecify_model(
+        fitted, ModelVariant(method="y", params={"class_estimator": "pooled"})
+    )
+    assert omitted.config.shrinkage_weight == "empirical_bayes"
+
+    # minimum_support is a variant axis too -- with_params accepts it because
+    # schema_version excludes it.
+    assert (
+        respecify_model(
+            fitted, ModelVariant(method="z", params={"minimum_support": 5})
+        ).config.minimum_support
+        == 5
+    )
+
+    # Anything that would need a refit is refused by with_params itself.
+    with pytest.raises(ValueError, match="only changes inference params"):
+        respecify_model(fitted, ModelVariant(method="w", params={"max_wl_depth": 3}))
+
+
+def test_model_variant_from_dict_requires_a_method():
+    from experiments.cv import ModelVariant
+
+    with pytest.raises(ValueError, match="no 'method'"):
+        ModelVariant.from_dict({"class_estimator": "pooled"})

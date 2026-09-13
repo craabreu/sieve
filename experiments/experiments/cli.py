@@ -387,7 +387,7 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
 def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
     import json as _json
 
-    from experiments.cv import EstimatorVariant, run_sieve_cv
+    from experiments.cv import ModelVariant, run_sieve_cv
 
     depths = [int(d) for d in args.depths.split(",")]
     repeats = [int(r) for r in args.repeats.split(",")]
@@ -395,7 +395,7 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         _json.loads(args.predictor_params) if args.predictor_params else {}
     )
     variants = (
-        [EstimatorVariant(**v) for v in _json.loads(args.variants)]
+        [ModelVariant.from_dict(v) for v in _json.loads(args.variants)]
         if args.variants
         else None
     )
@@ -963,13 +963,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--variants",
         default=None,
         help=(
-            "JSON list of estimator variants scored off the SAME shard fits, "
-            'e.g. \'[{"method": "sieve-element-pooled", "class_estimator": '
-            '"pooled"}, {"method": "sieve-element-eb", "class_estimator": '
-            '"continuation", "shrinkage_weight": "empirical_bayes"}]\'. '
-            "class_estimator and shrinkage_weight are read at predict time "
-            "and excluded from schema_version, so this costs no refit. "
-            "Omitted, the model is scored as fitted, under --method."
+            "JSON list of model variants scored off the SAME shard fits. Each "
+            'entry is {"method": NAME, ...}, where the rest is anything '
+            "SieveModel.with_params accepts: class_estimator, "
+            "shrinkage_weight, shrinkage_strength, minimum_support, "
+            "chunk_size. Those are exactly the fields schema_version "
+            "excludes, so this costs no refit. The params PATCH the fitted "
+            'config, so say "shrinkage_weight": null explicitly to turn off a '
+            "shrinkage the fit itself applied. Omitted, the model is scored "
+            "as fitted, under --method."
         ),
     )
     p_cv_run_sieve.add_argument("--k", type=int, default=5)

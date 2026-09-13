@@ -37,8 +37,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -561,60 +561,66 @@ def run_sieve_shard_fits(
 
 
 @dataclass(frozen=True)
-class EstimatorVariant:
-    """A predict-time reading of one already-fitted model.
+class ModelVariant:
+    """One reading of an already-fitted model: a name, plus whatever
+    ``SieveModel.with_params`` accepts.
 
-    ``class_estimator`` and ``shrinkage_weight``/``shrinkage_strength`` are
-    excluded from ``SieveConfig.schema_version`` by design (config.py: they
-    "only change which stored numbers an estimate is *read from*, and how
-    they are combined -- the classes themselves, and every count and mean in
-    them, are identical either way"). So a whole family of Sieve models can
-    be compared off **one** set of shard fits: no refit, no re-merge, not
-    even a re-featurization, since the variants share the eval batch too.
+    The variant axis is exactly ``with_params``' own allow-list --
+    ``class_estimator``, ``shrinkage_weight``, ``shrinkage_strength``,
+    ``minimum_support`` and ``chunk_size`` -- because that list is the set of
+    fields ``SieveConfig.schema_version`` deliberately excludes: they are
+    "read at prediction time and do not invalidate fitted statistics". So any
+    model reachable by ``with_params`` is a variant, and a whole family can be
+    compared off **one** set of shard fits: no refit, no re-merge, not even a
+    re-featurization, since the variants share the eval batch too.
 
-    The estimator spec is given in full rather than as a patch:
-    ``shrinkage_weight=None`` is the real setting "do not shrink", so a
-    None-means-leave-alone convention would make the two indistinguishable.
+    ``params`` is a *patch* over the fitted config, matching ``with_params``'
+    own semantics: a field left out keeps the value it was fitted with. So a
+    variant meaning "do not shrink" must say ``shrinkage_weight: None``
+    explicitly when the fit itself shrank.
+
+    ``chunk_size`` is accepted but is a performance knob, not a model
+    difference -- two variants differing only in it produce identical
+    predictions and merely duplicate runs.
     """
 
     method: str
-    class_estimator: str
-    shrinkage_weight: str | None = None
-    shrinkage_strength: float | None = None
+    params: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, spec: Mapping[str, Any]) -> ModelVariant:
+        """``{"method": ..., <with_params kwargs>}`` -- the CLI/JSON shape.
+
+        Flat rather than nested so a variant reads as what it is: a method
+        name and the inference params that define it.
+        """
+        rest = dict(spec)
+        try:
+            method = rest.pop("method")
+        except KeyError:
+            raise ValueError(f"variant spec has no 'method': {spec}") from None
+        return cls(method=method, params=rest)
 
 
-def respecify_model(model: Any, variant: EstimatorVariant) -> Any:
-    """``model`` read under ``variant``'s estimator, sharing its statistics.
+def respecify_model(model: Any, variant: ModelVariant) -> Any:
+    """``model`` read under ``variant``'s params, sharing its arrays.
 
-    The levels are passed through untouched -- this rewrites config fields
-    only -- and ``schema_version`` is asserted unchanged afterwards, which is
-    what makes the sharing safe: if a future field moved into the digest,
-    this would fail loudly here rather than quietly compare two models fitted
-    to different vocabularies.
+    Thin over ``SieveModel.with_params``, which owns the allow-list and
+    rejects anything that would need a refit. The one thing added here is the
+    ``schema_version`` assertion: ``with_params`` checks field *names*, and
+    this checks the consequence those names are chosen for, so a field
+    migrating into the digest without the allow-list being updated fails
+    loudly here rather than quietly comparing models fitted to different
+    vocabularies.
     """
-    import dataclasses
-
-    import sieve
-
-    cfg = dataclasses.replace(
-        model.config,
-        class_estimator=variant.class_estimator,
-        shrinkage_weight=variant.shrinkage_weight,
-        shrinkage_strength=variant.shrinkage_strength,
-    )
-    if cfg.schema_version != model.config.schema_version:
+    out = model.with_params(**dict(variant.params))
+    if out.config.schema_version != model.config.schema_version:
         raise AssertionError(
-            "respecify_model changed schema_version -- the estimator fields "
-            "are no longer excluded from the digest, so these variants can no "
-            "longer share one set of shard fits"
+            f"variant {variant.method!r} changed schema_version -- "
+            f"{sorted(variant.params)} is no longer excluded from the digest, "
+            "so these variants can no longer share one set of shard fits"
         )
-    return sieve.SieveModel(
-        cfg,
-        model.levels,
-        model.global_count,
-        model.global_mean,
-        model.global_msd,
-    )
+    return out
 
 
 def truncate_model(model: Any, depth: int) -> Any:
@@ -719,7 +725,7 @@ def _write_cv_run(
     git_info: dict[str, Any],
     runs_root: Path,
     save_predictions: bool = False,
-    variant: EstimatorVariant | None = None,
+    variant: ModelVariant | None = None,
 ) -> RunResult:
     """Write one CV sample's run directory. The ``manifest["config"]`` shape
     mirrors what ``config.to_dict``/``runner`` write (``predictor.name``,
@@ -759,15 +765,12 @@ def _write_cv_run(
         },
     }
     if variant is not None:
-        # The estimator is what distinguishes these runs, and a method name is
-        # only a label for it; record the fields themselves so a run cannot be
-        # misread if a label is ever reused.
+        # The params are what distinguish these runs, and a method name is only
+        # a label for them; record them so a run cannot be misread if a label
+        # is ever reused. Stringified because flatten_params wants scalars and
+        # None is a meaningful value here, not an absence.
         config["cv"].update(
-            {
-                "class_estimator": variant.class_estimator,
-                "shrinkage_weight": str(variant.shrinkage_weight),
-                "shrinkage_strength": str(variant.shrinkage_strength),
-            }
+            {f"param/{k}": str(v) for k, v in sorted(variant.params.items())}
         )
     manifest = {
         "schema_version": 1,
@@ -1007,7 +1010,7 @@ def run_sieve_cv(
     config_label: str,
     fit_depth: int | None = None,
     predictor_params: dict[str, Any] | None = None,
-    variants: Sequence[EstimatorVariant] | None = None,
+    variants: Sequence[ModelVariant] | None = None,
     model_cache: str | Path | None = None,
     k: int = 5,
     normalization: str = "equal_weighted",
@@ -1040,12 +1043,12 @@ def run_sieve_cv(
     ``max(depths)`` and must not be smaller. Raises naming any shard whose
     fit is missing.
 
-    ``variants`` extends that same reuse sideways. The estimator fields are
-    excluded from ``schema_version``, so ``pooled``/``continuation`` with or
-    without empirical-Bayes shrinkage are four *readings* of one fit, not
-    four models to fit: each variant is a ``respecify_model`` of the already
-    merged, already truncated model, scored against the already featurized
-    batch, and written under its own ``EstimatorVariant.method``. Omitted,
+    ``variants`` extends that same reuse sideways. Anything
+    ``SieveModel.with_params`` accepts is a *reading* of one fit rather than
+    a model to fit -- estimator, shrinkage rule and strength, minimum support
+    -- so each variant is a ``respecify_model`` of the already merged, already
+    truncated model, scored against the already featurized batch, and written
+    under its own ``ModelVariant.method``. Omitted,
     the model is scored as fitted, under ``method``.
 
     ``model_cache`` persists the assembled training models under
@@ -1065,7 +1068,7 @@ def run_sieve_cv(
     from sieve.merge import merge_models
 
     method = method or f"sieve-{config_label}"
-    variant_list: list[EstimatorVariant | None] = list(variants) if variants else [None]
+    variant_list: list[ModelVariant | None] = list(variants) if variants else [None]
     names = [v.method for v in variant_list if v is not None]
     if len(set(names)) != len(names):
         raise ValueError(f"variants must have distinct method names, got {names}")

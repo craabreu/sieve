@@ -228,17 +228,21 @@ SIEVE_DEPTHS=0,1,2,3,4,5,6,7,8,9,10
 SIEVE_PREDICTOR_PARAMS='{"attributes": ["element"], "edge_attributes": [], "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}'
 SIEVE_METHOD="sieve-$SIEVE_CONFIG_LABEL"
 
-# Four readings of the SAME shard fits. class_estimator and shrinkage_weight
-# are read at predict time and excluded from schema_version, so this costs no
-# refit, no re-merge, and not even a re-featurization -- the variants share
-# the merged model and the eval batch. They are separate arms of the
-# comparison, so each gets its own Study A depth curve and its own selected
-# depth, exactly as DASH and Sieve do.
+# Readings of the SAME shard fits. Each entry is a method name plus anything
+# SieveModel.with_params accepts -- class_estimator, shrinkage_weight,
+# shrinkage_strength, minimum_support -- which is exactly the set
+# schema_version excludes, so this costs no refit, no re-merge and not even a
+# re-featurization: the variants share the merged model and the eval batch.
+#
+# These PATCH the fitted config (SIEVE_PREDICTOR_PARAMS above), so the
+# non-shrinking variants must say "shrinkage_weight": null explicitly --
+# omitting it would inherit the fit's empirical_bayes and quietly make
+# "sieve-element-pooled" mean pooled+eb.
 SIEVE_VARIANTS='[
-  {"method": "sieve-element-pooled",          "class_estimator": "pooled"},
-  {"method": "sieve-element-pooled-eb",       "class_estimator": "pooled",       "shrinkage_weight": "empirical_bayes"},
-  {"method": "sieve-element-continuation",    "class_estimator": "continuation"},
-  {"method": "sieve-element-eb",              "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
+  {"method": "sieve-element-pooled",       "class_estimator": "pooled",       "shrinkage_weight": null},
+  {"method": "sieve-element-pooled-eb",    "class_estimator": "pooled",       "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-continuation", "class_estimator": "continuation", "shrinkage_weight": null},
+  {"method": "sieve-element-eb",           "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
 ]'
 # Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
 # once, on SIEVE_METHOD alone (Study A below); the variants are a comparison
