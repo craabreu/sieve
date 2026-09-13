@@ -337,6 +337,9 @@ def test_simultaneous_ci_overlap_agrees_with_the_pairwise_tukey_verdict():
 
 
 def test_simultaneous_ci_rejects_an_unknown_comparison_name(tmp_path):
+    """Deliberately no matplotlib skip: the point is that the name is checked
+    before the plotting backend is imported, so this must raise ValueError
+    even where matplotlib is not installed -- as CI is not."""
     from experiments.compare import simultaneous_ci, write_simultaneous_ci_plot
 
     rng = np.random.default_rng(3)

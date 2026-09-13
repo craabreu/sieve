@@ -381,6 +381,14 @@ def write_simultaneous_ci_plot(
     readable as methods are added, where the pairwise plot grows as
     ``k choose 2``.
     """
+    # Validated before matplotlib is imported, so a bad comparison_name is
+    # reported as such even where matplotlib is absent -- otherwise the caller
+    # sees ModuleNotFoundError and has to guess which problem they have.
+    if comparison_name is not None and comparison_name not in ci.methods:
+        raise ValueError(
+            f"comparison_name {comparison_name!r} is not one of {list(ci.methods)}"
+        )
+
     import matplotlib.pyplot as plt
 
     k = len(ci.methods)
@@ -396,10 +404,6 @@ def write_simultaneous_ci_plot(
             ci.means, y, xerr=ci.halfwidths, marker="o", linestyle="None", color="k"
         )
     else:
-        if comparison_name not in ci.methods:
-            raise ValueError(
-                f"comparison_name {comparison_name!r} is not one of {list(ci.methods)}"
-            )
         midx = ci.methods.index(comparison_name)
         differs = ci.differs_from(comparison_name)
         sig = [i for i, m in enumerate(ci.methods) if i != midx and differs[m]]
