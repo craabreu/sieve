@@ -290,3 +290,47 @@ Two defects surfaced while rebuilding the real corpus, both now fixed:
   design.md 5.5's warning about process overhead does not apply at this
   granularity -- it concerns pools spun up per `fit()` call, where startup
   rivals a sub-second fit; a shard fit is ~65s.
+
+---
+
+## Addendum: is `continuation_recursive` a distinct arm?
+
+Study B put `sieve-element-recursive` within 9.9e-7 of
+`sieve-element-continuation` (Tukey p = 1), and `recursive-eb` within 9.3e-7
+of `continuation-eb`. That is close enough to look like a plumbing bug --
+two arms quietly scoring the same model -- so it was checked three ways
+rather than argued about.
+
+1. **Provenance.** Every recursive run records
+   `cv["param/class_estimator"] = "continuation_recursive"`; the flat ones
+   record `"continuation"`.
+2. **No identical folds.** Across the 25 paired samples, zero have identical
+   RMSE. Per-fold differences range -1.6e-6 to +6.3e-6 and change sign (14
+   positive, 11 negative), which is not what a duplicated computation looks
+   like.
+3. **Direct re-derivation.** Reproducing fold r0-f0 from its cached training
+   model, truncated to depth 6, and predicting under both estimators
+   reproduces the two recorded RMSE values exactly (0.019515098 flat,
+   0.019515403 recursive).
+
+The mechanism behind the paradox, from that same re-derivation over the
+fold's 7,888,883 held-out atoms:
+
+| | |
+|---|---|
+| atoms changed by the recursion | 1,744,162 (22.1%) |
+| median abs change, among changed | 9.3e-5 |
+| p99 / max | 2.0e-3 / 2.5e-2 |
+| recursion closer to target | 870,295 |
+| recursion further from target | 873,319 |
+
+So the recursion moves a fifth of the atoms, sometimes by more than the whole
+DASH-vs-Sieve gap, and helps almost exactly as often as it hurts. The arms
+are distinct; the *aggregate* is not. Reporting it as "no difference" is
+correct for RMSE and wrong for any per-atom analysis.
+
+**Correction to an earlier figure.** A first probe reported 32,528/64,985
+atoms (50%) changed. That was measured on a *single shard's* model -- 2% of
+train -- where backoff runs deeper and the recursion therefore bites more
+often. On the 40-shard training models Study B actually scored, the figure is
+22.1%. The single-shard number should not be quoted for Study B.
