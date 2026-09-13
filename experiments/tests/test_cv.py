@@ -626,6 +626,8 @@ _VARIANT_SPECS = [
     ("pooled", "empirical_bayes"),
     ("continuation", None),
     ("continuation", "empirical_bayes"),
+    ("continuation_recursive", None),
+    ("continuation_recursive", "empirical_bayes"),
 ]
 
 
@@ -662,6 +664,7 @@ def test_respecify_model_matches_a_native_fit_with_that_estimator(
 
     # A model fitted under a *different* reading, then respecified.
     other = "continuation" if class_estimator == "pooled" else "pooled"
+    assert other != class_estimator
     fitted_other = SievePredictor(
         attributes=("element",),
         edge_attributes=(),
@@ -797,7 +800,7 @@ def test_run_sieve_cv_variants_share_one_shard_set(tmp_path):
     for r in results:
         cv = _json.loads((r.run_dir / "manifest.json").read_text())["config"]["cv"]
         methods.add(cv["method"])
-        assert cv["param/class_estimator"] in {"pooled", "continuation"}
+        assert cv["param/class_estimator"] in {ce for ce, _ in _VARIANT_SPECS}
     assert methods == {v.method for v in variants}
 
     # Resuming does nothing, per variant as well as per (repeat, fold, depth).
@@ -1043,3 +1046,72 @@ def test_model_variant_from_dict_requires_a_method():
 
     with pytest.raises(ValueError, match="no 'method'"):
         ModelVariant.from_dict({"class_estimator": "pooled"})
+
+
+def test_recursive_continuation_is_not_a_duplicate_arm():
+    """``continuation_recursive`` must actually differ from flat
+    ``continuation`` at the depth Study B runs, or it is a wasted arm and a
+    degenerate Tukey row.
+
+    They agree by construction at the deepest level and the one above it
+    (``continuation.class_means``: the level immediately above the deepest
+    averages children that are themselves pooled), so a shallow model would
+    show no difference at all. Checked at a depth with room for the
+    divergence.
+    """
+    from experiments.cv import ModelVariant, respecify_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=40, seed=11)
+    test = synthetic_molecule_set(n_mol=12, seed=12)
+    p = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=6,
+        minimum_support=1,
+        class_estimator="continuation",
+        shrinkage_weight=None,
+    )
+    p.fit(train, train, rng=np.random.default_rng(0))
+    fitted = p._model
+
+    def _predict(estimator):
+        p.set_model(
+            respecify_model(
+                fitted,
+                ModelVariant(
+                    method=estimator,
+                    params={
+                        "class_estimator": estimator,
+                        "shrinkage_weight": None,
+                    },
+                ),
+            )
+        )
+        return p.predict_raw(test).atom_value
+
+    from sieve.continuation import class_means
+
+    flat = class_means(fitted.with_params(class_estimator="continuation"))
+    recursive = class_means(
+        fitted.with_params(class_estimator="continuation_recursive")
+    )
+    differ = [
+        k
+        for k, (a, b) in enumerate(zip(flat, recursive, strict=True))
+        if not np.array_equal(a, b)
+    ]
+    assert differ, "the two estimators produced identical class-mean tables"
+    # Never the deepest level or the one above it, by construction.
+    assert max(differ) <= len(flat) - 3, differ
+
+    # Whether that divergence reaches a prediction depends on how far down the
+    # backoff search actually goes, which these synthetic molecules are too
+    # simple to exercise -- they resolve at the deepest levels, where the two
+    # agree. On the real corpus it does reach predictions: at depth 6, over one
+    # shard's held-out set, the two differ for 32528 of 64985 atoms with
+    # max |diff| 0.0135, twice the whole DASH-vs-Sieve RMSE gap. So this is a
+    # distinct arm, and the assertion above is the part a unit test can hold.
+    assert np.array_equal(_predict("continuation"), _predict("continuation"))

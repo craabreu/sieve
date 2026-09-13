@@ -238,11 +238,19 @@ SIEVE_METHOD="sieve-$SIEVE_CONFIG_LABEL"
 # non-shrinking variants must say "shrinkage_weight": null explicitly --
 # omitting it would inherit the fit's empirical_bayes and quietly make
 # "sieve-element-pooled" mean pooled+eb.
+# Three class estimators crossed with shrinkage on/off. "recursive" is
+# class_estimator="continuation_recursive": the same one-level-deep
+# aggregation applied to the children's own continuation estimates rather
+# than to their stored means (src/sieve/continuation.py::class_means). It
+# differs from flat continuation only at levels at least two steps above the
+# deepest, so at SIEVE_SELECTED_DEPTH it is a real arm, not a duplicate.
 SIEVE_VARIANTS='[
-  {"method": "sieve-element-pooled",       "class_estimator": "pooled",       "shrinkage_weight": null},
-  {"method": "sieve-element-pooled-eb",    "class_estimator": "pooled",       "shrinkage_weight": "empirical_bayes"},
-  {"method": "sieve-element-continuation", "class_estimator": "continuation", "shrinkage_weight": null},
-  {"method": "sieve-element-eb",           "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
+  {"method": "sieve-element-pooled",       "class_estimator": "pooled",                 "shrinkage_weight": null},
+  {"method": "sieve-element-pooled-eb",    "class_estimator": "pooled",                 "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-continuation", "class_estimator": "continuation",           "shrinkage_weight": null},
+  {"method": "sieve-element-eb",           "class_estimator": "continuation",           "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-recursive",    "class_estimator": "continuation_recursive", "shrinkage_weight": null},
+  {"method": "sieve-element-recursive-eb", "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"}
 ]'
 # Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
 # once, on SIEVE_METHOD alone (Study A below); the variants are a comparison
