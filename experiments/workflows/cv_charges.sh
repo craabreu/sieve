@@ -200,30 +200,6 @@ n_items() { echo "$1" | tr ',' '\n' | grep -c .; }
 # its entries by counting "method" keys rather than by parsing JSON in shell.
 n_variants() { echo "$SIEVE_VARIANTS" | grep -c '"method"'; }
 
-# Distinct selected depths across the variants, ascending.
-variant_depths() {
-  echo "$SIEVE_VARIANT_DEPTHS" | tr ',' '\n' | cut -d: -f2 | sort -un
-}
-
-# The variant JSON entries whose selected depth is $1, as a JSON list. Every
-# variant at one depth goes in a single invocation, so they share that
-# depth's merge, truncation and featurized batch; variants at *different*
-# depths cannot, hence one invocation per distinct depth.
-variants_at_depth() {
-  local want=$1 methods
-  methods=$(echo "$SIEVE_VARIANT_DEPTHS" | tr ',' '\n' \
-            | awk -F: -v d="$want" '$2 == d {print $1}')
-  echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
-import json, sys
-wanted = set(sys.argv[1].split())
-out = [v for v in json.load(sys.stdin) if v["method"] in wanted]
-missing = wanted - {v["method"] for v in out}
-if missing:
-    raise SystemExit(f"SIEVE_VARIANT_DEPTHS names unknown variant(s): {sorted(missing)}")
-json.dump(out, sys.stdout)
-' "$methods"
-}
-
 # ===========================================================================
 # Configuration
 # ===========================================================================
@@ -264,11 +240,9 @@ SIEVE_VARIANTS='[
   {"method": "sieve-element-continuation",    "class_estimator": "continuation"},
   {"method": "sieve-element-eb",              "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
 ]'
-# One selected depth per variant, as "method:depth" pairs. Override after
-# reading Study A's curve:
-#   "$PYTHON" -m experiments sweep --experiment sieve-cv-study-a \
-#     --x config.cv.depth --group config.cv.method --metric rmse
-SIEVE_VARIANT_DEPTHS="${SIEVE_VARIANT_DEPTHS:-sieve-element-pooled:6,sieve-element-pooled-eb:6,sieve-element-continuation:6,sieve-element-eb:6}"
+# Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
+# once, on SIEVE_METHOD alone (Study A below); the variants are a comparison
+# of estimators at a fixed depth, not four more depth studies.
 
 CODES_PATH="experiments/stores/$STORE/sieve-codes.json"
 CLUSTER_REPORT="experiments/results/cluster-report.txt"
@@ -458,18 +432,14 @@ step study-a-dash \
     --depths "$DASH_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
-# All variants in one invocation: they differ only in how the merged model is
-# read, so the sweep costs one extra _search pass per variant, not one extra
-# fit. Each gets its own depth curve, and therefore its own selected depth.
 step study-a-sieve \
-  "runs_count_is $SIEVE_STUDY_A $((K * $(n_items "$SIEVE_DEPTHS") * $(n_variants)))" -- \
+  "runs_count_is $SIEVE_STUDY_A $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
   "$PYTHON" -m experiments cv-run-sieve "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
     --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
-    --variants "$SIEVE_VARIANTS" \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
 
@@ -495,29 +465,27 @@ run_dash_repeat() {
     $SAVE_PREDICTIONS_FLAG
 }
 
+# One invocation per repeat, carrying every variant: assembling a repeat's
+# five training models costs ~123s (load 2.6s, fold 27.3s, leave-one-group-out
+# 92.9s, 30GB peak, measured on the 50 real shards), and the variants differ
+# only in how that model is *read*. Splitting them across processes would pay
+# that again per process for nothing.
 run_sieve_repeat() {
-  # One invocation per distinct selected depth, carrying every variant that
-  # chose it -- so variants sharing a depth also share its merge and batch.
-  local depth variants
-  for depth in $(variant_depths); do
-    variants=$(variants_at_depth "$depth")
-    "$PYTHON" -m experiments cv-run-sieve "$STORE" \
-      --n-shards "$N_SHARDS" --k "$K" \
-      --depths "$depth" --repeats "$1" \
-      --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
-      --fit-depth "$SIEVE_MAX_DEPTH" \
-      --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
-      --variants "$variants" \
-      --normalization equal_weighted --method "$SIEVE_METHOD" \
-      --experiment "$SIEVE_STUDY_B" \
-      $SAVE_PREDICTIONS_FLAG
-  done
+  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --depths "$SIEVE_SELECTED_DEPTH" --repeats "$1" \
+    --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
+    --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
+    --variants "$SIEVE_VARIANTS" \
+    --normalization equal_weighted --method "$SIEVE_METHOD" \
+    --experiment "$SIEVE_STUDY_B" \
+    $SAVE_PREDICTIONS_FLAG
 }
 export -f run_dash_repeat run_sieve_repeat
 export DASH_SELECTED_DEPTH SIEVE_SELECTED_DEPTH SAVE_PREDICTIONS_FLAG
 export DASH_STUDY_B SIEVE_STUDY_B SIEVE_METHOD K DASH_MAX_DEPTH
-export SIEVE_VARIANTS SIEVE_VARIANT_DEPTHS
-export -f variant_depths variants_at_depth
+export SIEVE_VARIANTS SIEVE_SELECTED_DEPTH SIEVE_MAX_DEPTH
 
 each_repeat() { echo "$STUDY_B_REPEATS" | tr ',' '\n'; }
 
@@ -563,17 +531,16 @@ step study-b-sieve \
 # anything.
 COMPARE_METRIC="${COMPARE_METRIC:-rmse}"
 
-# {method: selected depth} for every arm: DASH plus each Sieve variant. Built
-# from the same SIEVE_VARIANT_DEPTHS that Study B ran, so the comparison
-# cannot silently read a depth nobody produced.
+# {method: depth} for every arm: DASH at its depth, every Sieve variant at
+# SIEVE_SELECTED_DEPTH. Derived from the same SIEVE_VARIANTS that Study B ran,
+# so the comparison cannot read a method or depth nobody produced.
 DEPTH_BY_METHOD=$(
-  "$PYTHON" -c '
+  echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
 import json, sys
-pairs = dict(p.split(":") for p in sys.argv[2].split(",") if p)
 out = {"dash": int(sys.argv[1])}
-out.update({m: int(d) for m, d in pairs.items()})
+out.update({v["method"]: int(sys.argv[2]) for v in json.load(sys.stdin)})
 print(json.dumps(out))
-' "$DASH_SELECTED_DEPTH" "$SIEVE_VARIANT_DEPTHS"
+' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH"
 )
 export DEPTH_BY_METHOD  # the compare step runs in a child bash -c
 
