@@ -456,6 +456,63 @@ def run_sieve_shard_fits(
     ]
 
 
+@dataclass(frozen=True)
+class EstimatorVariant:
+    """A predict-time reading of one already-fitted model.
+
+    ``class_estimator`` and ``shrinkage_weight``/``shrinkage_strength`` are
+    excluded from ``SieveConfig.schema_version`` by design (config.py: they
+    "only change which stored numbers an estimate is *read from*, and how
+    they are combined -- the classes themselves, and every count and mean in
+    them, are identical either way"). So a whole family of Sieve models can
+    be compared off **one** set of shard fits: no refit, no re-merge, not
+    even a re-featurization, since the variants share the eval batch too.
+
+    The estimator spec is given in full rather than as a patch:
+    ``shrinkage_weight=None`` is the real setting "do not shrink", so a
+    None-means-leave-alone convention would make the two indistinguishable.
+    """
+
+    method: str
+    class_estimator: str
+    shrinkage_weight: str | None = None
+    shrinkage_strength: float | None = None
+
+
+def respecify_model(model: Any, variant: EstimatorVariant) -> Any:
+    """``model`` read under ``variant``'s estimator, sharing its statistics.
+
+    The levels are passed through untouched -- this rewrites config fields
+    only -- and ``schema_version`` is asserted unchanged afterwards, which is
+    what makes the sharing safe: if a future field moved into the digest,
+    this would fail loudly here rather than quietly compare two models fitted
+    to different vocabularies.
+    """
+    import dataclasses
+
+    import sieve
+
+    cfg = dataclasses.replace(
+        model.config,
+        class_estimator=variant.class_estimator,
+        shrinkage_weight=variant.shrinkage_weight,
+        shrinkage_strength=variant.shrinkage_strength,
+    )
+    if cfg.schema_version != model.config.schema_version:
+        raise AssertionError(
+            "respecify_model changed schema_version -- the estimator fields "
+            "are no longer excluded from the digest, so these variants can no "
+            "longer share one set of shard fits"
+        )
+    return sieve.SieveModel(
+        cfg,
+        model.levels,
+        model.global_count,
+        model.global_mean,
+        model.global_msd,
+    )
+
+
 def truncate_model(model: Any, depth: int) -> Any:
     """The depth-``depth`` model implied by an already-fitted deeper one.
 
@@ -558,6 +615,7 @@ def _write_cv_run(
     git_info: dict[str, Any],
     runs_root: Path,
     save_predictions: bool = False,
+    variant: EstimatorVariant | None = None,
 ) -> RunResult:
     """Write one CV sample's run directory. The ``manifest["config"]`` shape
     mirrors what ``config.to_dict``/``runner`` write (``predictor.name``,
@@ -596,6 +654,17 @@ def _write_cv_run(
             "held_out_shards": ",".join(held_out_shards),
         },
     }
+    if variant is not None:
+        # The estimator is what distinguishes these runs, and a method name is
+        # only a label for it; record the fields themselves so a run cannot be
+        # misread if a label is ever reused.
+        config["cv"].update(
+            {
+                "class_estimator": variant.class_estimator,
+                "shrinkage_weight": str(variant.shrinkage_weight),
+                "shrinkage_strength": str(variant.shrinkage_strength),
+            }
+        )
     manifest = {
         "schema_version": 1,
         "run_name": name,
@@ -789,6 +858,7 @@ def run_sieve_cv(
     config_label: str,
     fit_depth: int | None = None,
     predictor_params: dict[str, Any] | None = None,
+    variants: Sequence[EstimatorVariant] | None = None,
     k: int = 5,
     normalization: str = "equal_weighted",
     method: str | None = None,
@@ -819,6 +889,14 @@ def run_sieve_cv(
     depth truncates those same fits rather than refitting. It defaults to
     ``max(depths)`` and must not be smaller. Raises naming any shard whose
     fit is missing.
+
+    ``variants`` extends that same reuse sideways. The estimator fields are
+    excluded from ``schema_version``, so ``pooled``/``continuation`` with or
+    without empirical-Bayes shrinkage are four *readings* of one fit, not
+    four models to fit: each variant is a ``respecify_model`` of the already
+    merged, already truncated model, scored against the already featurized
+    batch, and written under its own ``EstimatorVariant.method``. Omitted,
+    the model is scored as fitted, under ``method``.
     """
     import sieve
     from experiments.predictors.sieve_predictor import SievePredictor
@@ -826,6 +904,10 @@ def run_sieve_cv(
     from sieve.merge import merge_models
 
     method = method or f"sieve-{config_label}"
+    variant_list: list[EstimatorVariant | None] = list(variants) if variants else [None]
+    names = [v.method for v in variant_list if v is not None]
+    if len(set(names)) != len(names):
+        raise ValueError(f"variants must have distinct method names, got {names}")
     ids = shard_ids(n_shards)
     if fit_depth is None:
         fit_depth = max(depths)
@@ -879,34 +961,49 @@ def run_sieve_cv(
             featurize_s = time.perf_counter() - t0
 
             for depth in depths:
-                batch_id = cv_batch_id(
-                    repeat=repeat, fold=fold, method=method, depth=depth
-                )
-                if _cv_run_done(runs_root, experiment, batch_id) is not None:
-                    logger.info("%s already done; skipping", batch_id)
-                    continue
-                predictor.set_model(truncate_model(train_models[fold], depth))
-                t0 = time.perf_counter()
-                raw = predictor.predict_raw_from_batch(batch)
-                predict_s = time.perf_counter() - t0
-                results.append(
-                    _write_cv_run(
-                        experiment=experiment,
-                        batch_id=batch_id,
-                        method=method,
-                        store=store,
-                        seed=seed,
-                        held_out=held_out,
-                        raw=raw,
-                        normalization=normalization,
-                        repeat=repeat,
-                        fold=fold,
-                        depth=depth,
-                        held_out_shards=group,
-                        elapsed_s={"featurize": featurize_s, "predict": predict_s},
-                        git_info=git_info,
-                        runs_root=runs_root,
-                        save_predictions=save_predictions,
+                # Built once per depth and only if some variant still needs
+                # it, so a fully resumed (repeat, fold) costs no truncation.
+                truncated: Any = None
+                for variant in variant_list:
+                    vmethod = method if variant is None else variant.method
+                    batch_id = cv_batch_id(
+                        repeat=repeat, fold=fold, method=vmethod, depth=depth
                     )
-                )
+                    if _cv_run_done(runs_root, experiment, batch_id) is not None:
+                        logger.info("%s already done; skipping", batch_id)
+                        continue
+                    if truncated is None:
+                        truncated = truncate_model(train_models[fold], depth)
+                    predictor.set_model(
+                        truncated
+                        if variant is None
+                        else respecify_model(truncated, variant)
+                    )
+                    t0 = time.perf_counter()
+                    raw = predictor.predict_raw_from_batch(batch)
+                    predict_s = time.perf_counter() - t0
+                    results.append(
+                        _write_cv_run(
+                            experiment=experiment,
+                            batch_id=batch_id,
+                            method=vmethod,
+                            store=store,
+                            seed=seed,
+                            held_out=held_out,
+                            raw=raw,
+                            normalization=normalization,
+                            repeat=repeat,
+                            fold=fold,
+                            depth=depth,
+                            held_out_shards=group,
+                            elapsed_s={
+                                "featurize": featurize_s,
+                                "predict": predict_s,
+                            },
+                            git_info=git_info,
+                            runs_root=runs_root,
+                            save_predictions=save_predictions,
+                            variant=variant,
+                        )
+                    )
     return results

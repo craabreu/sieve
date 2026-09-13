@@ -619,3 +619,220 @@ def test_run_sieve_cv_reuses_shard_fits_deeper_than_the_requested_depth(tmp_path
             runs_root=tmp_path / "runs-shallow",
             **kwargs,
         )
+
+
+_VARIANT_SPECS = [
+    ("pooled", None),
+    ("pooled", "empirical_bayes"),
+    ("continuation", None),
+    ("continuation", "empirical_bayes"),
+]
+
+
+@pytest.mark.parametrize(("class_estimator", "shrinkage_weight"), _VARIANT_SPECS)
+def test_respecify_model_matches_a_native_fit_with_that_estimator(
+    class_estimator, shrinkage_weight
+):
+    """The claim that lets one shard set serve a whole estimator family:
+    rewriting ``class_estimator``/``shrinkage_weight`` on a fitted model gives
+    exactly the model that was fitted with them in the first place.
+
+    True because those fields are excluded from ``schema_version`` -- they are
+    read at predict time and change only how stored numbers are combined, not
+    what is stored. Checked against a native fit rather than assumed.
+    """
+    import numpy as np
+    from experiments.cv import EstimatorVariant, respecify_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=24, seed=5)
+    test = synthetic_molecule_set(n_mol=8, seed=6)
+    fitted_as = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=2,
+        minimum_support=1,
+        class_estimator=class_estimator,
+        shrinkage_weight=shrinkage_weight,
+    )
+    fitted_as.fit(train, train, rng=np.random.default_rng(0))
+    native = fitted_as.predict_raw(test)
+
+    # A model fitted under a *different* reading, then respecified.
+    other = "continuation" if class_estimator == "pooled" else "pooled"
+    fitted_other = SievePredictor(
+        attributes=("element",),
+        edge_attributes=(),
+        max_wl_depth=2,
+        minimum_support=1,
+        class_estimator=other,
+        shrinkage_weight=None,
+    )
+    fitted_other.fit(train, train, rng=np.random.default_rng(0))
+    respecified = respecify_model(
+        fitted_other._model,
+        EstimatorVariant(
+            method="v",
+            class_estimator=class_estimator,
+            shrinkage_weight=shrinkage_weight,
+        ),
+    )
+    fitted_other.set_model(respecified)
+    got = fitted_other.predict_raw(test)
+
+    np.testing.assert_array_equal(got.atom_value, native.atom_value)
+    np.testing.assert_array_equal(got.atom_std, native.atom_std)
+
+
+def test_respecify_model_preserves_schema_version_and_statistics():
+    from experiments.cv import EstimatorVariant, respecify_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    p = SievePredictor(
+        attributes=("element",), edge_attributes=(), max_wl_depth=2, minimum_support=1
+    )
+    mset = synthetic_molecule_set(n_mol=16, seed=8)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    model = p._model
+
+    out = respecify_model(
+        model,
+        EstimatorVariant(
+            method="v",
+            class_estimator="continuation",
+            shrinkage_weight="empirical_bayes",
+        ),
+    )
+    assert out.config.schema_version == model.config.schema_version
+    assert out.levels is model.levels  # statistics shared, not copied
+    assert out.config.class_estimator == "continuation"
+    assert out.config.shrinkage_weight == "empirical_bayes"
+    assert model.config.class_estimator == "pooled"  # original untouched
+
+
+def test_run_sieve_cv_variants_share_one_shard_set(tmp_path):
+    """Four estimator readings off a single set of shard fits: distinct runs,
+    distinct predictions, and no second fit anywhere.
+    """
+    import json as _json
+
+    from experiments.cv import EstimatorVariant, run_sieve_cv, run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    n_mol, n_shards, k = 20, 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    runs_root = tmp_path / "runs"
+
+    config = _build_config(
+        synthetic_molecule_set(n_mol=n_mol, seed=2).mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+
+    run_sieve_shard_fits(
+        store=store,
+        n_shards=n_shards,
+        max_depth=1,
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        runs_root=runs_root,
+        stores_root=stores_root,
+        allow_dirty=True,
+    )
+    from experiments.cv import SHARD_FIT_EXPERIMENT
+
+    def _n_shard_fits() -> int:
+        return len(list((runs_root / SHARD_FIT_EXPERIMENT).glob("*__*/tree_stats.npz")))
+
+    n_fits = _n_shard_fits()
+    assert n_fits == n_shards, "the count below is only a check if it counts"
+
+    variants = [
+        EstimatorVariant(
+            method=f"sieve-{ce}{'-eb' if sw else ''}",
+            class_estimator=ce,
+            shrinkage_weight=sw,
+        )
+        for ce, sw in _VARIANT_SPECS
+    ]
+    results = run_sieve_cv(
+        store=store,
+        n_shards=n_shards,
+        depths=[1],
+        repeats=[0],
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params=params,
+        variants=variants,
+        k=k,
+        runs_root=runs_root,
+        stores_root=stores_root,
+        allow_dirty=True,
+    )
+    assert len(results) == k * len(variants)
+
+    # No shard was refitted to produce three more model families.
+    assert _n_shard_fits() == n_fits
+
+    methods = set()
+    for r in results:
+        cv = _json.loads((r.run_dir / "manifest.json").read_text())["config"]["cv"]
+        methods.add(cv["method"])
+        assert cv["class_estimator"] in {"pooled", "continuation"}
+    assert methods == {v.method for v in variants}
+
+    # Resuming does nothing, per variant as well as per (repeat, fold, depth).
+    assert (
+        run_sieve_cv(
+            store=store,
+            n_shards=n_shards,
+            depths=[1],
+            repeats=[0],
+            codes_path=codes_path,
+            config_label="cfg",
+            predictor_params=params,
+            variants=variants,
+            k=k,
+            runs_root=runs_root,
+            stores_root=stores_root,
+            allow_dirty=True,
+        )
+        == []
+    )
+
+
+def test_run_sieve_cv_rejects_variants_with_duplicate_method_names(tmp_path):
+    from experiments.cv import EstimatorVariant, run_sieve_cv
+
+    dup = [
+        EstimatorVariant(method="same", class_estimator="pooled"),
+        EstimatorVariant(method="same", class_estimator="continuation"),
+    ]
+    with pytest.raises(ValueError, match="distinct method names"):
+        run_sieve_cv(
+            store="s",
+            n_shards=10,
+            depths=[1],
+            repeats=[0],
+            codes_path=tmp_path / "codes.json",
+            config_label="cfg",
+            variants=dup,
+            runs_root=tmp_path / "runs",
+            allow_dirty=True,
+        )

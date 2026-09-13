@@ -196,6 +196,34 @@ shard_fits_count_is() {
 
 n_items() { echo "$1" | tr ',' '\n' | grep -c .; }
 
+# The variant JSON is authored as a multi-line literal for readability; count
+# its entries by counting "method" keys rather than by parsing JSON in shell.
+n_variants() { echo "$SIEVE_VARIANTS" | grep -c '"method"'; }
+
+# Distinct selected depths across the variants, ascending.
+variant_depths() {
+  echo "$SIEVE_VARIANT_DEPTHS" | tr ',' '\n' | cut -d: -f2 | sort -un
+}
+
+# The variant JSON entries whose selected depth is $1, as a JSON list. Every
+# variant at one depth goes in a single invocation, so they share that
+# depth's merge, truncation and featurized batch; variants at *different*
+# depths cannot, hence one invocation per distinct depth.
+variants_at_depth() {
+  local want=$1 methods
+  methods=$(echo "$SIEVE_VARIANT_DEPTHS" | tr ',' '\n' \
+            | awk -F: -v d="$want" '$2 == d {print $1}')
+  echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
+import json, sys
+wanted = set(sys.argv[1].split())
+out = [v for v in json.load(sys.stdin) if v["method"] in wanted]
+missing = wanted - {v["method"] for v in out}
+if missing:
+    raise SystemExit(f"SIEVE_VARIANT_DEPTHS names unknown variant(s): {sorted(missing)}")
+json.dump(out, sys.stdout)
+' "$methods"
+}
+
 # ===========================================================================
 # Configuration
 # ===========================================================================
@@ -223,6 +251,24 @@ SIEVE_CONFIG_LABEL=element-eb
 SIEVE_DEPTHS=0,1,2,3,4,5,6,7,8,9,10
 SIEVE_PREDICTOR_PARAMS='{"attributes": ["element"], "edge_attributes": [], "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}'
 SIEVE_METHOD="sieve-$SIEVE_CONFIG_LABEL"
+
+# Four readings of the SAME shard fits. class_estimator and shrinkage_weight
+# are read at predict time and excluded from schema_version, so this costs no
+# refit, no re-merge, and not even a re-featurization -- the variants share
+# the merged model and the eval batch. They are separate arms of the
+# comparison, so each gets its own Study A depth curve and its own selected
+# depth, exactly as DASH and Sieve do.
+SIEVE_VARIANTS='[
+  {"method": "sieve-element-pooled",          "class_estimator": "pooled"},
+  {"method": "sieve-element-pooled-eb",       "class_estimator": "pooled",       "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-continuation",    "class_estimator": "continuation"},
+  {"method": "sieve-element-eb",              "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
+]'
+# One selected depth per variant, as "method:depth" pairs. Override after
+# reading Study A's curve:
+#   "$PYTHON" -m experiments sweep --experiment sieve-cv-study-a \
+#     --x config.cv.depth --group config.cv.method --metric rmse
+SIEVE_VARIANT_DEPTHS="${SIEVE_VARIANT_DEPTHS:-sieve-element-pooled:6,sieve-element-pooled-eb:6,sieve-element-continuation:6,sieve-element-eb:6}"
 
 CODES_PATH="experiments/stores/$STORE/sieve-codes.json"
 CLUSTER_REPORT="experiments/results/cluster-report.txt"
@@ -412,14 +458,18 @@ step study-a-dash \
     --depths "$DASH_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
+# All variants in one invocation: they differ only in how the merged model is
+# read, so the sweep costs one extra _search pass per variant, not one extra
+# fit. Each gets its own depth curve, and therefore its own selected depth.
 step study-a-sieve \
-  "runs_count_is $SIEVE_STUDY_A $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
+  "runs_count_is $SIEVE_STUDY_A $((K * $(n_items "$SIEVE_DEPTHS") * $(n_variants)))" -- \
   "$PYTHON" -m experiments cv-run-sieve "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
     --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
+    --variants "$SIEVE_VARIANTS" \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
 
@@ -446,19 +496,28 @@ run_dash_repeat() {
 }
 
 run_sieve_repeat() {
-  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
-    --n-shards "$N_SHARDS" --k "$K" \
-    --depths "$SIEVE_SELECTED_DEPTH" --repeats "$1" \
-    --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
-    --fit-depth "$SIEVE_MAX_DEPTH" \
-    --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
-    --normalization equal_weighted --method "$SIEVE_METHOD" \
-    --experiment "$SIEVE_STUDY_B" \
-    $SAVE_PREDICTIONS_FLAG
+  # One invocation per distinct selected depth, carrying every variant that
+  # chose it -- so variants sharing a depth also share its merge and batch.
+  local depth variants
+  for depth in $(variant_depths); do
+    variants=$(variants_at_depth "$depth")
+    "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+      --n-shards "$N_SHARDS" --k "$K" \
+      --depths "$depth" --repeats "$1" \
+      --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
+      --fit-depth "$SIEVE_MAX_DEPTH" \
+      --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
+      --variants "$variants" \
+      --normalization equal_weighted --method "$SIEVE_METHOD" \
+      --experiment "$SIEVE_STUDY_B" \
+      $SAVE_PREDICTIONS_FLAG
+  done
 }
 export -f run_dash_repeat run_sieve_repeat
 export DASH_SELECTED_DEPTH SIEVE_SELECTED_DEPTH SAVE_PREDICTIONS_FLAG
 export DASH_STUDY_B SIEVE_STUDY_B SIEVE_METHOD K DASH_MAX_DEPTH
+export SIEVE_VARIANTS SIEVE_VARIANT_DEPTHS
+export -f variant_depths variants_at_depth
 
 each_repeat() { echo "$STUDY_B_REPEATS" | tr ',' '\n'; }
 
@@ -475,7 +534,7 @@ step study-b-dash \
   dispatch_dash_repeats
 
 step study-b-sieve \
-  "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS") * $(n_variants)))" -- \
   dispatch_sieve_repeats
 
 # --- compare ---------------------------------------------------------------
@@ -503,13 +562,28 @@ step study-b-sieve \
 # COMPARE_METRIC=mae re-runs the comparison on MAE without re-running
 # anything.
 COMPARE_METRIC="${COMPARE_METRIC:-rmse}"
+
+# {method: selected depth} for every arm: DASH plus each Sieve variant. Built
+# from the same SIEVE_VARIANT_DEPTHS that Study B ran, so the comparison
+# cannot silently read a depth nobody produced.
+DEPTH_BY_METHOD=$(
+  "$PYTHON" -c '
+import json, sys
+pairs = dict(p.split(":") for p in sys.argv[2].split(",") if p)
+out = {"dash": int(sys.argv[1])}
+out.update({m: int(d) for m, d in pairs.items()})
+print(json.dumps(out))
+' "$DASH_SELECTED_DEPTH" "$SIEVE_VARIANT_DEPTHS"
+)
+export DEPTH_BY_METHOD  # the compare step runs in a child bash -c
+
 step compare \
   "file_exists $TUKEY_PLOT && file_exists $SIMULTANEOUS_PLOT" -- \
   bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$TUKEY_PLOT')\" && \
            '$PYTHON' -m experiments compare \
              --experiment '$DASH_STUDY_B' --experiment '$SIEVE_STUDY_B' \
              --metric "$COMPARE_METRIC" \
-             --depth-by-method '{\"dash\": $DASH_SELECTED_DEPTH, \"$SIEVE_METHOD\": $SIEVE_SELECTED_DEPTH}' \
+             --depth-by-method \"\$DEPTH_BY_METHOD\" \
              --out '$TUKEY_PLOT' \
              --out-simultaneous '$SIMULTANEOUS_PLOT'"
 
@@ -519,7 +593,10 @@ step compare \
 # full-train model and score the untouched 10% test split. The headline
 # number, and the only thing here that touches `test`.
 DASH_MERGED=experiments/results/dash-merged/tree_stats.npz
-SIEVE_MERGED="experiments/results/sieve-merged/tree_stats-w${SIEVE_SELECTED_DEPTH}.npz"
+# Named for the depth the shards were FIT at, not a selected one: there is a
+# single merged artifact, and a shallower model is a truncation of it. Using
+# the selected depth here globbed shard fits that never existed.
+SIEVE_MERGED="experiments/results/sieve-merged/tree_stats-w${SIEVE_MAX_DEPTH}.npz"
 
 # Merge order does not affect the result (both merges are commutative and
 # associative); sorted purely for a readable command line.
@@ -533,7 +610,7 @@ step merge-sieve-shards \
   "file_exists $SIEVE_MERGED" -- \
   bash -c "set -euo pipefail; '$PYTHON' -m experiments merge-states --predictor sieve \
              --out '$SIEVE_MERGED' \
-             \$(ls experiments/runs/cv-shard-fits/fit-sieve-$SIEVE_CONFIG_LABEL-w${SIEVE_SELECTED_DEPTH}-s*__*/tree_stats.npz | sort)"
+             \$(ls experiments/runs/cv-shard-fits/fit-sieve-$SIEVE_CONFIG_LABEL-w${SIEVE_MAX_DEPTH}-s*__*/tree_stats.npz | sort)"
 
 step final-holdout-dash \
   "runs_exist dash-final-holdout final" -- \
@@ -547,6 +624,10 @@ step final-holdout-dash \
     --set run.experiment=dash-final-holdout \
     --set run.batch_id=final
 
+# NOTE: unrun so far. $SIEVE_MERGED is a depth-$SIEVE_MAX_DEPTH model, so this
+# step needs the truncation seam that run_sieve_cv gets from truncate_model --
+# setting predictor.params.max_wl_depth alone has not been verified to
+# truncate a loaded model. Check that before trusting its number.
 step final-holdout-sieve \
   "runs_exist sieve-final-holdout final" -- \
   "$PYTHON" -m experiments run \
