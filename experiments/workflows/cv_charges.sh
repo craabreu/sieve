@@ -330,14 +330,26 @@ SIEVE_STUDY_B=sieve-cv-study-b
 # Tracked, deliberately: experiments/results is gitignored (friction
 # observation 3), and the Tukey plot is the study's headline result, not an
 # intermediate. It carries its own provenance header (store, commit, run ids).
-TUKEY_PLOT=experiments/docs/figures/tukey-study-b.png
+FIGURES_DIR=experiments/docs/figures
 # The same test drawn the other way: one interval per method on the metric's
 # own scale rather than one per pair on a difference scale (statsmodels'
 # plot_simultaneous layout, as used in Pat Walters' ADME model comparison).
 # Two methods make a thin plot; it earns its keep once the open-ended list of
 # Sieve configs in the design has more than one entry, because it grows as k
 # rather than as k-choose-2.
-SIMULTANEOUS_PLOT=experiments/docs/figures/simultaneous-study-b.png
+
+# One pair of plots per metric. Every CV run already records all of these from
+# a single prediction, so extra metrics cost a re-analysis, never a re-run.
+# sum_constraint/* score the per-molecule total the normalizers enforce, which
+# is a different question from per-atom accuracy and worth its own panel.
+COMPARE_METRICS="${COMPARE_METRICS:-rmse,mae,r2,sum_constraint/rmse}"
+# Metrics where larger is better, so --reference best picks the right arm.
+COMPARE_HIGHER_IS_BETTER="r2,sum_constraint/r2"
+
+metric_slug()   { echo "$1" | tr '/' '-'; }
+tukey_plot()    { echo "$FIGURES_DIR/tukey-study-b-$(metric_slug "$1").png"; }
+simult_plot()   { echo "$FIGURES_DIR/simultaneous-study-b-$(metric_slug "$1").png"; }
+each_metric()   { echo "$COMPARE_METRICS" | tr ',' '\n' | grep -v '^$'; }
 
 # ===========================================================================
 # Steps
@@ -583,14 +595,12 @@ step study-b-sieve \
 # ported onto this layout. The raw metric compares estimator to estimator,
 # with neither given the molecule's true total charge.
 #
-# RMSE rather than MAE, because it is the metric the DASH paper itself
-# reports throughout -- its GNN at 0.0153 e, and the conformational-
-# variation floor of 0.0125 e it calls "a lower bound on the accuracy that
-# can be reached by an ML model" -- so these numbers are directly
-# comparable to the published ones. Both are recorded in every run, so
-# COMPARE_METRIC=mae re-runs the comparison on MAE without re-running
-# anything.
-COMPARE_METRIC="${COMPARE_METRIC:-rmse}"
+# RMSE leads, because it is the metric the DASH paper itself reports
+# throughout -- its GNN at 0.0153 e, and the conformational-variation floor of
+# 0.0125 e it calls "a lower bound on the accuracy that can be reached by an
+# ML model" -- so those numbers are directly comparable to the published ones.
+# The rest are drawn alongside it (COMPARE_METRICS above), since every run
+# records them all from one prediction and a second panel costs no re-run.
 
 # {method: depth} for every arm: DASH at its depth, every Sieve variant at
 # SIEVE_SELECTED_DEPTH. Derived from the same SIEVE_VARIANTS that Study B ran,
@@ -619,30 +629,44 @@ out.update({v["method"]: int(sys.argv[2]) for v in variants if v["method"] not i
 print(json.dumps(out))
 ' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH" "$COMPARE_EXCLUDE"
 )
-export DEPTH_BY_METHOD  # the compare step runs in a child bash -c
 
 # A stamp of what the figures were drawn FROM, beside them. mtimes catch new
-# runs; they cannot catch a changed metric or a changed set of arms, which
-# change the figure just as much. Guard on both.
-COMPARE_STAMP="$(dirname "$TUKEY_PLOT")/.compare-inputs"
-export COMPARE_STAMP COMPARE_METRIC
-compare_stamp_matches() {
+# runs; they cannot catch a changed metric list or a changed set of arms,
+# which change the figures just as much. Guard on both.
+COMPARE_STAMP="$FIGURES_DIR/.compare-inputs"
+STUDY_B_RUNS="experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B"
+
+compare_is_up_to_date() {
   [ -f "$COMPARE_STAMP" ] || return 1
-  [ "$(cat "$COMPARE_STAMP")" = "$COMPARE_METRIC $DEPTH_BY_METHOD" ]
+  [ "$(cat "$COMPARE_STAMP")" = "$COMPARE_METRICS $DEPTH_BY_METHOD" ] || return 1
+  local m
+  for m in $(each_metric); do
+    file_is_newer_than_runs "$(tukey_plot "$m")" $STUDY_B_RUNS || return 1
+    file_is_newer_than_runs "$(simult_plot "$m")" $STUDY_B_RUNS || return 1
+  done
 }
 
-step compare \
-  "compare_stamp_matches \
-   && file_is_newer_than_runs $TUKEY_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B \
-   && file_is_newer_than_runs $SIMULTANEOUS_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B" -- \
-  bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$TUKEY_PLOT')\" && \
-           '$PYTHON' -m experiments compare \
-             --experiment '$DASH_STUDY_B' --experiment '$SIEVE_STUDY_B' \
-             --metric \"\$COMPARE_METRIC\" \
-             --depth-by-method \"\$DEPTH_BY_METHOD\" \
-             --out '$TUKEY_PLOT' \
-             --out-simultaneous '$SIMULTANEOUS_PLOT' && \
-           printf '%s %s' \"\$COMPARE_METRIC\" \"\$DEPTH_BY_METHOD\" > \"\$COMPARE_STAMP\""
+run_compare() {
+  mkdir -p "$FIGURES_DIR"
+  local m flag
+  for m in $(each_metric); do
+    flag=""
+    case ",$COMPARE_HIGHER_IS_BETTER," in *",$m,"*) flag="--higher-is-better" ;; esac
+    echo "--- $m ---"
+    "$PYTHON" -m experiments compare \
+      --experiment "$DASH_STUDY_B" --experiment "$SIEVE_STUDY_B" \
+      --metric "$m" \
+      --depth-by-method "$DEPTH_BY_METHOD" \
+      --out "$(tukey_plot "$m")" \
+      --out-simultaneous "$(simult_plot "$m")" \
+      $flag
+  done
+  # Written only after every metric succeeded, so a partial run reads as a
+  # miss rather than as a finished set of figures.
+  printf '%s %s' "$COMPARE_METRICS" "$DEPTH_BY_METHOD" > "$COMPARE_STAMP"
+}
+
+step compare "compare_is_up_to_date" -- run_compare
 
 # --- final held-out evaluation ---------------------------------------------
 #

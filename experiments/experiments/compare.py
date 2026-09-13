@@ -92,6 +92,10 @@ def read_cv_table(
         depth = int(depth_str)
         if depth_by_method is not None and depth_by_method.get(method) != depth:
             continue
+        # No non-finite check here: aggregate._numeric_metrics already drops
+        # NaN before it reaches this function, so a metric that is NaN on
+        # every run (sum_constraint/r2 is) arrives as simply absent, and the
+        # "fewer than two methods" error below is what reports it.
         value = row.metrics.get(metric)
         if value is None:
             continue
@@ -102,7 +106,10 @@ def read_cv_table(
     methods = sorted(by_method_sample)
     if len(methods) < 2:
         raise ValueError(
-            f"need >= 2 methods with a recorded {metric!r}; found {methods}"
+            f"need >= 2 methods with a recorded {metric!r}; found {methods}. "
+            "Note that a metric which is NaN on every run reads as absent here "
+            "(aggregate drops non-finite values), so this also covers an "
+            "undefined metric such as sum_constraint/r2"
         )
 
     sample_keys = set(by_method_sample[methods[0]])
@@ -393,7 +400,15 @@ def write_simultaneous_ci_plot(
 
     k = len(ci.methods)
     if figsize is None:
-        figsize = (8.0, 0.5 * k + 2.0)
+        # Wide enough for whichever is longest: the title, or the method
+        # labels plus the plotting area they sit beside. A fixed 8in clipped
+        # both the "sum_constraint/rmse" title and the provenance caption --
+        # tight_layout cannot rescue text that simply does not fit.
+        longest_label = max((len(m) for m in ci.methods), default=0)
+        figsize = (
+            max(8.0, 0.11 * len(title), 0.10 * longest_label + 5.0),
+            0.5 * k + 2.0,
+        )
     fig, ax = plt.subplots(figsize=figsize)
 
     y = np.arange(k)
@@ -439,8 +454,15 @@ def write_simultaneous_ci_plot(
     ax.set_xlabel(xlabel)
 
     if provenance:
-        fig.text(0.01, 0.01, provenance, fontsize=7, color="0.4")
-    fig.tight_layout(rect=(0, 0.04, 1, 1) if provenance else None)
+        # Wrapped to the figure width rather than run off the edge: the
+        # caption grows with the number of commits the runs span, and a
+        # provenance line that is cut in half records nothing.
+        import textwrap
+
+        wrapped = "\n".join(textwrap.wrap(provenance, width=int(figsize[0] * 15)))
+        n_lines = wrapped.count("\n") + 1
+        fig.text(0.01, 0.01, wrapped, fontsize=7, color="0.4")
+    fig.tight_layout(rect=(0, 0.035 * n_lines, 1, 1) if provenance else None)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=150)
     plt.close(fig)
