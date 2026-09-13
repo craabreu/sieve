@@ -201,7 +201,7 @@ Tukey HSD (Ash, Wognum, Rodríguez-Pérez et al., *JCIM* 2025,
 doi:10.1021/acs.jcim.5c01609):
 
     uv run python -m experiments compare --experiment dash-cv-study-b --experiment sieve-cv-study-b \
-      --depth-by-method '{"dash": 16, "sieve-element-eb": 6}' --out tukey.png
+      --depth-by-method '{"dash": 16, "sieve-element-continuation-eb": 6}' --out tukey.png
 
 `merge-states` generalizes the old `merge-shards` to either predictor, for a
 final held-out evaluation once all shards are fit:

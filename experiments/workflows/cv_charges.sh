@@ -106,21 +106,27 @@ step() {
   fi
 }
 
+# Every step name declared in this file, read from the file itself. Whether
+# CV_UNTIL names a real step is a *static* fact, so it must not be inferred
+# from how far a particular run got: an interrupted or failed run reaches
+# fewer steps for reasons that have nothing to do with the name.
+declared_steps() { grep -oE '^step [A-Za-z0-9_-]+' "$0" | awk '{print $2}'; }
+
 summarize_steps() {
   local status=$?
   echo
   echo "=== workflow summary ==="
   echo "ran:     ${#STEPS_RUN[@]} step(s)${STEPS_RUN[*]+: ${STEPS_RUN[*]}}"
   echo "skipped: ${#STEPS_SKIPPED[@]} step(s)${STEPS_SKIPPED[*]+: ${STEPS_SKIPPED[*]}}"
-  # A CV_UNTIL naming no step at all would otherwise run the whole
-  # workflow silently -- the opposite of what was asked for. Only a clean
-  # exit proves that, though: a step that died before CV_UNTIL's step was
-  # reached leaves _until_matched false for an entirely different reason,
-  # and blaming the name there hides the actual failure.
-  if [ "$status" -ne 0 ]; then
-    echo "!! workflow exited $status -- a step failed; see the traceback above" >&2
+  if [ -n "$CV_UNTIL" ] && ! declared_steps | grep -qx "$CV_UNTIL"; then
+    echo "!! CV_UNTIL=$CV_UNTIL matches no step in $0; nothing stopped early" >&2
+    echo "!! steps are: $(declared_steps | tr '\n' ' ')" >&2
   elif [ -n "$CV_UNTIL" ] && ! $_until_matched; then
-    echo "!! CV_UNTIL=$CV_UNTIL matched no step; the whole workflow ran" >&2
+    # The name is real, so this run simply never got there.
+    echo "!! stopped before reaching CV_UNTIL=$CV_UNTIL" >&2
+    echo "!! (exit $status -- a step failed, or the workflow was interrupted)" >&2
+  elif [ "$status" -ne 0 ]; then
+    echo "!! workflow exited $status -- see the traceback above" >&2
   fi
 }
 trap summarize_steps EXIT
@@ -226,7 +232,12 @@ DASH_DEPTHS=2,4,6,8,10,12,14,16
 SIEVE_CONFIG_LABEL=element-eb
 SIEVE_DEPTHS=0,1,2,3,4,5,6,7,8,9,10
 SIEVE_PREDICTOR_PARAMS='{"attributes": ["element"], "edge_attributes": [], "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}'
-SIEVE_METHOD="sieve-$SIEVE_CONFIG_LABEL"
+# Deliberately NOT derived from SIEVE_CONFIG_LABEL. The label names the
+# *fit* -- it is baked into the 50 shard-fit directory names
+# (fit-sieve-element-eb-w10-sNN), so changing it invalidates them and forces
+# a refit. The method names the *arm*, and arms are named for what they are:
+# the fit's own reading is continuation + empirical Bayes.
+SIEVE_METHOD="sieve-element-continuation-eb"
 
 # Readings of the SAME shard fits. Each entry is a method name plus anything
 # SieveModel.with_params accepts -- class_estimator, shrinkage_weight,
@@ -245,12 +256,12 @@ SIEVE_METHOD="sieve-$SIEVE_CONFIG_LABEL"
 # differs from flat continuation only at levels at least two steps above the
 # deepest, so at SIEVE_SELECTED_DEPTH it is a real arm, not a duplicate.
 SIEVE_VARIANTS='[
-  {"method": "sieve-element-pooled",       "class_estimator": "pooled",                 "shrinkage_weight": null},
-  {"method": "sieve-element-pooled-eb",    "class_estimator": "pooled",                 "shrinkage_weight": "empirical_bayes"},
-  {"method": "sieve-element-continuation", "class_estimator": "continuation",           "shrinkage_weight": null},
-  {"method": "sieve-element-eb",           "class_estimator": "continuation",           "shrinkage_weight": "empirical_bayes"},
-  {"method": "sieve-element-recursive",    "class_estimator": "continuation_recursive", "shrinkage_weight": null},
-  {"method": "sieve-element-recursive-eb", "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"}
+  {"method": "sieve-element-pooled",          "class_estimator": "pooled",                 "shrinkage_weight": null},
+  {"method": "sieve-element-pooled-eb",       "class_estimator": "pooled",                 "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-continuation",    "class_estimator": "continuation",           "shrinkage_weight": null},
+  {"method": "sieve-element-continuation-eb", "class_estimator": "continuation",           "shrinkage_weight": "empirical_bayes"},
+  {"method": "sieve-element-recursive",       "class_estimator": "continuation_recursive", "shrinkage_weight": null},
+  {"method": "sieve-element-recursive-eb",    "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"}
 ]'
 # Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
 # once, on SIEVE_METHOD alone (Study A below); the variants are a comparison

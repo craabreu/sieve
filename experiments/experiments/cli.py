@@ -1020,8 +1020,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_compare.add_argument(
         "--depth-by-method",
         default=None,
-        help='JSON object, e.g. \'{"dash": 16, "sieve-element-eb": 6}\' -- '
-        "each method's own Study-A-selected depth",
+        help='JSON object, e.g. \'{"dash": 16, "sieve-element-pooled": 6}\' '
+        "-- each method's own Study-A-selected depth",
     )
     p_compare.add_argument("--alpha", type=float, default=0.05)
     p_compare.add_argument(
