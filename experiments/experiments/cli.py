@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from experiments.config import load_config
+from experiments.cv import DEFAULT_MODEL_CACHE
 from experiments.data import DEFAULT_STORES_ROOT
 from experiments.runner import (
     DEFAULT_ARTIFACT_ROOT,
@@ -156,6 +157,7 @@ def _cmd_prepare_store(args: argparse.Namespace) -> int:
         stores_root=DEFAULT_STORES_ROOT,
         sdf_path=args.sdf_path,
         n_shards=args.n_shards,
+        stop_before_split=args.stop_before_split,
     )
     return 0
 
@@ -285,7 +287,20 @@ def _cmd_to_united_atom(args: argparse.Namespace) -> int:
 
 
 def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
-    from experiments.cv import run_dash_shard_fits
+    from experiments.cv import fit_dash_shard, run_dash_shard_fits
+
+    if args.shard is not None:
+        print(
+            fit_dash_shard(
+                store=args.store,
+                shard=args.shard,
+                max_depth=args.max_depth,
+                seed=args.seed,
+                runs_root=DEFAULT_RUNS_ROOT,
+                allow_dirty=args.allow_dirty,
+            )
+        )
+        return 0
 
     paths = run_dash_shard_fits(
         store=args.store,
@@ -303,16 +318,31 @@ def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
 def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
     import json as _json
 
-    from experiments.cv import run_sieve_shard_fits
+    from experiments.cv import fit_sieve_shard, run_sieve_shard_fits
 
-    depths = [int(d) for d in args.depths.split(",")]
     predictor_params = (
         _json.loads(args.predictor_params) if args.predictor_params else {}
     )
+    if args.shard is not None:
+        print(
+            fit_sieve_shard(
+                store=args.store,
+                shard=args.shard,
+                depth=args.max_depth,
+                codes_path=args.codes_path,
+                config_label=args.config_label,
+                predictor_params=predictor_params,
+                seed=args.seed,
+                runs_root=DEFAULT_RUNS_ROOT,
+                allow_dirty=args.allow_dirty,
+            )
+        )
+        return 0
+
     result = run_sieve_shard_fits(
         store=args.store,
         n_shards=args.n_shards,
-        depths=depths,
+        max_depth=args.max_depth,
         codes_path=args.codes_path,
         config_label=args.config_label,
         predictor_params=predictor_params,
@@ -320,9 +350,8 @@ def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
-    for depth, paths in result.items():
-        for p in paths:
-            print(f"w{depth}: {p}")
+    for path in result:
+        print(path)
     return 0
 
 
@@ -336,12 +365,14 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
         n_shards=args.n_shards,
         depths=depths,
         repeats=repeats,
+        model_cache=args.model_cache,
         k=args.k,
         max_depth=args.max_depth,
         normalization=args.normalization,
         method=args.method,
         experiment=args.experiment,
         seed=args.seed,
+        save_predictions=args.save_predictions,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -356,12 +387,17 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
 def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
     import json as _json
 
-    from experiments.cv import run_sieve_cv
+    from experiments.cv import ModelVariant, run_sieve_cv
 
     depths = [int(d) for d in args.depths.split(",")]
     repeats = [int(r) for r in args.repeats.split(",")]
     predictor_params = (
         _json.loads(args.predictor_params) if args.predictor_params else {}
+    )
+    variants = (
+        [ModelVariant.from_dict(v) for v in _json.loads(args.variants)]
+        if args.variants
+        else None
     )
     results = run_sieve_cv(
         store=args.store,
@@ -370,12 +406,16 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         repeats=repeats,
         codes_path=args.codes_path,
         config_label=args.config_label,
+        fit_depth=args.fit_depth,
         predictor_params=predictor_params,
+        variants=variants,
+        model_cache=args.model_cache,
         k=args.k,
         normalization=args.normalization,
         method=args.method,
         experiment=args.experiment,
         seed=args.seed,
+        save_predictions=args.save_predictions,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -390,7 +430,12 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
 def _cmd_compare(args: argparse.Namespace) -> int:
     import json as _json
 
-    from experiments.compare import read_cv_table, repeated_measures_anova, tukey_hsd
+    from experiments.compare import (
+        read_cv_table,
+        repeated_measures_anova,
+        run_commits,
+        tukey_hsd,
+    )
 
     experiments_ = args.experiment
     depth_by_method = (
@@ -418,10 +463,18 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             f"CI=[{c.ci_lo:.6g}, {c.ci_hi:.6g}] p={c.p_value:.4g}"
         )
 
+    if args.out is None and args.out_simultaneous is None:
+        return 0
+
+    commits = run_commits(DEFAULT_RUNS_ROOT, experiments_)
+    provenance = (
+        f"experiments: {', '.join(experiments_)}; n={table.shape[0]}; "
+        f"metric: {args.metric}; commit: {', '.join(commits) or 'unknown'}"
+    )
+
     if args.out is not None:
         from experiments.compare import write_tukey_plot
 
-        provenance = f"store(s): {', '.join(experiments_)}; n={table.shape[0]}"
         write_tukey_plot(
             comparisons,
             args.out,
@@ -430,6 +483,34 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             provenance=provenance,
         )
         print(f"wrote {args.out}")
+
+    if args.out_simultaneous is not None:
+        from experiments.compare import simultaneous_ci, write_simultaneous_ci_plot
+
+        ci = simultaneous_ci(methods, table, alpha=args.alpha, anova=anova)
+        # Default the reference to the best method, as Walters' ADME
+        # comparison notebook does -- lower is better for an error metric,
+        # higher for a score, so the caller says which rather than us
+        # guessing from the metric's name.
+        reference: str | None = args.reference
+        if reference == "best":
+            pick = max if args.higher_is_better else min
+            reference = pick(methods, key=lambda m: ci.means[methods.index(m)])
+        elif reference == "none":
+            reference = None
+        write_simultaneous_ci_plot(
+            ci,
+            args.out_simultaneous,
+            comparison_name=reference,
+            title=f"Multiple Comparisons Between All Pairs (Tukey), {args.metric}",
+            xlabel=args.metric,
+            provenance=provenance,
+        )
+        if reference is not None:
+            for m, differs in ci.differs_from(reference).items():
+                verdict = "differs from" if differs else "overlaps"
+                print(f"  {m} {verdict} {reference}")
+        print(f"wrote {args.out_simultaneous}")
     return 0
 
 
@@ -687,6 +768,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="cluster-clean train shards for CV (s00..s{n-1}); choose via "
         "cluster-report first (default: 25)",
     )
+    p_prepare.add_argument(
+        "--stop-before-split",
+        action="store_true",
+        help="stop after parse+curate, without writing the split -- the "
+        "state cluster-report reads, so --n-shards can be chosen from the "
+        "real cluster-size distribution instead of guessed",
+    )
     p_prepare.set_defaults(func=_cmd_prepare_store)
 
     p_cluster_report = sub.add_parser(
@@ -759,20 +847,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="the deepest depth the CV sweep will need -- one fit serves "
         "every shallower depth (node stats are depth-invariant)",
     )
+    p_cv_fit_dash.add_argument(
+        "--shard",
+        default=None,
+        help="fit only this one shard (e.g. s07) instead of all of them "
+        "-- the seam an xargs -P dispatch uses to put one shard per process",
+    )
     p_cv_fit_dash.add_argument("--seed", type=int, default=0)
     p_cv_fit_dash.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_dash.set_defaults(func=_cmd_cv_fit_dash_shards)
 
     p_cv_fit_sieve = sub.add_parser(
         "cv-fit-sieve-shards",
-        help="fit Sieve on each of a store's s00..s{n-1} shards, one shard "
-        "set per depth (continuation's estimate depends on its own "
-        "deepest level, so shallow depths are not derivable from a deep fit)",
+        help="fit Sieve once per shard at the deepest depth needed -- "
+        "shallower depths come from truncating the merged model, exactly",
     )
     p_cv_fit_sieve.add_argument("store", nargs="?", default="dash-molecules")
     p_cv_fit_sieve.add_argument("--n-shards", type=int, required=True)
     p_cv_fit_sieve.add_argument(
-        "--depths", required=True, help="comma-separated max_wl_depth values"
+        "--max-depth",
+        type=int,
+        required=True,
+        help="the deepest max_wl_depth the sweep will need -- one fit per "
+        "shard serves every shallower depth, via cv.truncate_model applied "
+        "to the merged model",
     )
     p_cv_fit_sieve.add_argument(
         "--codes-path", required=True, type=Path, help="from build-sieve-codes"
@@ -787,6 +885,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="JSON object of SievePredictor kwargs other than max_wl_depth/"
         "codes_path (e.g. attributes, class_estimator, shrinkage_weight)",
+    )
+    p_cv_fit_sieve.add_argument(
+        "--shard",
+        default=None,
+        help="fit only this one shard (e.g. s07) instead of all of them "
+        "-- the seam an xargs -P dispatch uses to put one shard per process",
     )
     p_cv_fit_sieve.add_argument("--seed", type=int, default=0)
     p_cv_fit_sieve.add_argument("--allow-dirty", action="store_true")
@@ -808,7 +912,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_cv_run_dash.add_argument("--normalization", default="std_weighted")
     p_cv_run_dash.add_argument("--method", default="dash")
     p_cv_run_dash.add_argument("--experiment", default="dash-cv")
+    p_cv_run_dash.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="write per-atom predictions.npz per run (~151MB each on the "
+        "real corpus). Off by default: across a depth sweep everything but "
+        "atom_target_pred is identical between depths of one (repeat, fold)",
+    )
     p_cv_run_dash.add_argument("--seed", type=int, default=0)
+    p_cv_run_dash.add_argument(
+        "--model-cache",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_MODEL_CACHE,
+        default=None,
+        help=(
+            "persist the assembled CV training models here and reuse them on "
+            "a later call, skipping both the shard load and the merge "
+            "(~123s and 30GB peak per repeat at N=50). Bare flag uses "
+            f"{DEFAULT_MODEL_CACHE}. Off by default: it trades disk for time."
+        ),
+    )
     p_cv_run_dash.add_argument("--allow-dirty", action="store_true")
     p_cv_run_dash.set_defaults(func=_cmd_cv_run_dash)
 
@@ -825,14 +949,58 @@ def build_parser() -> argparse.ArgumentParser:
         "--codes-path", required=True, type=Path, help="from build-sieve-codes"
     )
     p_cv_run_sieve.add_argument("--config-label", required=True)
+    p_cv_run_sieve.add_argument(
+        "--fit-depth",
+        type=int,
+        default=None,
+        help=(
+            "depth the shard fits on disk were made at; defaults to max(--depths). "
+            "Set it when reusing deeper shard fits for a shallower study."
+        ),
+    )
     p_cv_run_sieve.add_argument("--predictor-params", default=None)
+    p_cv_run_sieve.add_argument(
+        "--variants",
+        default=None,
+        help=(
+            "JSON list of model variants scored off the SAME shard fits. Each "
+            'entry is {"method": NAME, ...}, where the rest is anything '
+            "SieveModel.with_params accepts: class_estimator, "
+            "shrinkage_weight, shrinkage_strength, minimum_support, "
+            "chunk_size. Those are exactly the fields schema_version "
+            "excludes, so this costs no refit. The params PATCH the fitted "
+            'config, so say "shrinkage_weight": null explicitly to turn off a '
+            "shrinkage the fit itself applied. Omitted, the model is scored "
+            "as fitted, under --method."
+        ),
+    )
     p_cv_run_sieve.add_argument("--k", type=int, default=5)
     p_cv_run_sieve.add_argument("--normalization", default="equal_weighted")
     p_cv_run_sieve.add_argument(
         "--method", default=None, help="defaults to sieve-<config-label>"
     )
     p_cv_run_sieve.add_argument("--experiment", default="sieve-cv")
+    p_cv_run_sieve.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="write per-atom predictions.npz per run (~151MB each on the "
+        "real corpus). Off by default: across a depth sweep everything but "
+        "atom_target_pred is identical between depths of one (repeat, fold)",
+    )
     p_cv_run_sieve.add_argument("--seed", type=int, default=0)
+    p_cv_run_sieve.add_argument(
+        "--model-cache",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_MODEL_CACHE,
+        default=None,
+        help=(
+            "persist the assembled CV training models here and reuse them on "
+            "a later call, skipping both the shard load and the merge "
+            "(~123s and 30GB peak per repeat at N=50). Bare flag uses "
+            f"{DEFAULT_MODEL_CACHE}. Off by default: it trades disk for time."
+        ),
+    )
     p_cv_run_sieve.add_argument("--allow-dirty", action="store_true")
     p_cv_run_sieve.set_defaults(func=_cmd_cv_run_sieve)
 
@@ -852,12 +1020,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_compare.add_argument(
         "--depth-by-method",
         default=None,
-        help='JSON object, e.g. \'{"dash": 16, "sieve-element-eb": 6}\' -- '
-        "each method's own Study-A-selected depth",
+        help='JSON object, e.g. \'{"dash": 16, "sieve-element-pooled": 6}\' '
+        "-- each method's own Study-A-selected depth",
     )
     p_compare.add_argument("--alpha", type=float, default=0.05)
     p_compare.add_argument(
-        "--out", type=Path, default=None, help="write a Tukey CI plot here"
+        "--out",
+        type=Path,
+        default=None,
+        help="write the pairwise Tukey CI plot here (one interval per pair, "
+        "on a difference scale)",
+    )
+    p_compare.add_argument(
+        "--out-simultaneous",
+        type=Path,
+        default=None,
+        help="write a simultaneous-CI plot here (one interval per method, on "
+        "the metric's own scale) -- statsmodels' plot_simultaneous layout, "
+        "which stays readable as methods are added",
+    )
+    p_compare.add_argument(
+        "--reference",
+        default="best",
+        help="method to colour-code --out-simultaneous against: a method "
+        "name, 'best' (the default; see --higher-is-better), or 'none'",
+    )
+    p_compare.add_argument(
+        "--higher-is-better",
+        action="store_true",
+        help="treat --metric as a score rather than an error, when resolving "
+        "--reference best",
     )
     p_compare.set_defaults(func=_cmd_compare)
 

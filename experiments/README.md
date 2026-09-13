@@ -179,10 +179,13 @@ Freeze the Sieve attribute vocabulary once, over the whole train split
 
     uv run python -m experiments build-sieve-codes --attributes element --edge-attributes "" --out codes.json
 
-Fit each shard once (predicts nothing -- a shard is only ever used merged):
+Fit each shard once, at the deepest depth needed -- shallower depths are
+recovered by truncating the merged model, so this is N fits, not N per
+depth (predicts nothing; a shard is only ever used merged). Add `--shard
+sNN` to fit one shard per process under an `xargs -P` dispatch:
 
     uv run python -m experiments cv-fit-dash-shards --n-shards 25 --max-depth 16
-    uv run python -m experiments cv-fit-sieve-shards --n-shards 25 --depths 0,2,4,6,8,10 \
+    uv run python -m experiments cv-fit-sieve-shards --n-shards 25 --max-depth 10 \
       --codes-path codes.json --config-label element-eb \
       --predictor-params '{"attributes": ["element"], "edge_attributes": [], "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}'
 
@@ -198,12 +201,13 @@ Tukey HSD (Ash, Wognum, Rodríguez-Pérez et al., *JCIM* 2025,
 doi:10.1021/acs.jcim.5c01609):
 
     uv run python -m experiments compare --experiment dash-cv-study-b --experiment sieve-cv-study-b \
-      --depth-by-method '{"dash": 16, "sieve-element-eb": 6}' --out tukey.png
+      --depth-by-method '{"dash": 16, "sieve-element-continuation-eb": 6}' --out tukey.png
 
 `merge-states` generalizes the old `merge-shards` to either predictor, for a
 final held-out evaluation once all shards are fit:
 
     uv run python -m experiments merge-states --predictor dash --out merged.npz runs/cv-shard-fits/fit-dash-s*/tree_stats.npz
 
-See `experiments/workflows/dash_charges.sh`/`sieve_charges.sh` for the full
-sequence, end to end.
+See `experiments/workflows/cv_charges.sh` for the full sequence, end to
+end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
+stop after a given one.

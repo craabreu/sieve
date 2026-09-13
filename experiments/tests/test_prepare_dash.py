@@ -902,3 +902,111 @@ def test_prepare_store_refuses_a_pre_cv_redesign_split_lacking_cluster_and_shard
 
     with pytest.raises(RuntimeError, match=r"cluster.*shard"):
         prepare_store("s", stores_root=stores, sdf_path=sdf_path, n_shards=5)
+
+
+def test_curate_conformers_skips_when_the_summary_matches_the_store(tmp_path):
+    """The ordinary idempotent path: summary present and its recorded
+    post-count matches the store, so curation is skipped."""
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    outlier = [3.00, 0.20, -0.30, 0.00]
+    store = _store_with_charges(tmp_path, [base, [q + 0.01 for q in base], outlier])
+
+    curate_conformers(store)
+    second = curate_conformers(store)
+
+    assert "already curated" in second.lower()
+
+
+def test_curate_conformers_recurates_when_the_parquet_was_rebuilt_underneath(
+    tmp_path,
+):
+    """The corruption path the fingerprint exists to close: the summary
+    records a curation of a *previous* parquet, and the store has since
+    been re-parsed (more rows, uncurated). Trusting the marker alone would
+    leave an uncurated store claiming to be curated; the row-count check
+    must notice and re-curate instead."""
+    import pandas as pd
+    from experiments.prepare_dash import curate_conformers
+
+    base = [0.10, 0.20, -0.30, 0.00]
+    outlier = [3.00, 0.20, -0.30, 0.00]
+    store = _store_with_charges(tmp_path, [base, [q + 0.01 for q in base], outlier])
+
+    curate_conformers(store)
+    curated_rows = len(pd.read_parquet(store / "molecules.parquet"))
+    assert curated_rows == 2  # the outlier was dropped
+    summary_before = (store / "curation_summary.txt").read_text()
+
+    # Simulate prepare_store re-parsing the SDF under a surviving summary.
+    (tmp_path / "rebuilt").mkdir()
+    rebuilt = _store_with_charges(
+        tmp_path / "rebuilt", [base, [q + 0.01 for q in base], outlier]
+    )
+    (store / "molecules.parquet").write_bytes(
+        (rebuilt / "molecules.parquet").read_bytes()
+    )
+    assert len(pd.read_parquet(store / "molecules.parquet")) == 3  # uncurated again
+
+    result = curate_conformers(store)
+
+    assert "already curated" not in result.lower()  # it re-ran, not skipped
+    assert len(pd.read_parquet(store / "molecules.parquet")) == 2
+    assert (store / "curation_summary.txt").read_text() == summary_before
+
+
+def test_curated_conformer_count_parses_the_summary():
+    from experiments.prepare_dash import _curated_conformer_count
+
+    text = (
+        "conformer curation at threshold 0.4 e\n"
+        "conformers: 1029785 -> 1027538 (2247 removed)\n"
+        "molecules removed entirely: 86"
+    )
+    assert _curated_conformer_count(text) == 1027538
+    assert _curated_conformer_count("no counts here") is None
+
+
+def test_prepare_store_stop_before_split_leaves_the_store_unsplit(tmp_path):
+    """--stop-before-split must produce exactly the state cluster-report
+    reads: parsed and curated, with no split/cluster/shard columns."""
+    import pandas as pd
+    from experiments.prepare_dash import prepare_store
+
+    sdf_path = tmp_path / "diverse.sdf"
+    sdf_path.write_text(_two_conformer_records())
+    stores = tmp_path / "stores"
+
+    prepare_store("s", stores_root=stores, sdf_path=sdf_path, stop_before_split=True)
+
+    df = pd.read_parquet(stores / "s" / "molecules.parquet")
+    assert (stores / "s" / "curation_summary.txt").exists()
+    assert "split" not in df.columns
+    assert "cluster" not in df.columns
+    assert "shard" not in df.columns
+    assert not (stores / "s" / "split_summary.txt").exists()
+
+
+def test_prepare_store_after_stop_before_split_can_still_split(tmp_path):
+    """The two-phase path the workflow relies on: stop before the split to
+    run cluster-report, then re-run without the flag to write the split --
+    without re-parsing or re-curating."""
+    import pandas as pd
+    from experiments.prepare_dash import prepare_store
+
+    sdf_path = tmp_path / "diverse.sdf"
+    sdf_path.write_text(_two_conformer_records())
+    stores = tmp_path / "stores"
+
+    prepare_store("s", stores_root=stores, sdf_path=sdf_path, stop_before_split=True)
+    curated = pd.read_parquet(stores / "s" / "molecules.parquet")
+    summary_before = (stores / "s" / "curation_summary.txt").read_text()
+
+    prepare_store("s", stores_root=stores, sdf_path=sdf_path, n_shards=5)
+
+    df = pd.read_parquet(stores / "s" / "molecules.parquet")
+    assert len(df) == len(curated)  # nothing re-parsed or re-curated
+    assert (stores / "s" / "curation_summary.txt").read_text() == summary_before
+    assert {"split", "cluster", "shard"} <= set(df.columns)
+    assert set(df["split"]) <= {"train", "test"}

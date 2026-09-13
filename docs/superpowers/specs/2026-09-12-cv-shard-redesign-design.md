@@ -5,7 +5,7 @@
 **Scope:** `experiments/experiments/prepare_dash.py` (store split), `cv.py`
 (new), `compare.py` (new), `predictors/sieve_predictor.py`,
 `predictors/dash.py`, `tree_artifact.py`, `store_ops.py`, `config.py`,
-`cli.py`, both workflow scripts. No change to `sieve`'s core (`src/sieve/**`).
+`cli.py`, the workflow scripts. No change to `sieve`'s core (`src/sieve/**`).
 
 ## Context
 
@@ -106,12 +106,32 @@ as they share `attribute_codes` (guaranteed by §2).
 `predict_raw` used to do in one call, so a depth sweep featurizes an eval set
 once rather than once per depth (featurization measured at ~96% of a fit).
 
-Sieve still fits one shard set **per depth**, unlike DASH: under
-`class_estimator="continuation"`, a class's estimate depends on whether its
-own level is the model's *deepest* one, so a shallow config is not a
-truncation of a deep one, and the two are not mergeable either (`max_wl_depth`
-feeds `schema_version`). This is cheap regardless, since `N` shards is one
-pass over train no matter how many depths are fit.
+**Correction (this claim was wrong as first written).** An earlier version
+of this section said Sieve must fit one shard set *per depth*, because under
+`class_estimator="continuation"` a shallow config "is not a truncation of a
+deep one". What is actually true is narrower: a shallow depth's *prediction*
+cannot be read out of a deep model's *output*, since the deepest level is
+read differently from the rest. The *stored statistics* are another matter —
+WL refinement never looks ahead, so a depth-*D* fit's levels `0..d` are
+bit-identical to a native depth-*d* fit's. `cv.truncate_model` rebuilds the
+config at `max_wl_depth=d` and slices the levels, reproducing a native fit
+exactly: same `schema_version`, identical predictions at every depth,
+pinned by `test_truncate_model_matches_a_native_fit_at_every_depth`.
+
+So **both** predictors fit one shard set, at the deepest depth needed, and
+derive every shallower depth — DASH by truncating its prefix-nested paths,
+Sieve by truncating the merged model's levels. The ordering constraint is
+real and was the part the original reasoning got right: `max_wl_depth` feeds
+`schema_version`, so truncation must come *after* merging, never before.
+Merging first is also cheaper, since one merge then serves every depth.
+
+The one exception is **DASH depth 1**, which truncation gets measurably
+wrong (mae 0.0937 vs 0.1315): `_get_init_layer` redirects a hydrogen to its
+heavy neighbour and consumes a depth unit before `max_depth` is checked, so
+an H atom's depth-1 and depth-2 requests resolve to the same path.
+`dash_depth_sweep._MIN_DERIVABLE_DEPTH` has encoded this since before the
+redesign; `run_dash_cv` now refuses depths below it rather than scoring them
+wrongly.
 
 ### 4. Assembly: permute shards, not the splitter
 
@@ -215,11 +235,112 @@ Implemented and unit/integration-tested against small synthetic stores
 (`experiments/tests/test_cv.py`, `test_cv_optional.py`, `test_compare.py`) --
 including the load-bearing exactness claim itself (a CV sample's assembled
 model predicts identically to a direct fit on the same molecule union, for
-both predictors) -- but **not yet run against the real corpus**: that means
-deleting/rebuilding `experiments/stores/dash-molecules` under the new
-90/10 + shard split (a store the existing 10-fold partitions and every run
-under `experiments/runs/` currently depend on), choosing `N` from
-`cluster-report`'s real output, and then running both workflow scripts'
-shard-fit/Study-A/Study-B stages for real -- each a long-running, resource-
-heavy operation deferred to a deliberate follow-up rather than done as a
-side effect of this implementation pass.
+both predictors).
+
+## Follow-up: the workflow, and what running it for real turned up
+
+The two per-predictor scripts were replaced by a single
+`experiments/workflows/cv_charges.sh`, because under this design the two
+series share one store, one shard partition and one fold assignment per
+repeat -- and that sharing is exactly what makes their samples pairable in
+`compare.py`'s repeated-measures design, so describing the procedure twice
+risked the pairing silently drifting apart.
+
+It is built as guarded steps (`step <name> <guard> -- <command>`) whose
+guards check the **real artifact** -- a parquet's columns, a run's
+`metrics.json`, a shard's `tree_stats.npz` -- never a side marker
+recording that something once ran. Each guard is re-evaluated *after* its
+step, so a step that silently no-ops fails loudly instead of leaving an
+artifact that misrepresents itself. `CV_UNTIL=<step>` stops after a named
+step, which the procedure genuinely needs: Study A's depth curve has to be
+read by a person before Study B can be told which depth to fix.
+
+Two defects surfaced while rebuilding the real corpus, both now fixed:
+
+- **`curate_conformers` trusted its own marker.** The skip fired on
+  `curation_summary.txt` merely existing, which records that curation once
+  ran -- a different claim from "this parquet is curated". Deleting
+  `molecules.parquet` while leaving the summary made `prepare_store`
+  re-parse (uncurated) and then skip curation, splitting a store that
+  claimed a curation it never received. The skip now also compares the
+  summary's own recorded post-count against the parquet's actual row
+  count, and re-curates on a mismatch.
+- **The parsed-and-curated-but-unsplit state had no supported way to
+  exist.** Both workflow scripts told the reader to run `cluster-report`
+  against such a store, but `prepare-store` always ran through to
+  `assign_splits`; reaching it meant calling the module's stages by hand.
+  `--stop-before-split` makes it a first-class, idempotent step.
+- **`predictions.npz` was specified opt-in and shipped opt-out.** The
+  `save_predictions` flag existed on the writer but was never threaded
+  through the drivers, so it defaulted to on: ~14GB for Study A and ~7.5GB
+  for Study B, most of it duplication (everything but `atom_target_pred` is
+  identical across the depths of one (repeat, fold)). Now threaded, default
+  off, and enabled by the workflow for Study B alone -- the one selected
+  depth per method, which is the set a per-atom error analysis actually
+  reads.
+- **The workflow was written sequential, discarding the old scripts' own
+  parallel dispatch.** The pre-redesign scripts dispatched one process per
+  fold with `xargs -P`, with concurrency defaults justified by measured RSS
+  ("a single fold peaked around 8GB"; "~37GB at depth 6 with n_jobs=8, so
+  the default is deliberately far below the fold sweep's"), and the rule
+  that dispatch and `n_jobs` are alternatives, never both. Rewriting from
+  scratch lost all of it: DASH's 50 shard fits ran sequentially in 53.8
+  minutes on a 64-core box where a filled dispatch queue is 1-2 minutes.
+  Restored, with `--shard` on both shard-fit commands as the dispatch seam.
+  design.md 5.5's warning about process overhead does not apply at this
+  granularity -- it concerns pools spun up per `fit()` call, where startup
+  rivals a sub-second fit; a shard fit is ~65s.
+
+---
+
+## Addendum: is `continuation_recursive` a distinct arm?
+
+Study B put `sieve-element-recursive` within 9.9e-7 of
+`sieve-element-continuation` (Tukey p = 1), and `recursive-eb` within 9.3e-7
+of `continuation-eb`. That is close enough to look like a plumbing bug --
+two arms quietly scoring the same model -- so it was checked three ways
+rather than argued about.
+
+1. **Provenance.** Every recursive run records
+   `cv["param/class_estimator"] = "continuation_recursive"`; the flat ones
+   record `"continuation"`.
+2. **No identical folds.** Across the 25 paired samples, zero have identical
+   RMSE. Per-fold differences range -1.6e-6 to +6.3e-6 and change sign (14
+   positive, 11 negative), which is not what a duplicated computation looks
+   like.
+3. **Direct re-derivation.** Reproducing fold r0-f0 from its cached training
+   model, truncated to depth 6, and predicting under both estimators
+   reproduces the two recorded RMSE values exactly (0.019515098 flat,
+   0.019515403 recursive).
+
+The mechanism behind the paradox, from that same re-derivation over the
+fold's 7,888,883 held-out atoms:
+
+| | |
+|---|---|
+| atoms changed by the recursion | 1,744,162 (22.1%) |
+| median abs change, among changed | 9.3e-5 |
+| p99 / max | 2.0e-3 / 2.5e-2 |
+| recursion closer to target | 870,295 |
+| recursion further from target | 873,319 |
+
+So the recursion moves a fifth of the atoms, sometimes by more than the whole
+DASH-vs-Sieve gap, and helps almost exactly as often as it hurts. The arms
+are distinct; the *aggregate* is not. Reporting it as "no difference" is
+correct for RMSE and wrong for any per-atom analysis.
+
+**Reporting.** The recursive arms are *run* but kept out of the Tukey
+figures (`COMPARE_EXCLUDE` in the workflow, default
+`sieve-element-recursive,sieve-element-recursive-eb`). The runs stay on disk
+as the evidence for this addendum; a Tukey chart is for the comparison being
+reported, and two rows statistically indistinguishable from two others add
+height without information. The similarity is a result for the text, which
+is where the 22.1%/coin-flip mechanism above belongs. Excluding them also
+narrows the ANOVA to the reported arms -- F(4,96)=1.97e4 rather than
+F(6,144)=1.84e4 -- which is what the reported statistics should describe.
+
+**Correction to an earlier figure.** A first probe reported 32,528/64,985
+atoms (50%) changed. That was measured on a *single shard's* model -- 2% of
+train -- where backoff runs deeper and the recursion therefore bites more
+often. On the 40-shard training models Study B actually scored, the figure is
+22.1%. The single-shard number should not be quoted for Study B.

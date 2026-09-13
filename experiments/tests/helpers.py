@@ -56,3 +56,27 @@ def synthetic_molecule_set(
             "dash_id": [None] * n_mol,
         },
     )
+
+
+def real_store_has_columns(store: str, *columns: str) -> bool:
+    """True when the real (locally prepared) ``store``'s parquet carries
+    every one of ``columns``.
+
+    Optional tests that read the real store gate on this rather than on the
+    parquet merely *existing*: a parsed-but-not-yet-split store is now a
+    supported, reachable state (``prepare-store --stop-before-split``, the
+    state ``cluster-report`` reads), and a gate that only checks existence
+    lets such a store through to fail on a bare ``KeyError: 'split'``
+    instead of skipping. Same principle the CV workflow's own guards
+    follow: check the artifact's shape, not its presence.
+    """
+    from experiments.data import DEFAULT_STORES_ROOT
+
+    path = DEFAULT_STORES_ROOT / store / "molecules.parquet"
+    if not path.exists():
+        return False
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        return False
+    return set(columns) <= set(pq.ParquetFile(path).schema.names)

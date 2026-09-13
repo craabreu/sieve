@@ -31,6 +31,31 @@ from pathlib import Path
 import numpy as np
 
 
+def run_commits(runs_root: Path, experiments: Sequence[str]) -> list[str]:
+    """The distinct git commits the compared runs were produced at, shortened.
+
+    The commit that belongs on the figure is the one the *runs* were made at,
+    not the one that happens to be checked out when the plot is drawn -- those
+    differ whenever a comparison is re-plotted later, which is exactly when
+    provenance matters (friction observation 4). More than one commit in the
+    list is a finding, not a formatting problem: it means the arms were not
+    produced by the same code.
+    """
+    import json
+
+    seen: set[str] = set()
+    for experiment in experiments:
+        for manifest in sorted((runs_root / experiment).glob("*__*/manifest.json")):
+            try:
+                info = json.loads(manifest.read_text()).get("git") or {}
+            except (OSError, json.JSONDecodeError):
+                continue
+            commit = info.get("commit")
+            if commit:
+                seen.add(commit[:8] + ("-dirty" if info.get("dirty") else ""))
+    return sorted(seen)
+
+
 def read_cv_table(
     runs_root: Path,
     experiments: Sequence[str],
@@ -234,6 +259,191 @@ def tukey_hsd(
                 )
             )
     return out
+
+
+@dataclass(frozen=True)
+class SimultaneousCI:
+    """Per-method mean with a Hochberg-Tamhane simultaneous interval.
+
+    ``halfwidths[i]`` is sized so that *any* two methods' intervals overlap
+    exactly when their Tukey HSD comparison is non-significant -- so one
+    interval per method replaces ``k choose 2`` pairwise intervals, and
+    significance is read off the plot by looking for overlap.
+    """
+
+    methods: tuple[str, ...]
+    means: np.ndarray
+    halfwidths: np.ndarray
+    q_crit: float
+    alpha: float
+
+    @property
+    def lo(self) -> np.ndarray:
+        return self.means - self.halfwidths
+
+    @property
+    def hi(self) -> np.ndarray:
+        return self.means + self.halfwidths
+
+    def differs_from(self, reference: str) -> dict[str, bool]:
+        """Which methods' intervals fail to overlap ``reference``'s.
+
+        This is the plot's own visual rule, and for the equal-n case here it
+        agrees exactly with ``tukey_hsd``'s p < alpha.
+        """
+        idx = self.methods.index(reference)
+        lo, hi = self.lo, self.hi
+        return {
+            m: bool(min(hi[i], hi[idx]) - max(lo[i], lo[idx]) < 0)
+            for i, m in enumerate(self.methods)
+            if i != idx
+        }
+
+
+def simultaneous_ci(
+    methods: Sequence[str],
+    table: np.ndarray,
+    *,
+    alpha: float = 0.05,
+    anova: ANOVAResult | None = None,
+) -> SimultaneousCI:
+    """Hochberg & Tamhane's eq. 3.32 intervals -- statsmodels'
+    ``TukeyHSDResults.plot_simultaneous`` data, computed with scipy alone.
+
+    With ``d_ij = sqrt(var/n_i + var/n_j)``, ``s1 = sum_{i<j} d_ij`` and
+    ``s2_i = sum_j d_ij``::
+
+        w_i        = ((k-1) * s2_i - s1) / ((k-1) * (k-2))      for k > 2
+        w_i        = s1 / 2                                      for k == 2
+        halfwidth_i = q_crit / sqrt(2) * w_i
+
+    One difference from statsmodels worth being explicit about, because it
+    changes the numbers rather than the picture: ``var`` here is the
+    *repeated-measures* ``MS_error`` on ``(k-1)(n-1)`` df, not the one-way
+    ``MS_within`` on ``k(n-1)`` df that ``pairwise_tukeyhsd`` would use.
+    The folds are paired by construction (see this module's docstring), so
+    the one-way form would charge fold-to-fold difficulty -- shared by every
+    method -- to the error term and widen every interval. Feed a one-way
+    ``ANOVAResult`` in via ``anova=`` to reproduce statsmodels exactly.
+    """
+    from scipy.stats import studentized_range
+
+    n, k = table.shape
+    if anova is None:
+        anova = repeated_measures_anova(methods, table)
+    q_crit = float(studentized_range.ppf(1 - alpha, k, anova.df_error))
+
+    # Equal n by construction: read_cv_table rejects a ragged table.
+    gvar = np.full(k, anova.ms_error / n, dtype=np.float64)
+    iu = np.triu_indices(k, 1)
+    d12 = np.sqrt(gvar[iu[0]] + gvar[iu[1]])
+    d = np.zeros((k, k))
+    d[iu] = d12
+    d = d + d.T
+
+    s1 = float(np.sum(d12))
+    s2 = np.sum(d, axis=0)
+    if k > 2:
+        w = ((k - 1.0) * s2 - s1) / ((k - 1.0) * (k - 2.0))
+    else:
+        # Hochberg's weights are undefined at k=2; statsmodels splits the
+        # single pairwise distance evenly, which puts the two intervals
+        # exactly in contact at the HSD critical difference.
+        w = np.full(k, s1 / 2.0)
+
+    return SimultaneousCI(
+        methods=tuple(methods),
+        means=table.mean(axis=0),
+        halfwidths=(q_crit / math.sqrt(2.0)) * w,
+        q_crit=q_crit,
+        alpha=alpha,
+    )
+
+
+def write_simultaneous_ci_plot(
+    ci: SimultaneousCI,
+    path: str | Path,
+    *,
+    comparison_name: str | None = None,
+    title: str = "Multiple Comparisons Between All Pairs (Tukey)",
+    xlabel: str = "",
+    provenance: str | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> None:
+    """statsmodels' ``plot_simultaneous`` layout: one interval per method on
+    the metric's own scale, rather than one per pair on a difference scale.
+
+    ``comparison_name`` singles out a reference method -- drawn in blue with
+    its interval bounds extended as dashed guides, with every other method
+    coloured red if its interval clears those guides and grey if it does
+    not. Without it every interval is black and any pair can still be
+    compared by eye, which is the whole point of the layout: it stays
+    readable as methods are added, where the pairwise plot grows as
+    ``k choose 2``.
+    """
+    # Validated before matplotlib is imported, so a bad comparison_name is
+    # reported as such even where matplotlib is absent -- otherwise the caller
+    # sees ModuleNotFoundError and has to guess which problem they have.
+    if comparison_name is not None and comparison_name not in ci.methods:
+        raise ValueError(
+            f"comparison_name {comparison_name!r} is not one of {list(ci.methods)}"
+        )
+
+    import matplotlib.pyplot as plt
+
+    k = len(ci.methods)
+    if figsize is None:
+        figsize = (8.0, 0.5 * k + 2.0)
+    fig, ax = plt.subplots(figsize=figsize)
+
+    y = np.arange(k)
+    lo, hi = ci.lo, ci.hi
+
+    if comparison_name is None:
+        ax.errorbar(
+            ci.means, y, xerr=ci.halfwidths, marker="o", linestyle="None", color="k"
+        )
+    else:
+        midx = ci.methods.index(comparison_name)
+        differs = ci.differs_from(comparison_name)
+        sig = [i for i, m in enumerate(ci.methods) if i != midx and differs[m]]
+        nsig = [i for i, m in enumerate(ci.methods) if i != midx and not differs[m]]
+
+        ax.errorbar(
+            ci.means[midx],
+            midx,
+            xerr=ci.halfwidths[midx],
+            marker="o",
+            linestyle="None",
+            color="b",
+        )
+        for bound in (lo[midx], hi[midx]):
+            ax.plot([bound] * 2, [-1, k], linestyle="--", color="0.7")
+        for idx, color in ((sig, "r"), (nsig, "0.5")):
+            if idx:
+                ax.errorbar(
+                    ci.means[idx],
+                    idx,
+                    xerr=ci.halfwidths[idx],
+                    marker="o",
+                    linestyle="None",
+                    color=color,
+                )
+
+    ax.set_title(title)
+    span = float(np.max(hi) - np.min(lo))
+    ax.set_ylim((-1.0, float(k)))
+    ax.set_xlim((float(np.min(lo)) - span / 10.0, float(np.max(hi)) + span / 10.0))
+    ax.set_yticks(y)
+    ax.set_yticklabels(list(ci.methods))
+    ax.set_xlabel(xlabel)
+
+    if provenance:
+        fig.text(0.01, 0.01, provenance, fontsize=7, color="0.4")
+    fig.tight_layout(rect=(0, 0.04, 1, 1) if provenance else None)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 
 def write_tukey_plot(
