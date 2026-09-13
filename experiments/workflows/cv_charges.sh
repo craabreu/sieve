@@ -414,24 +414,51 @@ step study-a-sieve \
 # which is deterministic in (n, k, seed) and not in the caller -- so a given
 # (repeat, fold) holds out the *same* molecules for both, which is what makes
 # them pairable subjects in compare's repeated-measures design.
-step study-b-dash \
-  "runs_count_is $DASH_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+# One process per repeat. A repeat's five folds share its own merge
+# assembly so they stay together, but repeats are fully independent -- and
+# the per-fold walk is the cost, so this is ~5x. Job count kept low because
+# each process holds a DASHTree (~35GB measured) plus its merged stats.
+STUDY_B_JOBS="${STUDY_B_JOBS:-3}"
+
+run_dash_repeat() {
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
-    --depths "$DASH_SELECTED_DEPTH" --repeats "$STUDY_B_REPEATS" \
+    --depths "$DASH_SELECTED_DEPTH" --repeats "$1" \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_B" \
     $SAVE_PREDICTIONS_FLAG
+}
 
-step study-b-sieve \
-  "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+run_sieve_repeat() {
   "$PYTHON" -m experiments cv-run-sieve "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
-    --depths "$SIEVE_SELECTED_DEPTH" --repeats "$STUDY_B_REPEATS" \
+    --depths "$SIEVE_SELECTED_DEPTH" --repeats "$1" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_B" \
     $SAVE_PREDICTIONS_FLAG
+}
+export -f run_dash_repeat run_sieve_repeat
+export DASH_SELECTED_DEPTH SIEVE_SELECTED_DEPTH SAVE_PREDICTIONS_FLAG
+export DASH_STUDY_B SIEVE_STUDY_B SIEVE_METHOD K DASH_MAX_DEPTH
+
+each_repeat() { echo "$STUDY_B_REPEATS" | tr ',' '\n'; }
+
+dispatch_dash_repeats() {
+  each_repeat | xargs -P "$STUDY_B_JOBS" -n 1 bash -c 'run_dash_repeat "$1"' --
+}
+
+dispatch_sieve_repeats() {
+  each_repeat | xargs -P "$STUDY_B_JOBS" -n 1 bash -c 'run_sieve_repeat "$1"' --
+}
+
+step study-b-dash \
+  "runs_count_is $DASH_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  dispatch_dash_repeats
+
+step study-b-sieve \
+  "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  dispatch_sieve_repeats
 
 # --- compare ---------------------------------------------------------------
 #
@@ -440,12 +467,30 @@ step study-b-sieve \
 # sizes and interval widths, not only the stars: at ~62.8k held-out
 # molecules per fold, a systematic difference of almost any size will reach
 # significance.
+#
+# Compared on the *unnormalized* metric by default. Two reasons. The two
+# methods currently use different normalizers, so part of any gap in
+# norm/mae would be the normalizer rather than the estimator. And Sieve's
+# is equal_weighted (sigma^0), which design.md 13 item 8 measured as worse
+# than not normalizing at all on MAE -- the right sigma for Sieve is the
+# predictive variance of docs/design-update-v2-predictive-variance, not yet
+# ported onto this layout. The raw metric compares estimator to estimator,
+# with neither given the molecule's true total charge.
+#
+# RMSE rather than MAE, because it is the metric the DASH paper itself
+# reports throughout -- its GNN at 0.0153 e, and the conformational-
+# variation floor of 0.0125 e it calls "a lower bound on the accuracy that
+# can be reached by an ML model" -- so these numbers are directly
+# comparable to the published ones. Both are recorded in every run, so
+# COMPARE_METRIC=mae re-runs the comparison on MAE without re-running
+# anything.
+COMPARE_METRIC="${COMPARE_METRIC:-rmse}"
 step compare \
   "file_exists $TUKEY_PLOT" -- \
   bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$TUKEY_PLOT')\" && \
            '$PYTHON' -m experiments compare \
              --experiment '$DASH_STUDY_B' --experiment '$SIEVE_STUDY_B' \
-             --metric norm/mae \
+             --metric "$COMPARE_METRIC" \
              --depth-by-method '{\"dash\": $DASH_SELECTED_DEPTH, \"$SIEVE_METHOD\": $SIEVE_SELECTED_DEPTH}' \
              --out '$TUKEY_PLOT'"
 
