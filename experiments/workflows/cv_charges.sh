@@ -587,26 +587,54 @@ COMPARE_METRIC="${COMPARE_METRIC:-rmse}"
 # {method: depth} for every arm: DASH at its depth, every Sieve variant at
 # SIEVE_SELECTED_DEPTH. Derived from the same SIEVE_VARIANTS that Study B ran,
 # so the comparison cannot read a method or depth nobody produced.
+# Arms that are RUN but kept out of the figure. The runs stay -- they are
+# evidence, and the design spec's addendum cites them -- but a Tukey plot is
+# for the comparison being reported, and two arms that are statistically
+# indistinguishable from two others add rows without adding information. The
+# continuation_recursive pair sits within 1e-6 of the flat continuation pair
+# (Tukey p = 1); that similarity is a finding for the text, not a row on a
+# chart. Excluding them also narrows the ANOVA to the reported arms, which is
+# what the reported F and df should describe.
+COMPARE_EXCLUDE="${COMPARE_EXCLUDE-sieve-element-recursive,sieve-element-recursive-eb}"
+
 DEPTH_BY_METHOD=$(
   echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
 import json, sys
+drop = {m for m in sys.argv[3].split(",") if m}
+variants = json.load(sys.stdin)
+known = {v["method"] for v in variants} | {"dash"}
+unknown = drop - known
+if unknown:
+    raise SystemExit(f"COMPARE_EXCLUDE names no such arm: {sorted(unknown)}")
 out = {"dash": int(sys.argv[1])}
-out.update({v["method"]: int(sys.argv[2]) for v in json.load(sys.stdin)})
+out.update({v["method"]: int(sys.argv[2]) for v in variants if v["method"] not in drop})
 print(json.dumps(out))
-' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH"
+' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH" "$COMPARE_EXCLUDE"
 )
 export DEPTH_BY_METHOD  # the compare step runs in a child bash -c
 
+# A stamp of what the figures were drawn FROM, beside them. mtimes catch new
+# runs; they cannot catch a changed metric or a changed set of arms, which
+# change the figure just as much. Guard on both.
+COMPARE_STAMP="$(dirname "$TUKEY_PLOT")/.compare-inputs"
+export COMPARE_STAMP COMPARE_METRIC
+compare_stamp_matches() {
+  [ -f "$COMPARE_STAMP" ] || return 1
+  [ "$(cat "$COMPARE_STAMP")" = "$COMPARE_METRIC $DEPTH_BY_METHOD" ]
+}
+
 step compare \
-  "file_is_newer_than_runs $TUKEY_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B \
+  "compare_stamp_matches \
+   && file_is_newer_than_runs $TUKEY_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B \
    && file_is_newer_than_runs $SIMULTANEOUS_PLOT experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B" -- \
   bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$TUKEY_PLOT')\" && \
            '$PYTHON' -m experiments compare \
              --experiment '$DASH_STUDY_B' --experiment '$SIEVE_STUDY_B' \
-             --metric "$COMPARE_METRIC" \
+             --metric \"\$COMPARE_METRIC\" \
              --depth-by-method \"\$DEPTH_BY_METHOD\" \
              --out '$TUKEY_PLOT' \
-             --out-simultaneous '$SIMULTANEOUS_PLOT'"
+             --out-simultaneous '$SIMULTANEOUS_PLOT' && \
+           printf '%s %s' \"\$COMPARE_METRIC\" \"\$DEPTH_BY_METHOD\" > \"\$COMPARE_STAMP\""
 
 # --- final held-out evaluation ---------------------------------------------
 #

@@ -329,6 +329,16 @@ DASH-vs-Sieve gap, and helps almost exactly as often as it hurts. The arms
 are distinct; the *aggregate* is not. Reporting it as "no difference" is
 correct for RMSE and wrong for any per-atom analysis.
 
+**Reporting.** The recursive arms are *run* but kept out of the Tukey
+figures (`COMPARE_EXCLUDE` in the workflow, default
+`sieve-element-recursive,sieve-element-recursive-eb`). The runs stay on disk
+as the evidence for this addendum; a Tukey chart is for the comparison being
+reported, and two rows statistically indistinguishable from two others add
+height without information. The similarity is a result for the text, which
+is where the 22.1%/coin-flip mechanism above belongs. Excluding them also
+narrows the ANOVA to the reported arms -- F(4,96)=1.97e4 rather than
+F(6,144)=1.84e4 -- which is what the reported statistics should describe.
+
 **Correction to an earlier figure.** A first probe reported 32,528/64,985
 atoms (50%) changed. That was measured on a *single shard's* model -- 2% of
 train -- where backoff runs deeper and the recursion therefore bites more
