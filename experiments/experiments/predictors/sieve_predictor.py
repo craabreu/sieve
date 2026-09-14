@@ -96,6 +96,7 @@ def _build_config(
     shrinkage_strength: float | None,
     class_estimator: str = "pooled",
     shrinkage_weight: str | None = None,
+    predictive_variance: bool = False,
     n_jobs: int | None = None,
     codes: Mapping[str, Mapping[str, int]] | None = None,
     edge_codes: Mapping[str, Mapping[str, int]] | None = None,
@@ -147,6 +148,7 @@ def _build_config(
         shrinkage_strength=shrinkage_strength,
         class_estimator=class_estimator,
         shrinkage_weight=shrinkage_weight,
+        predictive_variance=predictive_variance,
     )
 
 
@@ -169,6 +171,26 @@ def _batch_for(
         y_from_atom_prop=atom_property if with_target else None,
         n_jobs=n_jobs,
     )
+
+
+def _atom_std(detailed: Any) -> np.ndarray:
+    """Per-atom sigma for the normalizers that read one.
+
+    ``predictive_variance`` when the model was configured for it, and the raw
+    class ``variance`` otherwise -- which is what this predictor has always
+    handed over, kept as the default so recorded runs stay comparable.
+
+    The two are not interchangeable. ``variance`` is sieve's stored class
+    s^2: NaN wherever support is 1, and occasionally a sampling-artefact
+    zero, which ``normalize.variance_weighted_normalize`` would read as "this
+    atom is certain" and give no share of the residual (design.md 6.4's
+    "pinned at its mean"). ``predictive_variance`` is total by construction --
+    see sieve.uncertainty and design-update-v2.md 3 -- and is what the
+    sigma-weighted arms should be fed.
+    """
+    if detailed.predictive_variance is not None:
+        return np.sqrt(np.asarray(detailed.predictive_variance, dtype=np.float64)[:, 0])
+    return np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
 
 
 class SievePredictor:
@@ -232,6 +254,7 @@ class SievePredictor:
         shrinkage_strength: float | None = None,
         class_estimator: str = "pooled",
         shrinkage_weight: str | None = None,
+        predictive_variance: bool = False,
         n_jobs: int | None = None,
         report_loo: bool = False,
         codes_path: str | None = None,
@@ -257,6 +280,7 @@ class SievePredictor:
         self.shrinkage_strength = shrinkage_strength
         self.class_estimator = class_estimator
         self.shrinkage_weight = shrinkage_weight
+        self.predictive_variance = predictive_variance
         self.n_jobs = n_jobs
         self.report_loo = report_loo
         self.codes_path = codes_path
@@ -298,6 +322,7 @@ class SievePredictor:
             shrinkage_strength=self.shrinkage_strength,
             class_estimator=self.class_estimator,
             shrinkage_weight=self.shrinkage_weight,
+            predictive_variance=self.predictive_variance,
             n_jobs=self.n_jobs,
             codes=codes,
             edge_codes=edge_codes,
@@ -361,7 +386,7 @@ class SievePredictor:
 
         detailed = sieve.predict_detailed(self._model, batch)
         atom_value = np.asarray(detailed.value, dtype=np.float64)[:, 0]
-        atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
+        atom_std = _atom_std(detailed)
         return RawPrediction(atom_value=atom_value, atom_std=atom_std)
 
     def predict_loo_raw(self, train: MoleculeSet) -> RawPrediction:
@@ -402,7 +427,7 @@ class SievePredictor:
         self.last_featurize_s += time.perf_counter() - t0
         detailed = sieve.predict_loo(self._model, batch)
         atom_value = np.asarray(detailed.value, dtype=np.float64)[:, 0]
-        atom_std = np.sqrt(np.asarray(detailed.variance, dtype=np.float64)[:, 0])
+        atom_std = _atom_std(detailed)
         return RawPrediction(atom_value=atom_value, atom_std=atom_std)
 
     def predict(self, test: MoleculeSet) -> Prediction:

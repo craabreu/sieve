@@ -419,6 +419,11 @@ means do not.
 
 ### 4.3 Variance shrinkage
 
+> **Superseded — see design-update-v2.md §2, §3.** This section predates §4.4 and was never
+> implemented: there is no $\alpha^v$ and no $\tilde\sigma^2$ in the code. §6.4's only real
+> requirement is *relative* variance, which a level-pooled approximation meets without this
+> recursion.
+
 A class variance estimated from a handful of members is barely better than no estimate at all: at
 $N=2$ the sample variance has roughly 100% relative error, and at $N=1$ it does not exist (§4.1
 returns NaN there, deliberately, so a stored zero cannot be mistaken for observed homogeneity).
@@ -802,6 +807,11 @@ half a level shallower for four-and-a-half times the support. That is the trade 
 and it is why the default should not be 1.
 
 ### 6.4 Constrained prediction
+
+> **Partly superseded — see design-update-v2.md §1, §3.** This section predates §4.4. The EEM
+> correspondence and the algebra stand as written; the claim that $\mu_i$ and
+> $\sigma^2_{\text{pred},i}$ are the moments of one coherent distribution holds only under
+> `class_estimator="pooled"`.
 
 Sieve predicts each node independently, so nothing makes a group of nodes respect a property of the
 group. Partial charges are the motivating case: a conformer's atomic charges must sum to its formal
@@ -1389,7 +1399,14 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    lifecycle entirely to the caller. Measured: a persistent worker pool pays off and a per-call pool
    does not, so an API that quietly creates one pool per `fit()` call would be actively harmful — if
    this is ever exposed, the pool's lifetime needs to be a caller-visible decision, not an implicit one.
-8. **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
+8. **ANSWERED — see design-update-v2.md §4.1.** Measured on `dash-molecules-10fold-1`: the whole
+   weighting question is worth 0.00059 MAE (3.3%), of which the choice of $\sigma$ estimator accounts
+   for 0.2%; $\gamma=2$ is empirically optimal (0.017194 against 0.017188 at the fitted $\gamma=1.85$),
+   so this section's exponent survives even though §1 of that note shows its derivation does not; and
+   `equal_weighted` is *worse* than not normalizing at all (0.017780 vs 0.017653). The third arm is
+   now implemented as `NORMALIZERS["variance_weighted"]`. Original text follows.
+
+   **Whether variance-weighted constrained prediction (§6.4) beats the alternatives**, judged on
    post-normalization MAE against equal-weighted spreading and DASH's own std-weighted eq 4. Note
    the three differ in exponent, not in kind: the correction is spread $\propto\sigma^0$,
    $\sigma^1$, $\sigma^2$ respectively, and only $\sigma^2$ has a derivation behind it. Variance
@@ -1422,6 +1439,9 @@ whose level-0 attributes were never seen. Surface it prominently rather than bur
    totality (no arbitrary floor constant), not accuracy. See also §4.3's own tail measurement: the
    $L_2$ objective §6.4 solves is most sensitive to exactly the tails that are 2.4× heavier than it
    assumes, which is a candidate explanation for $\sigma^2$'s loss but is not established here.
+
+   **The "only $\sigma^2$ has a derivation" premise lapses under §4.4's continuation estimator and
+   is restored by design-update-v2.md §3, which also names a cheaper diagnostic to run first.**
 9. **How $\alpha$ (§4.2) and $\alpha^v$ (§4.3) should be set.** Both admit systematic treatment, by
    different routes, and both are inference-time parameters — so a whole sweep costs one fit.
    - $\alpha$ has a closed form. Sieve's weight $N/(N+\alpha)$ *is* the normal–normal hierarchical
