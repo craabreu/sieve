@@ -194,6 +194,35 @@ runs_count_is() {
   [ "$found" -eq "$expected" ]
 }
 
+# Guards on the *arm*, not merely on how many runs an experiment holds.
+# runs_count_is cannot tell one method's curve from another's: the Sieve
+# Study A experiment held exactly 55 runs both when they were all
+# continuation-eb and when they were all pooled, so a bare count happily
+# skips a study that never ran the arm the depth is being selected on --
+# the same blind spot file_is_newer_than_runs was written to close for
+# compare, one artifact over.
+#
+# The method is read from each run's *structured* manifest field, never
+# parsed back out of the batch_id string; the design records repeat, fold,
+# method and depth structurally for exactly this reason.
+method_runs_count_is() {
+  local experiment=$1 method=$2 expected=$3
+  "$PYTHON" - "$experiment" "$method" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, method, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += cv.get("method") == method
+sys.exit(0 if found == expected else 1)
+PY
+}
+
 # file_exists is the wrong guard for a *derived* artifact: it cannot tell
 # that the runs the artifact was derived from have changed. compare's plots
 # survived a study growing from 2 arms to 7, and the step skipped. This
@@ -285,9 +314,37 @@ SIEVE_VARIANTS='[
   {"method": "sieve-element-recursive-eb",    "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"},
   {"method": "sieve-element-continuation-cutoff", "class_estimator": "continuation",        "shrinkage_weight": null, "minimum_support": 12}
 ]'
-# Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
-# once, on SIEVE_METHOD alone (Study A below); the variants are a comparison
-# of estimators at a fixed depth, not four more depth studies.
+# Every variant is scored at SIEVE_SELECTED_DEPTH; the variants are a
+# comparison of estimators at a fixed depth, not seven more depth studies.
+#
+# Depth selection (Study A) runs exactly ONE of them, named here. It used to
+# run the fit's own reading, sieve-element-continuation-eb, passed as plain
+# --method; it now selects on the pooled arm, and that necessarily moves
+# Study A onto --variants as well. The reason is the patch semantics above:
+# the fitted config applies empirical_bayes, so "pooled" as a bare --method
+# would still be scored with the fit's shrinkage, and only a variant can say
+# "shrinkage_weight": null to turn it back off. Scoring pooled is a different
+# *reading* of the same 50 shard fits, so switching arms costs no refit.
+#
+# Derived from SIEVE_VARIANTS by name rather than written out a second time,
+# so the arm Study A selects a depth for is, by construction, the same
+# specification Study B then scores at that depth. Two copies could drift,
+# and the drift would be silent in the worst way: a depth chosen for one
+# estimator and applied to a slightly different one.
+SIEVE_STUDY_A_METHOD="${SIEVE_STUDY_A_METHOD:-sieve-element-pooled}"
+SIEVE_STUDY_A_VARIANTS=$(
+  echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
+import json, sys
+
+method = sys.argv[1]
+chosen = [v for v in json.load(sys.stdin) if v["method"] == method]
+if not chosen:
+    raise SystemExit(
+        f"SIEVE_STUDY_A_METHOD={method!r} names no entry in SIEVE_VARIANTS"
+    )
+print(json.dumps(chosen))
+' "$SIEVE_STUDY_A_METHOD"
+)
 
 CODES_PATH="experiments/stores/$STORE/sieve-codes.json"
 CLUSTER_REPORT="experiments/results/cluster-report.txt"
@@ -321,6 +378,10 @@ if [ -n "$CV_MODEL_CACHE" ]; then
 fi
 
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
+# 6 was read off the *continuation-eb* curve, which is no longer the arm
+# Study A selects on. Re-read it from the pooled curve before trusting it:
+#   .venv/bin/python -m experiments sweep --experiment sieve-cv-study-a \
+#     --x config.cv.depth --metric norm/mae --metric mae
 SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-6}"
 
 DASH_STUDY_A=dash-cv-study-a
@@ -502,14 +563,19 @@ step study-a-dash \
     $MODEL_CACHE_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
+# Guarded on the pooled arm by name, not on the experiment's run count: the
+# two are not the same claim here, and were briefly satisfied by different
+# sets of 55 runs (see method_runs_count_is).
 step study-a-sieve \
-  "runs_count_is $SIEVE_STUDY_A $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
+  "method_runs_count_is $SIEVE_STUDY_A $SIEVE_STUDY_A_METHOD \
+     $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
   "$PYTHON" -m experiments cv-run-sieve "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
     --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
+    --variants "$SIEVE_STUDY_A_VARIANTS" \
     $MODEL_CACHE_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
