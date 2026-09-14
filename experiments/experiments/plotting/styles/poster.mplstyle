@@ -1,0 +1,27 @@
+# Poster preset: large canvas, large type, heavy strokes for viewing at a
+# distance. Apply after publication.mplstyle. Override figure.figsize for the
+# specific space a figure occupies on the poster.
+figure.figsize        : 10.0, 7.0
+
+font.size             : 18
+axes.labelsize        : 20
+axes.titlesize        : 22
+xtick.labelsize       : 16
+ytick.labelsize       : 16
+legend.fontsize       : 16
+figure.titlesize      : 24
+
+axes.linewidth        : 1.5
+lines.linewidth       : 2.5
+lines.markersize      : 9
+lines.markeredgewidth : 1.2
+patch.linewidth       : 1.5
+errorbar.capsize      : 3
+
+xtick.major.size      : 5
+xtick.major.width     : 1.5
+ytick.major.size      : 5
+ytick.major.width     : 1.5
+
+legend.handlelength   : 1.8
+legend.labelspacing   : 0.4

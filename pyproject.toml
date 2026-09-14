@@ -43,6 +43,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src", "experiments"]
 
+# The publication style sheets are data, not code, so setuptools would
+# otherwise leave them out of a build and depth_curve's figures would fall
+# back to matplotlib defaults without saying so.
+[tool.setuptools.package-data]
+"experiments.plotting" = ["styles/*.mplstyle"]
+
 [tool.uv.workspace]
 # The pinned rinikerlab/DASH-tree checkout lives under
 # experiments/external/ (git-ignored) and ships its own
@@ -72,12 +78,19 @@ ignore = ["E402"]
 # directory) -- kept byte-for-byte except one import path, including
 # upstream's own line lengths.
 "experiments/experiments/_chalcedon/**" = ["E501"]
+# Vendored verbatim from the publication-matplotlib skill (styles/ plus its
+# helper), kept byte-for-byte so it can be re-synced from upstream rather
+# than diverging: upstream's own line lengths and import order.
+"experiments/experiments/plotting/**" = ["E501", "I001"]
 
 [tool.ruff.format]
-# Same vendored-verbatim files as the E501 ignore above -- `ruff format`
+# Same vendored-verbatim files as the per-file-ignores above -- `ruff format`
 # would rewrap upstream's own (long) lines, breaking "byte-for-byte except
 # one import path" the moment CI's format check covered experiments.
-exclude = ["experiments/experiments/_chalcedon/**"]
+exclude = [
+    "experiments/experiments/_chalcedon/**",
+    "experiments/experiments/plotting/**",
+]
 
 [tool.ty.analysis]
 # CI's lint job installs [dev,chem] only, not the heavier `charges` extra

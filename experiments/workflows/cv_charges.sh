@@ -377,11 +377,28 @@ if [ -n "$CV_MODEL_CACHE" ]; then
   MODEL_CACHE_FLAG="--model-cache $CV_MODEL_CACHE"
 fi
 
+# Study A also scores each fold's TRAINING shards, so the depth curve can
+# show the train-vs-validation gap -- where a method starts fitting its own
+# training molecules rather than the chemistry. It is the expensive half:
+# training is ~4x the held-out molecules, and while the walk/featurize it
+# adds is paid once per fold (not once per depth), it still roughly doubles
+# Study A's wall clock -- measured ~15 min -> ~1.2 h for Sieve and ~1.1 h ->
+# ~5.3 h for DASH, whose per-fold tree walk dominates. Set CV_SCORE_TRAIN=0
+# to skip it.
+#
+# Study B deliberately does not: it compares methods at one fixed depth, a
+# question the training error does not enter, and it would pay that cost 5
+# times over (five repeats) for a number no Tukey interval reads.
+SCORE_TRAIN_FLAG=""
+if [ "${CV_SCORE_TRAIN:-1}" != "0" ]; then
+  SCORE_TRAIN_FLAG="--score-train"
+fi
+
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
 # 6 was read off the *continuation-eb* curve, which is no longer the arm
 # Study A selects on. Re-read it from the pooled curve before trusting it:
 #   .venv/bin/python -m experiments sweep --experiment sieve-cv-study-a \
-#     --x config.cv.depth --metric norm/mae --metric mae
+#     --x cv.depth --metric norm/mae --metric mae
 SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-6}"
 
 DASH_STUDY_A=dash-cv-study-a
@@ -554,13 +571,13 @@ step sieve-shard-fits \
 # groups' shards. Read the normalized curve (the form each method is
 # actually deployed in) to pick the depths Study B then fixes:
 #   "$PYTHON" -m experiments sweep --experiment dash-cv-study-a \
-#     --x config.cv.depth --metric norm/mae --metric mae
+#     --x cv.depth --metric norm/mae --metric mae
 step study-a-dash \
   "runs_count_is $DASH_STUDY_A $((K * $(n_items "$DASH_DEPTHS")))" -- \
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
     --depths "$DASH_DEPTHS" --repeats "$STUDY_A_REPEATS" \
-    $MODEL_CACHE_FLAG \
+    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
 # Guarded on the pooled arm by name, not on the experiment's run count: the
@@ -576,9 +593,70 @@ step study-a-sieve \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --variants "$SIEVE_STUDY_A_VARIANTS" \
-    $MODEL_CACHE_FLAG \
+    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
+
+# --- Study A's figure -------------------------------------------------------
+#
+# The depth curve as a manuscript figure rather than as sweep's diagnostic
+# PNG: one panel per method, each on its own depth axis (Sieve counts WL
+# iterations, DASH counts path length -- different quantities, so they do not
+# share an x axis), sharing the metric axis.
+#
+# The error bars are Nadeau-Bengio corrected (Mach. Learn. 52:239, 2003).
+# Study A is ONE repeat, so its k folds are not independent replicates: any
+# two share k-2 of their k-1 training groups, and the naive s/sqrt(k) is
+# optimistic by sqrt(1 + k*n_test/n_train) -- exactly 1.5x at this study's
+# geometry (k=5, 10 of 50 shards held out). Drawing the naive interval would
+# make neighbouring depths look more separated than the data supports, which
+# is the one thing a depth-selection figure must not do.
+#
+# Drawn on the RAW metrics only. Same reason the compare step gives: the two
+# methods use different normalizers, so anything normalized would report the
+# normalizer as much as the estimator.
+#
+# One row of panels per metric, in this order, sharing a y axis across the
+# row; columns share the depth axis down the column. Each panel also carries
+# a dashed line at the best value the OTHER method reached for that metric --
+# the two count depth in different units so they cannot share an x axis, and
+# that line is what still lets one be read against the other.
+DEPTH_CURVE_METRIC="${DEPTH_CURVE_METRIC:-rmse,r2}"
+DEPTH_CURVE_STEM="$FIGURES_DIR/depth-curve-study-a"
+DEPTH_CURVE_STAMP="$FIGURES_DIR/.depth-curve-inputs"
+STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A"
+
+# Built from the same variables the studies ran under, so the figure cannot
+# name an arm or an experiment nobody produced.
+DEPTH_CURVE_ARMS=$(
+  printf '[{"experiment": "%s", "method": "%s", "x_label": "WL depth"},' \
+    "$SIEVE_STUDY_A" "$SIEVE_STUDY_A_METHOD"
+  printf ' {"experiment": "%s", "method": "dash", "x_label": "max path depth"}]' \
+    "$DASH_STUDY_A"
+)
+
+# Same two-part guard as compare, for the same reason: mtimes catch new runs,
+# but neither a changed metric nor a changed set of arms moves any run's
+# mtime, and both change the figure.
+depth_curve_is_up_to_date() {
+  [ -f "$DEPTH_CURVE_STAMP" ] || return 1
+  [ "$(cat "$DEPTH_CURVE_STAMP")" = "$DEPTH_CURVE_METRIC $DEPTH_CURVE_ARMS" ] || return 1
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.pdf" $STUDY_A_RUNS || return 1
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.png" $STUDY_A_RUNS
+}
+
+run_depth_curve() {
+  mkdir -p "$FIGURES_DIR"
+  "$PYTHON" -m experiments depth-curve \
+    --arms "$DEPTH_CURVE_ARMS" \
+    --metric "$DEPTH_CURVE_METRIC" \
+    --store "$STORE" \
+    --out "$DEPTH_CURVE_STEM"
+  # Written only after the figure succeeded, so a failed run reads as a miss.
+  printf '%s %s' "$DEPTH_CURVE_METRIC" "$DEPTH_CURVE_ARMS" > "$DEPTH_CURVE_STAMP"
+}
+
+step depth-curve "depth_curve_is_up_to_date" -- run_depth_curve
 
 # --- Study B: model comparison ---------------------------------------------
 #

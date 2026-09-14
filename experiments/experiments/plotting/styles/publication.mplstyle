@@ -1,0 +1,80 @@
+# Base style for publication-quality scientific figures.
+# Apply this style before a size-specific style.
+
+# Figure and layout
+figure.dpi                     : 150
+figure.constrained_layout.use  : True
+figure.constrained_layout.h_pad: 0.04
+figure.constrained_layout.w_pad: 0.04
+figure.constrained_layout.hspace: 0.02
+figure.constrained_layout.wspace: 0.02
+figure.facecolor               : white
+axes.facecolor                 : white
+savefig.facecolor              : white
+savefig.edgecolor              : white
+savefig.dpi                    : 600
+savefig.transparent            : False
+savefig.pad_inches             : 0.02
+
+# Typography
+font.family                    : sans-serif
+font.sans-serif                : Arial, Liberation Sans, DejaVu Sans
+font.size                      : 8
+mathtext.fontset               : dejavusans
+axes.labelsize                 : 8
+axes.titlesize                 : 8
+axes.titleweight               : normal
+axes.titlepad                  : 5
+xtick.labelsize                : 7
+ytick.labelsize                : 7
+legend.fontsize                : 7
+figure.titlesize               : 9
+
+# Axes
+axes.linewidth                 : 0.8
+axes.spines.top                : True
+axes.spines.right              : True
+axes.grid                      : False
+axes.axisbelow                 : True
+axes.formatter.use_mathtext    : True
+axes.formatter.limits          : -3, 4
+axes.unicode_minus             : True
+axes.prop_cycle                : cycler('color', ['0072B2', 'D55E00', '009E73', 'CC79A7', 'E69F00', '56B4E9', '000000', '999999'])
+
+# Lines, markers, patches, and errors
+lines.linewidth                : 1.2
+lines.markersize               : 4
+lines.markeredgewidth          : 0.6
+patch.linewidth                : 0.8
+errorbar.capsize               : 2
+
+# Ticks
+xtick.direction                : out
+ytick.direction                : out
+xtick.top                      : True
+ytick.right                    : True
+xtick.major.size               : 3
+xtick.major.width              : 0.8
+ytick.major.size               : 3
+ytick.major.width              : 0.8
+xtick.minor.visible            : False
+ytick.minor.visible            : False
+
+# Legends
+legend.frameon                 : False
+legend.fancybox                : False
+legend.borderaxespad           : 0.5
+legend.handlelength            : 1.6
+legend.handletextpad           : 0.5
+legend.columnspacing           : 1.0
+legend.labelspacing            : 0.35
+legend.markerscale             : 1.0
+
+# Images and colorbars
+image.cmap                     : viridis
+image.interpolation            : antialiased
+
+# Editable vector output
+pdf.fonttype                   : 42
+ps.fonttype                    : 42
+svg.fonttype                   : none

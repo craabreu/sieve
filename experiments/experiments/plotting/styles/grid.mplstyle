@@ -1,0 +1,9 @@
+# Grid overlay: add a light major grid behind the data. Apply after
+# publication.mplstyle (or via use_publication_style(grid=True)). The base
+# style already sets axes.axisbelow, so the grid stays behind plotted artists.
+axes.grid       : True
+axes.grid.which : major
+grid.color      : b0b0b0
+grid.linestyle  : -
+grid.linewidth  : 0.5
+grid.alpha      : 0.5

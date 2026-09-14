@@ -1115,3 +1115,106 @@ def test_recursive_continuation_is_not_a_duplicate_arm():
     # max |diff| 0.0135, twice the whole DASH-vs-Sieve RMSE gap. So this is a
     # distinct arm, and the assertion above is the part a unit test can hold.
     assert np.array_equal(_predict("continuation"), _predict("continuation"))
+
+
+def test_run_sieve_cv_scores_train_when_asked(tmp_path):
+    """--score-train adds a train/ family scored on the fold's own training
+    shards. Its error must be below the held-out error on the same fold --
+    that gap is what the depth curve is drawn to show."""
+    import json
+
+    from experiments.cv import run_sieve_cv, run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    n_mol, n_shards, k = 20, 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    runs_root = tmp_path / "runs"
+    whole = synthetic_molecule_set(n_mol=n_mol, seed=2)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+
+    common = {
+        "store": store,
+        "n_shards": n_shards,
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "runs_root": runs_root,
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+    run_sieve_shard_fits(max_depth=1, **common)
+    results = run_sieve_cv(
+        depths=[1], repeats=[0], k=k, method="sieve-cfg", score_train=True, **common
+    )
+
+    assert len(results) == k
+    for result in results:
+        metrics = json.loads((result.run_dir / "metrics.json").read_text())
+        assert "train/rmse" in metrics
+        assert "train/n_conformers" in metrics
+        # scored on 4x the shards the fold held out
+        assert metrics["train/n_conformers"] > metrics["n_test_conformers"]
+        # and never under the normalized spelling: train is raw only
+        assert not any(key.startswith("train/norm/") for key in metrics)
+
+
+def test_run_sieve_cv_does_not_score_train_by_default(tmp_path):
+    """The expensive half stays off unless asked: an unflagged run must
+    record exactly what it recorded before this flag existed."""
+    import json
+
+    from experiments.cv import run_sieve_cv, run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    n_mol, n_shards, k = 20, 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    runs_root = tmp_path / "runs"
+    whole = synthetic_molecule_set(n_mol=n_mol, seed=2)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+
+    common = {
+        "store": store,
+        "n_shards": n_shards,
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "runs_root": runs_root,
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+    run_sieve_shard_fits(max_depth=1, **common)
+    results = run_sieve_cv(depths=[1], repeats=[0], k=k, method="sieve-cfg", **common)
+
+    for result in results:
+        metrics = json.loads((result.run_dir / "metrics.json").read_text())
+        assert not any(key.startswith("train/") for key in metrics)

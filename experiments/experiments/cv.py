@@ -702,6 +702,29 @@ def _score_raw_and_normalized(
     return metrics
 
 
+# Counts inside the train family are renamed off ``_score``'s own
+# ``n_test_*`` spelling: "train/n_test_conformers" reads as a contradiction,
+# and the number is simply how much was scored in the training pass.
+_TRAIN_RENAMES = {"n_test_atoms": "n_atoms", "n_test_conformers": "n_conformers"}
+
+
+def _score_train(raw: RawPrediction, mset: MoleculeSet) -> dict[str, float]:
+    """The training-set score, under a ``train/`` prefix.
+
+    Deliberately unnormalized, unlike the held-out score. A normalizer is a
+    deployment-time transform applied to predictions on unseen molecules;
+    the train curve exists to show the fit's own optimism, and putting a
+    redistribution step in front of it would measure the normalizer instead.
+    """
+    scored = _score(mset, Prediction(atom_value=raw.atom_value))
+    return {f"train/{_TRAIN_RENAMES.get(k, k)}": v for k, v in scored.items()}
+
+
+def _other_groups(plan: Any, fold: int) -> list[list[str]]:
+    """Every group except ``fold``'s -- that fold's training shards."""
+    return [g for i, g in enumerate(plan.groups) if i != fold]
+
+
 def _cv_run_done(runs_root: Path, experiment: str, batch_id: str) -> Path | None:
     matches = sorted((runs_root / experiment).glob(f"{batch_id}__*/metrics.json"))
     return matches[-1].parent if matches else None
@@ -717,6 +740,8 @@ def _write_cv_run(
     held_out: MoleculeSet,
     raw: RawPrediction,
     normalization: str,
+    train_set: MoleculeSet | None = None,
+    train_raw: RawPrediction | None = None,
     repeat: int,
     fold: int,
     depth: int,
@@ -735,6 +760,8 @@ def _write_cv_run(
     run exactly like an ordinary one, with no changes to either."""
     started = datetime.now(UTC)
     run_metrics = _score_raw_and_normalized(raw, held_out, normalization=normalization)
+    if train_raw is not None and train_set is not None:
+        run_metrics.update(_score_train(train_raw, train_set))
     for k, v in elapsed_s.items():
         run_metrics[f"time/{k}_s"] = v
 
@@ -836,6 +863,7 @@ def run_dash_cv(
     normalization: str = "std_weighted",
     method: str = "dash",
     save_predictions: bool = False,
+    score_train: bool = False,
     experiment: str = "dash-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -962,6 +990,19 @@ def run_dash_cv(
             paths = predictor.match_paths(held_out, split="cv")
             walk_s = time.perf_counter() - t0
 
+            # The training molecules are already in mset_by_shard, so the
+            # train pass costs a walk and a predict, never a reload. Walked
+            # once per fold like the held-out set: every depth is a
+            # truncation of the same matched paths.
+            train_set = train_paths = None
+            if score_train:
+                train_set = concat_molecule_sets(
+                    [mset_by_shard[s] for g in _other_groups(plan, fold) for s in g]
+                )
+                t0 = time.perf_counter()
+                train_paths = predictor.match_paths(train_set, split="cv")
+                walk_s += time.perf_counter() - t0
+
             predictor._stats = train_stats[fold]
             predictor._mean_props, predictor._std_props = apply_node_stats(
                 predictor._tree, predictor._stats, reset_existing=True
@@ -976,6 +1017,11 @@ def run_dash_cv(
                     continue
                 t0 = time.perf_counter()
                 raw = predictor.predict_raw_at_depth(paths, max_depth=depth)
+                train_raw = (
+                    predictor.predict_raw_at_depth(train_paths, max_depth=depth)
+                    if train_paths is not None
+                    else None
+                )
                 predict_s = time.perf_counter() - t0
                 results.append(
                     _write_cv_run(
@@ -987,6 +1033,8 @@ def run_dash_cv(
                         held_out=held_out,
                         raw=raw,
                         normalization=normalization,
+                        train_set=train_set,
+                        train_raw=train_raw,
                         repeat=repeat,
                         fold=fold,
                         depth=depth,
@@ -1016,6 +1064,7 @@ def run_sieve_cv(
     normalization: str = "equal_weighted",
     method: str | None = None,
     save_predictions: bool = False,
+    score_train: bool = False,
     experiment: str = "sieve-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -1164,6 +1213,18 @@ def run_sieve_cv(
             batch = predictor.build_predict_batch(held_out.mols)
             featurize_s = time.perf_counter() - t0
 
+            # Featurized once per fold, like the held-out batch: the batch is
+            # independent of depth and of variant, so every depth and every
+            # variant reads this one.
+            train_set = train_batch = None
+            if score_train:
+                train_set = concat_molecule_sets(
+                    [mset_by_shard[s] for g in _other_groups(plan, fold) for s in g]
+                )
+                t0 = time.perf_counter()
+                train_batch = predictor.build_predict_batch(train_set.mols)
+                featurize_s += time.perf_counter() - t0
+
             for depth in depths:
                 # Built once per depth and only if some variant still needs
                 # it, so a fully resumed (repeat, fold) costs no truncation.
@@ -1185,6 +1246,11 @@ def run_sieve_cv(
                     )
                     t0 = time.perf_counter()
                     raw = predictor.predict_raw_from_batch(batch)
+                    train_raw = (
+                        predictor.predict_raw_from_batch(train_batch)
+                        if train_batch is not None
+                        else None
+                    )
                     predict_s = time.perf_counter() - t0
                     results.append(
                         _write_cv_run(
@@ -1196,6 +1262,8 @@ def run_sieve_cv(
                             held_out=held_out,
                             raw=raw,
                             normalization=normalization,
+                            train_set=train_set,
+                            train_raw=train_raw,
                             repeat=repeat,
                             fold=fold,
                             depth=depth,
