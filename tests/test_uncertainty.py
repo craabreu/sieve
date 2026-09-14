@@ -113,6 +113,7 @@ def test_predictions_carry_a_total_predictive_variance():
 
     assert out.predictive_variance is not None
     assert out.predictive_variance.shape == (batch.n_nodes, cfg.target_dim)
+    assert out.predictive_variance is not None  # set whenever the flag is on
     assert np.all(np.isfinite(out.predictive_variance))
     assert np.all(out.predictive_variance > 0.0)
 
@@ -294,4 +295,5 @@ def test_available_under_either_class_estimator(estimator):
     )
     batch = chain_batch(12, graphs=3)
     out = sieve.predict_detailed(sieve.fit(batch, cfg), batch)
+    assert out.predictive_variance is not None  # set whenever the flag is on
     assert np.all(np.isfinite(out.predictive_variance))
