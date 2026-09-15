@@ -443,7 +443,7 @@ def _cmd_depth_curve(args: argparse.Namespace) -> int:
 
     curves = []
     for metric in metrics:
-        row = []
+        panels: dict[str, list] = {}
         for spec in arms_spec:
             try:
                 experiment, method = spec["experiment"], spec["method"]
@@ -451,25 +451,27 @@ def _cmd_depth_curve(args: argparse.Namespace) -> int:
                 raise SystemExit(
                     f"arm spec needs 'experiment' and 'method': {spec}"
                 ) from exc
+            label = spec.get("label") or method
+            panel = spec.get("panel") or label
             try:
-                row.append(
-                    read_depth_curve(
-                        DEFAULT_RUNS_ROOT,
-                        experiment,
-                        method=method,
-                        metric=metric,
-                        x_label=spec.get("x_label", "depth"),
-                        min_depth=spec.get("min_depth"),
-                        label=spec.get("label"),
-                    )
+                arm = read_depth_curve(
+                    DEFAULT_RUNS_ROOT,
+                    experiment,
+                    method=method,
+                    metric=metric,
+                    x_label=spec.get("x_label", "depth"),
+                    min_depth=spec.get("min_depth"),
+                    label=label,
+                    panel=panel,
                 )
             except ValueError as exc:
                 # An arm nobody ran is a missing study, not an empty panel.
                 raise SystemExit(str(exc)) from exc
-        curves.append(row)
+            panels.setdefault(panel, []).append(arm)
+        curves.append(list(panels.values()))
 
     for row in curves:
-        for arm in row:
+        for arm in [a for panel in row for a in panel]:
             print(f"{arm.method} / {arm.metric}: {arm.n_runs} runs")
             for point in arm.points:
                 print(
@@ -1087,13 +1089,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_depth_curve.add_argument(
         "--arms",
         required=True,
-        help='JSON list of arms, one panel each: [{"experiment": ..., '
-        '"method": ..., "label": ..., "x_label": ..., "min_depth": ...}]. '
-        "label is what the panel shows, defaulting to the method key; "
-        "x_label names "
-        "what depth means for that method (WL iterations for Sieve, path "
-        "length for DASH); min_depth keeps shallower depths off the figure, "
-        "and the caption states which were dropped.",
+        help='JSON list of arms: [{"experiment": ..., "method": ..., '
+        '"label": ..., "panel": ..., "x_label": ..., "min_depth": ...}]. '
+        'Arms sharing a "panel" are drawn together in it, which is how two '
+        "estimators of one method are read against each other; label is what "
+        "the legend shows, defaulting to the method key; x_label names what "
+        "depth means for that panel; min_depth keeps shallower depths off "
+        "the figure, and the caption states which were dropped.",
     )
     p_depth_curve.add_argument(
         "--metric",

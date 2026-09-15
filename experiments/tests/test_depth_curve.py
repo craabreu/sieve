@@ -276,12 +276,15 @@ def _grid(runs_root: Path):
 
     _arm(runs_root, "sieve-a", "sieve-pooled", depths=[0, 2, 4, 6])
     _arm(runs_root, "dash-a", "dash", depths=[2, 8, 16])
+    # One arm per panel: the shape a two-method figure has.
     return [
         [
-            read_depth_curve(
-                runs_root, "sieve-a", method="sieve-pooled", metric=metric
-            ),
-            read_depth_curve(runs_root, "dash-a", method="dash", metric=metric),
+            [
+                read_depth_curve(
+                    runs_root, "sieve-a", method="sieve-pooled", metric=metric
+                )
+            ],
+            [read_depth_curve(runs_root, "dash-a", method="dash", metric=metric)],
         ]
         for metric in ("rmse", "r2")
     ]
@@ -318,12 +321,14 @@ def test_plot_depth_grid_refuses_ragged_rows(tmp_path):
     _arm(runs_root, "sieve-a", "sieve-pooled", depths=[0, 2])
     _arm(runs_root, "dash-a", "dash", depths=[2, 8])
     row_a = [
-        read_depth_curve(runs_root, "sieve-a", method="sieve-pooled", metric="rmse"),
-        read_depth_curve(runs_root, "dash-a", method="dash", metric="rmse"),
+        [read_depth_curve(runs_root, "sieve-a", method="sieve-pooled", metric="rmse")],
+        [read_depth_curve(runs_root, "dash-a", method="dash", metric="rmse")],
     ]
-    row_b = [read_depth_curve(runs_root, "sieve-a", method="sieve-pooled", metric="r2")]
+    row_b = [
+        [read_depth_curve(runs_root, "sieve-a", method="sieve-pooled", metric="r2")]
+    ]
 
-    with pytest.raises(ValueError, match="same methods"):
+    with pytest.raises(ValueError, match="same panels"):
         plot_depth_grid([row_a, row_b], tmp_path / "fig", store="s")
 
 
@@ -514,12 +519,185 @@ def test_caption_file_uses_display_labels(tmp_path):
     runs_root = tmp_path / "runs"
     _arm(runs_root, "a", "sieve-element-pooled", depths=[0, 1, 2])
     row = [
-        read_depth_curve(
-            runs_root, "a", method="sieve-element-pooled", metric="rmse", label="Sieve"
-        )
+        [
+            read_depth_curve(
+                runs_root,
+                "a",
+                method="sieve-element-pooled",
+                metric="rmse",
+                label="Sieve",
+            )
+        ]
     ]
     outputs = plot_depth_grid([row], tmp_path / "fig", store="s")
     caption = outputs[-1].read_text()
 
     assert "Sieve" in caption
     assert "sieve-element-pooled" not in caption
+
+
+# --- several arms in one panel ----------------------------------------------
+
+
+def _two_arm_grid(runs_root: Path):
+    """DASH alone in one panel, two Sieve estimators sharing the next."""
+    from experiments.depth_curve import read_depth_curve
+
+    _arm(runs_root, "dash-a", "dash", depths=[2, 8, 16])
+    _arm(runs_root, "sieve-a", "sieve-element-pooled", depths=[1, 2, 4])
+    _arm(runs_root, "sieve-a", "sieve-element-continuation", depths=[1, 2, 4])
+    return [
+        [
+            [
+                read_depth_curve(
+                    runs_root, "dash-a", method="dash", metric=m, label="DASH"
+                )
+            ],
+            [
+                read_depth_curve(
+                    runs_root,
+                    "sieve-a",
+                    method="sieve-element-pooled",
+                    metric=m,
+                    label="Sieve, pooled",
+                ),
+                read_depth_curve(
+                    runs_root,
+                    "sieve-a",
+                    method="sieve-element-continuation",
+                    metric=m,
+                    label="Sieve, continuation",
+                ),
+            ],
+        ]
+        for m in ("rmse", "r2")
+    ]
+
+
+def test_plot_depth_grid_draws_several_arms_in_one_panel(tmp_path):
+    pytest.importorskip("matplotlib")
+    from experiments.depth_curve import plot_depth_grid
+
+    runs_root = tmp_path / "runs"
+    outputs = plot_depth_grid(_two_arm_grid(runs_root), tmp_path / "fig", store="s")
+
+    assert [p.suffix for p in outputs] == [".pdf", ".png", ".txt"]
+    caption = outputs[-1].read_text()
+    for label in ("DASH", "Sieve, pooled", "Sieve, continuation"):
+        assert label in caption
+
+
+def test_every_arm_keeps_one_colour_across_rows(tmp_path):
+    """An arm must not change colour between the RMSE row and the R2 row,
+    or the legend of one panel contradicts the other."""
+    pytest.importorskip("matplotlib")
+    from experiments.depth_curve import _colour_by_label
+
+    grid = _two_arm_grid(tmp_path / "runs")
+    colours = _colour_by_label(grid)
+
+    assert len(set(colours.values())) == len(colours) == 3
+    assert colours["DASH"] != colours["Sieve, pooled"]
+
+
+def test_reference_line_takes_the_best_of_the_other_panels(tmp_path):
+    """With two arms beside it, the line a panel borrows is the better of
+    them -- not whichever happens to be listed first."""
+    from experiments.depth_curve import best_value, other_panel_reference
+
+    grid = _two_arm_grid(tmp_path / "runs")
+    row = grid[0]  # rmse, lower is better
+
+    ref = other_panel_reference(row, panel_index=0)
+
+    best_sieve = min(best_value(a) for a in row[1])
+    assert ref is not None
+    assert ref[1] == pytest.approx(best_sieve)
+
+
+def test_plot_depth_grid_refuses_an_empty_panel(tmp_path):
+    pytest.importorskip("matplotlib")
+    from experiments.depth_curve import plot_depth_grid
+
+    grid = _two_arm_grid(tmp_path / "runs")
+    grid[0][1] = []
+
+    with pytest.raises(ValueError, match="empty panel"):
+        plot_depth_grid(grid, tmp_path / "fig2", store="s")
+
+
+# --- coincident train curves ------------------------------------------------
+
+
+def _curve(runs_root: Path, method: str, *, train_scale: float, label: str):
+    from experiments.depth_curve import read_depth_curve
+
+    for depth in (1, 2, 3):
+        for fold in range(5):
+            _write_cv_run(
+                runs_root,
+                "a",
+                method=method,
+                depth=depth,
+                fold=fold,
+                metrics={
+                    "rmse": 0.1 / (depth + 1) + 0.001 * fold,
+                    "train/rmse": train_scale / (depth + 1),
+                    "n_test_conformers": 1000.0,
+                },
+            )
+    return read_depth_curve(runs_root, "a", method=method, metric="rmse", label=label)
+
+
+def test_coincident_train_curves_are_drawn_once(tmp_path):
+    """On training atoms every class matched is the one the atom was fitted
+    into, so no backoff occurs and estimators differing only in how a
+    backoff class is read produce identical numbers. Drawing that curve per
+    arm would promise the reader a line sitting exactly under another."""
+    from experiments.depth_curve import train_groups
+
+    runs_root = tmp_path / "runs"
+    arms = [
+        _curve(runs_root, "pooled", train_scale=0.05, label="Sieve, pooled"),
+        _curve(
+            runs_root,
+            "continuation",
+            train_scale=0.05,
+            label="Sieve, continuation",
+        ),
+    ]
+
+    groups = train_groups(arms)
+
+    assert len(groups) == 1
+    representative, labels = groups[0]
+    assert representative.label == "Sieve, pooled"
+    assert labels == ["Sieve, pooled", "Sieve, continuation"]
+
+
+def test_differing_train_curves_are_drawn_separately(tmp_path):
+    """An arm that does back off on its own training atoms -- one with a
+    support threshold above 1 -- keeps its own train curve."""
+    from experiments.depth_curve import train_groups
+
+    runs_root = tmp_path / "runs"
+    arms = [
+        _curve(runs_root, "pooled", train_scale=0.05, label="Sieve, pooled"),
+        _curve(runs_root, "cutoff", train_scale=0.07, label="Sieve, cutoff"),
+    ]
+
+    groups = train_groups(arms)
+
+    assert len(groups) == 2
+    assert [labels for _, labels in groups] == [["Sieve, pooled"], ["Sieve, cutoff"]]
+
+
+def test_train_groups_ignores_arms_without_a_train_curve(tmp_path):
+    from experiments.depth_curve import read_depth_curve, train_groups
+
+    runs_root = tmp_path / "runs"
+    _arm(runs_root, "a", "m", depths=[1, 2])
+    arm = read_depth_curve(runs_root, "a", method="m", metric="rmse")
+
+    assert arm.train_points == ()
+    assert train_groups([arm]) == []

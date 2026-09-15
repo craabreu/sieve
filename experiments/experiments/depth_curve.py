@@ -123,6 +123,9 @@ class ArmCurve:
     """The same for the training shards, empty unless the runs were made
     with ``--score-train``."""
     n_runs: int
+    panel: str = ""
+    """The panel this arm is drawn in, when several share one; the first
+    arm's value titles the panel. Empty means the arm's own label."""
     label: str = ""
     """What a reader sees: "Sieve" rather than "sieve-element-pooled". The
     method key identifies an arm unambiguously among run directories and is
@@ -187,6 +190,7 @@ def read_depth_curve(
     x_label: str = "depth",
     min_depth: int | None = None,
     label: str | None = None,
+    panel: str | None = None,
 ) -> ArmCurve:
     """Read ``method``'s depth curve out of ``experiment``'s run directories.
 
@@ -239,6 +243,7 @@ def read_depth_curve(
         train_points=train_points,
         n_runs=n_runs,
         label=label or method,
+        panel=panel or "",
         x_label=x_label,
         normalization=normalization,
         omitted_depths=omitted,
@@ -260,15 +265,23 @@ def best_value(arm: ArmCurve) -> float:
     return max(means) if arm.metric in _HIGHER_IS_BETTER else min(means)
 
 
-def _provenance(curves: Sequence[Sequence[ArmCurve]], store: str) -> str:
+def _provenance(curves: Sequence[Sequence[Sequence[ArmCurve]]], store: str) -> str:
     """What the figure was drawn from, and what its marks mean.
 
     Run counts come from the first row only: every row reads the same run
     directories for a different metric, so summing across rows would report
     each run once per metric.
     """
-    arm_bits = ", ".join(f"{a.label} ({a.n_runs} runs)" for a in curves[0])
-    folds = {len(p.fold_values) for row in curves for a in row for p in a.points}
+    arm_bits = ", ".join(
+        f"{a.label} ({a.n_runs} runs)" for panel in curves[0] for a in panel
+    )
+    folds = {
+        len(p.fold_values)
+        for row in curves
+        for panel in row
+        for a in panel
+        for p in a.points
+    }
     k = folds.pop() if len(folds) == 1 else 0
     return (
         f"Store {store}; Study A, one repeat (seed 0); "
@@ -282,15 +295,18 @@ def _provenance(curves: Sequence[Sequence[ArmCurve]], store: str) -> str:
         f"value the other method reached for that metric."
         + (
             " Dotted lines are the same metric on each fold's own training "
-            "shards, scored unnormalized."
-            if any(a.train_points for row in curves for a in row)
+            "shards, scored unnormalized; where a panel shows one such line "
+            "for several arms, those arms produce identical training numbers, "
+            "since a training atom matches the class it was fitted into and "
+            "so never backs off."
+            if any(a.train_points for row in curves for panel in row for a in panel)
             else ""
         )
         + _omission_note(curves)
     )
 
 
-def _omission_note(curves: Sequence[Sequence[ArmCurve]]) -> str:
+def _omission_note(curves: Sequence[Sequence[Sequence[ArmCurve]]]) -> str:
     """Name every depth that was scored but kept off the figure.
 
     A note on the plotted range, not a confession: the depth axis is a grid
@@ -298,7 +314,9 @@ def _omission_note(curves: Sequence[Sequence[ArmCurve]]) -> str:
     dominated candidate moves no plotted value and cannot move the argmin.
     It is stated only so a reader knows the sweep ran wider than the axis.
     """
-    omitted = {a.label: a.omitted_depths for row in curves for a in row}
+    omitted = {
+        a.label: a.omitted_depths for row in curves for panel in row for a in panel
+    }
     bits = [
         f"{label} {', '.join(str(d) for d in depths)}"
         for label, depths in sorted(omitted.items())
@@ -309,34 +327,105 @@ def _omission_note(curves: Sequence[Sequence[ArmCurve]]) -> str:
     return " The sweep also covered " + "; ".join(bits) + ", not shown here."
 
 
+def train_groups(
+    panel: Sequence[ArmCurve],
+) -> list[tuple[ArmCurve, list[str]]]:
+    """Group a panel's arms by their train curve, keeping input order.
+
+    On training atoms the class a query matches is the one it was fitted
+    into, so no backoff occurs, and estimators that differ only in how a
+    *backoff* class is read produce identical training numbers. Drawing that
+    curve once per arm would promise the reader a line sitting exactly
+    underneath another.
+
+    Detected rather than assumed: an arm whose support threshold exceeds one
+    does back off on its own training atoms, and keeps a train curve of its
+    own.
+    """
+    groups: list[tuple[ArmCurve, list[str]]] = []
+    for arm in panel:
+        if not arm.train_points:
+            continue
+        key = [(p.depth, p.mean) for p in arm.train_points]
+        for representative, labels in groups:
+            same = [(p.depth, p.mean) for p in representative.train_points]
+            if same == key:
+                labels.append(arm.label)
+                break
+        else:
+            groups.append((arm, [arm.label]))
+    return groups
+
+
+def _colour_by_label(
+    curves: Sequence[Sequence[Sequence[ArmCurve]]],
+) -> dict[str, str]:
+    """One colour per arm, assigned across the whole figure.
+
+    Colour identifies the arm, not the panel it sits in: an arm that changed
+    colour between the rows would make each row's legend contradict the
+    other's.
+    """
+    import matplotlib.pyplot as plt
+
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    labels: list[str] = []
+    for row in curves:
+        for panel in row:
+            for arm in panel:
+                if arm.label not in labels:
+                    labels.append(arm.label)
+    return {label: cycle[i % len(cycle)] for i, label in enumerate(labels)}
+
+
+def other_panel_reference(
+    row: Sequence[Sequence[ArmCurve]], panel_index: int
+) -> tuple[str, float] | None:
+    """The best value reached outside ``panel_index``, and whose arm it is.
+
+    With more than one arm elsewhere in the row, the reference is the best
+    of them rather than whichever is listed first, since the line exists to
+    say how far the competing method got.
+    """
+    candidates = [
+        (arm.label, best_value(arm))
+        for index, panel in enumerate(row)
+        if index != panel_index
+        for arm in panel
+        if arm.points
+    ]
+    if not candidates:
+        return None
+    higher_is_better = row[panel_index][0].metric in _HIGHER_IS_BETTER
+    return (max if higher_is_better else min)(candidates, key=lambda pair: pair[1])
+
+
 def plot_depth_grid(
-    curves: Sequence[Sequence[ArmCurve]],
+    curves: Sequence[Sequence[Sequence[ArmCurve]]],
     output_stem: str | Path,
     *,
     store: str,
     formats: Sequence[str] = ("pdf", "png"),
 ) -> list[Path]:
-    """A metric-by-method grid: one row per metric, one column per method.
+    """A metric-by-panel grid: one row per metric, one column per panel.
 
-    Rows share a y axis (the metric is the same across a row) and columns
-    share an x axis (the depth axis is the same down a column). Each panel
-    also carries a horizontal reference line at the best value the *other*
-    method reached for that metric -- the two methods count depth in
-    different units, so they cannot share an x axis, and the reference line
-    is what still lets a reader see one against the other.
+    A panel holds one or more arms sharing a depth axis, so estimators of the
+    same method are read against each other in place rather than across the
+    figure. Rows share a y axis and columns share an x axis, and each panel
+    carries a horizontal line at the best value reached outside it.
 
     Linear y throughout: the flat tail is where a depth is chosen, and a log
     axis spreads the early, uninteresting decade at its expense.
     """
     if not curves or not all(curves):
-        raise ValueError("plot_depth_grid needs at least one row with one arm")
+        raise ValueError("plot_depth_grid needs at least one row with one panel")
+    for row in curves:
+        if not all(row):
+            raise ValueError("plot_depth_grid was given an empty panel to draw")
 
-    methods = [arm.method for arm in curves[0]]
-    if any([arm.method for arm in row] != methods for row in curves):
-        raise ValueError(
-            "every row must carry the same methods in the same order, got "
-            + "; ".join(str([a.method for a in row]) for row in curves)
-        )
+    shape = [len(row) for row in curves]
+    if len(set(shape)) != 1:
+        raise ValueError(f"every row must carry the same panels, got {shape}")
 
     import matplotlib.pyplot as plt
 
@@ -344,32 +433,27 @@ def plot_depth_grid(
         STYLE_DIR,
     )
 
-    n_rows, n_cols = len(curves), len(methods)
-    # The style is applied through a CONTEXT, not through
-    # use_publication_style, which calls plt.style.use and so mutates
-    # rcParams for the whole process. The publication sheet turns
-    # constrained layout on; leaking that into a later figure that calls
-    # tight_layout on a colorbar (plots.parity_panel does) raises
-    # "Colorbar layout of new layout engine not compatible with old engine".
-    # Still the shared sheets, never per-figure rcParams -- only scoped.
+    n_rows = len(curves)
+    # Applied through a CONTEXT, not use_publication_style, which calls
+    # plt.style.use and mutates rcParams for the whole process. The sheet
+    # turns constrained layout on, and leaking that into a later figure whose
+    # tight_layout meets a colorbar (plots.parity_panel) raises "Colorbar
+    # layout of new layout engine not compatible with old engine".
     style = [
         STYLE_DIR / "publication.mplstyle",
         STYLE_DIR / "double-column.mplstyle",
         {"figure.figsize": (7.0, 2.6 * n_rows)},
     ]
     with plt.style.context(style):
-        return _build_and_save(
-            curves, output_stem, store=store, formats=formats, colors=_colors(n_cols)
-        )
+        return _build_and_save(curves, output_stem, store=store, formats=formats)
 
 
 def _build_and_save(
-    curves: Sequence[Sequence[ArmCurve]],
+    curves: Sequence[Sequence[Sequence[ArmCurve]]],
     output_stem: str | Path,
     *,
     store: str,
     formats: Sequence[str],
-    colors: Sequence[str],
 ) -> list[Path]:
     """The figure itself, built under an already-applied style context."""
     import matplotlib.pyplot as plt
@@ -380,32 +464,36 @@ def _build_and_save(
     )
 
     n_rows, n_cols = len(curves), len(curves[0])
+    colours = _colour_by_label(curves)
 
     fig, axes = plt.subplots(n_rows, n_cols, sharex="col", sharey="row", squeeze=False)
 
     for row_index, row in enumerate(curves):
-        for col_index, arm in enumerate(row):
+        for col_index, panel in enumerate(row):
             ax = axes[row_index][col_index]
-            _draw_arm(ax, arm, colors[col_index])
-            _draw_reference(ax, arm, row, colors)
+            for arm in panel:
+                _draw_validation(ax, arm, colours[arm.label])
+            title = panel[0].panel or panel[0].label
+            for representative, labels in train_groups(panel):
+                _draw_train(
+                    ax,
+                    representative,
+                    colours[representative.label],
+                    label=(
+                        f"{title} (train)"
+                        if len(labels) == len(panel) and len(panel) > 1
+                        else f"{labels[0]} (train)"
+                    ),
+                )
+            _draw_reference(ax, row, col_index, colours)
             if row_index == 0:
-                ax.set_title(arm.label)
+                ax.set_title(panel[0].panel or panel[0].label)
             if row_index == n_rows - 1:
-                ax.set_xlabel(arm.x_label)
+                ax.set_xlabel(panel[0].x_label)
             if col_index == 0:
-                ax.set_ylabel(metric_label(arm.metric))
-            # The panel's own series leads; errorbar containers otherwise
-            # sort behind the plain Line2D of the reference line.
-            handles, labels = ax.get_legend_handles_labels()
-            order = sorted(
-                range(len(labels)), key=lambda i: not labels[i].startswith(arm.label)
-            )
-            ax.legend([handles[i] for i in order], [labels[i] for i in order])
+                ax.set_ylabel(metric_label(panel[0].metric))
+            _order_legend(ax, panel)
 
-    # Tighter than the helper's default (-0.12, 1.04), which parks the
-    # letter far enough out to read as belonging to the figure rather than
-    # to its panel. The left column still has to clear its tick labels, so
-    # the offset is per-column rather than uniform.
     for row_index, row in enumerate(axes):
         for col_index, ax in enumerate(row):
             letter = ascii_lowercase[row_index * len(row) + col_index]
@@ -420,10 +508,10 @@ def _build_and_save(
 
     outputs = save_publication_figure(fig, output_stem, formats=formats, close=True)
 
-    # The provenance is written beside the figure rather than burned into
-    # it: this text is the manuscript's own caption, and a caption belongs
-    # in the document, where it can be edited, typeset and translated
-    # without regenerating the image.
+    # The provenance is written beside the figure rather than burned into it:
+    # this text is the manuscript's own caption, and a caption belongs in the
+    # document, where it can be edited and typeset without regenerating the
+    # image.
     caption_path = Path(output_stem).with_suffix(".txt")
     caption_path.parent.mkdir(parents=True, exist_ok=True)
     caption_path.write_text(_provenance(curves, store) + "\n")
@@ -431,17 +519,21 @@ def _build_and_save(
     return outputs
 
 
-def _colors(n: int) -> list[str]:
-    import matplotlib.pyplot as plt
+def _order_legend(ax: Any, panel: Sequence[ArmCurve]) -> None:
+    """Validation curves first, in the order the arms were given."""
+    handles, labels = ax.get_legend_handles_labels()
+    wanted = [f"{arm.label} (validation)" for arm in panel] + [
+        f"{arm.label} (train)" for arm in panel
+    ]
+    rank = {label: i for i, label in enumerate(wanted)}
+    order = sorted(range(len(labels)), key=lambda i: rank.get(labels[i], len(rank)))
+    ax.legend([handles[i] for i in order], [labels[i] for i in order])
 
-    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    return [cycle[i % len(cycle)] for i in range(n)]
 
-
-def _draw_arm(ax: Any, arm: ArmCurve, color: str) -> None:
-    """Every fold, then the mean and its corrected error bar."""
+def _draw_validation(ax: Any, arm: ArmCurve, color: str) -> None:
+    """Every fold, then the held-out mean and its confidence interval."""
     # Five points per depth is well within what can be shown, and showing
-    # them keeps the error bar from being the only record of what was
+    # them keeps the interval from being the only record of what was
     # measured.
     for point in arm.points:
         ax.plot(
@@ -469,43 +561,46 @@ def _draw_arm(ax: Any, arm: ArmCurve, color: str) -> None:
             label=f"{arm.label} (validation)",
         )
 
-    # Train is distinguished by linestyle AND marker fill, not by colour
-    # alone: the panel's colour already means "this method", and the gap
-    # between the two lines is the thing being read.
-    if arm.train_points:
-        ax.errorbar(
-            [p.depth for p in arm.train_points],
-            [p.mean for p in arm.train_points],
-            yerr=[ci_half_width(p.se, len(p.fold_values)) for p in arm.train_points],
-            marker="o",
-            markersize=2.0,
-            markerfacecolor="white",
-            linestyle=":",
-            color=color,
-            capsize=1.5,
-            zorder=3,
-            label=f"{arm.label} (train)",
-        )
+
+def _draw_train(ax: Any, arm: ArmCurve, color: str, *, label: str) -> None:
+    """The training curve, distinguished by linestyle and marker fill rather
+    than by colour, which already identifies the arm."""
+    ax.errorbar(
+        [p.depth for p in arm.train_points],
+        [p.mean for p in arm.train_points],
+        yerr=[ci_half_width(p.se, len(p.fold_values)) for p in arm.train_points],
+        marker="o",
+        markersize=2.0,
+        markerfacecolor="white",
+        linestyle=":",
+        color=color,
+        capsize=1.5,
+        zorder=3,
+        label=label,
+    )
 
 
 def _draw_reference(
-    ax: Any, arm: ArmCurve, row: Sequence[ArmCurve], colors: Sequence[str]
+    ax: Any,
+    row: Sequence[Sequence[ArmCurve]],
+    panel_index: int,
+    colours: dict[str, str],
 ) -> None:
-    """A horizontal line per *other* method at the best value it reached.
+    """A horizontal line at the best value reached outside this panel.
 
-    Dashed and in that method's own colour, so the line is readable as
-    "where the other column got to" rather than as anything this panel's
-    method did.
+    Dashed and in that arm's own colour, so it reads as "where the other
+    column got to" rather than as anything this panel's arms did.
     """
-    for index, other in enumerate(row):
-        if other.method == arm.method or not other.points:
-            continue
-        ax.axhline(
-            best_value(other),
-            color=colors[index],
-            linestyle="--",
-            linewidth=1.0,
-            alpha=0.9,
-            zorder=1,
-            label=f"{other.label} best",
-        )
+    reference = other_panel_reference(row, panel_index)
+    if reference is None:
+        return
+    label, value = reference
+    ax.axhline(
+        value,
+        color=colours[label],
+        linestyle="--",
+        linewidth=1.0,
+        alpha=0.9,
+        zorder=1,
+        label=f"{label} best",
+    )

@@ -686,9 +686,20 @@ DEPTH_CURVE_ARMS=$(
   printf '[{"experiment": "%s", "method": "dash", "label": "DASH",' \
     "$DASH_STUDY_A"
   printf ' "x_label": "Maximum Path Depth"},'
-  printf ' {"experiment": "%s", "method": "%s", "label": "Sieve",' \
-    "$SIEVE_STUDY_A" "$SIEVE_STUDY_A_METHOD"
-  printf ' "x_label": "Maximum Refinement Depth", "min_depth": 1}]' 
+  # Every Sieve arm shares one panel, so the estimators are read against
+  # each other in place rather than across the figure; DASH keeps its own,
+  # since its depth axis counts something else entirely.
+  # DASH's entry above already ends in a comma, so the separator goes
+  # before every Sieve arm after the first.
+  sep=""
+  for method in ${SIEVE_STUDY_A_METHODS//,/ }; do
+    printf '%s {"experiment": "%s", "method": "%s", "label": "Sieve, %s",' \
+      "$sep" "$SIEVE_STUDY_A" "$method" "${method#sieve-element-}"
+    printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth",'
+    printf ' "min_depth": 1}'
+    sep=","
+  done
+  printf ']' 
 )
 
 # Same two-part guard as compare, for the same reason: mtimes catch new runs,
