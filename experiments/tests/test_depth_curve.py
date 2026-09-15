@@ -371,3 +371,57 @@ def test_read_depth_curve_leaves_train_empty_when_runs_lack_it(tmp_path):
 
     assert curve.points
     assert curve.train_points == ()
+
+
+# --- omitting shallow depths ------------------------------------------------
+
+
+def test_read_depth_curve_min_depth_drops_shallow_points_and_records_them(tmp_path):
+    """A trimmed depth axis still reports how wide the sweep ran, so the
+    caption can name the candidates that were scored but not plotted."""
+    from experiments.depth_curve import read_depth_curve
+
+    runs_root = tmp_path / "runs"
+    _arm(runs_root, "a", "m", depths=[0, 1, 2, 3])
+
+    curve = read_depth_curve(runs_root, "a", method="m", metric="rmse", min_depth=2)
+
+    assert [p.depth for p in curve.points] == [2, 3]
+    assert curve.omitted_depths == (0, 1)
+
+
+def test_read_depth_curve_min_depth_applies_to_the_train_curve_too(tmp_path):
+    from experiments.depth_curve import read_depth_curve
+
+    runs_root = tmp_path / "runs"
+    for depth in (0, 1, 2):
+        for fold in range(5):
+            _write_cv_run(
+                runs_root,
+                "a",
+                method="m",
+                depth=depth,
+                fold=fold,
+                metrics={
+                    "rmse": 0.1 / (depth + 1),
+                    "train/rmse": 0.05 / (depth + 1),
+                    "n_test_conformers": 1000.0,
+                },
+            )
+
+    curve = read_depth_curve(runs_root, "a", method="m", metric="rmse", min_depth=1)
+
+    assert [p.depth for p in curve.points] == [1, 2]
+    assert [p.depth for p in curve.train_points] == [1, 2]
+
+
+def test_read_depth_curve_without_min_depth_omits_nothing(tmp_path):
+    from experiments.depth_curve import read_depth_curve
+
+    runs_root = tmp_path / "runs"
+    _arm(runs_root, "a", "m", depths=[0, 1])
+
+    curve = read_depth_curve(runs_root, "a", method="m", metric="rmse")
+
+    assert [p.depth for p in curve.points] == [0, 1]
+    assert curve.omitted_depths == ()

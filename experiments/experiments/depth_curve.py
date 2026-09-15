@@ -106,6 +106,9 @@ class ArmCurve:
     n_runs: int
     x_label: str = "depth"
     normalization: str = ""
+    omitted_depths: tuple[int, ...] = ()
+    """Depths that were scored but kept off the figure, via ``min_depth``.
+    Recorded so the caption can report how wide the sweep actually ran."""
 
 
 def _points_for_metric(
@@ -159,12 +162,20 @@ def read_depth_curve(
     method: str,
     metric: str,
     x_label: str = "depth",
+    min_depth: int | None = None,
 ) -> ArmCurve:
     """Read ``method``'s depth curve out of ``experiment``'s run directories.
 
     Reads through ``aggregate.read_runs_from_dirs`` -- the same reader
     ``sweep`` and ``compare`` use -- so a figure can never show a run
     neither of them would.
+
+    ``min_depth`` keeps shallower points off the curve. A dominated shallow
+    point can take over a linear axis -- Sieve at WL depth 0 is element-wise
+    pooled means, whose $R^2$ of 0.46 compresses the 0.99 band where every
+    difference between the real candidates lives. Those depths are still
+    scored and still recorded; they are returned in ``omitted_depths`` so
+    the caption can report the range the sweep actually covered.
     """
     rows = read_runs_from_dirs(Path(runs_root), experiment)
     by_depth: dict[int, list[tuple[int, dict[str, float]]]] = {}
@@ -187,14 +198,25 @@ def read_depth_curve(
             f"metric {metric!r}"
         )
 
+    points = _points_for_metric(by_depth, metric)
+    train_points = _points_for_metric(by_depth, f"train/{metric}")
+    omitted: tuple[int, ...] = ()
+    if min_depth is not None:
+        omitted = tuple(p.depth for p in points if p.depth < min_depth)
+        points = tuple(p for p in points if p.depth >= min_depth)
+        train_points = tuple(p for p in train_points if p.depth >= min_depth)
+        if not points:
+            raise ValueError(f"min_depth={min_depth} removes every point of {method!r}")
+
     return ArmCurve(
         method=method,
         metric=metric,
-        points=_points_for_metric(by_depth, metric),
-        train_points=_points_for_metric(by_depth, f"train/{metric}"),
+        points=points,
+        train_points=train_points,
         n_runs=n_runs,
         x_label=x_label,
         normalization=normalization,
+        omitted_depths=omitted,
     )
 
 
@@ -237,7 +259,27 @@ def _provenance(curves: Sequence[Sequence[ArmCurve]], store: str) -> str:
             if any(a.train_points for row in curves for a in row)
             else ""
         )
+        + _omission_note(curves)
     )
+
+
+def _omission_note(curves: Sequence[Sequence[ArmCurve]]) -> str:
+    """Name every depth that was scored but kept off the figure.
+
+    A note on the plotted range, not a confession: the depth axis is a grid
+    of candidate hyperparameter values rather than a sample, so omitting a
+    dominated candidate moves no plotted value and cannot move the argmin.
+    It is stated only so a reader knows the sweep ran wider than the axis.
+    """
+    omitted = {a.method: a.omitted_depths for row in curves for a in row}
+    bits = [
+        f"{method} {', '.join(str(d) for d in depths)}"
+        for method, depths in sorted(omitted.items())
+        if depths
+    ]
+    if not bits:
+        return ""
+    return " The sweep also covered " + "; ".join(bits) + ", not shown here."
 
 
 def plot_depth_grid(

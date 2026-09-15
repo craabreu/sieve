@@ -626,10 +626,16 @@ DEPTH_CURVE_STEM="$FIGURES_DIR/depth-curve-study-a"
 DEPTH_CURVE_STAMP="$FIGURES_DIR/.depth-curve-inputs"
 STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A"
 
+# Sieve's WL depth 0 is kept off the figure: with no refinement at all the
+# model is element-wise pooled means, whose R^2 of 0.46 compresses the 0.99
+# band where every difference between the real depths lives. It is scored
+# and recorded like any other depth, and the caption names it as dropped.
+# DASH needs no floor, its own sweep starting at 2.
+#
 # Built from the same variables the studies ran under, so the figure cannot
 # name an arm or an experiment nobody produced.
 DEPTH_CURVE_ARMS=$(
-  printf '[{"experiment": "%s", "method": "%s", "x_label": "WL depth"},' \
+  printf '[{"experiment": "%s", "method": "%s", "x_label": "WL depth", "min_depth": 1},' \
     "$SIEVE_STUDY_A" "$SIEVE_STUDY_A_METHOD"
   printf ' {"experiment": "%s", "method": "dash", "x_label": "max path depth"}]' \
     "$DASH_STUDY_A"

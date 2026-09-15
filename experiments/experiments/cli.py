@@ -459,6 +459,7 @@ def _cmd_depth_curve(args: argparse.Namespace) -> int:
                         method=method,
                         metric=metric,
                         x_label=spec.get("x_label", "depth"),
+                        min_depth=spec.get("min_depth"),
                     )
                 )
             except ValueError as exc:
@@ -1086,8 +1087,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--arms",
         required=True,
         help='JSON list of arms, one panel each: [{"experiment": ..., '
-        '"method": ..., "x_label": ...}]. x_label names what depth means '
-        "for that method (WL iterations for Sieve, path length for DASH).",
+        '"method": ..., "x_label": ..., "min_depth": ...}]. x_label names '
+        "what depth means for that method (WL iterations for Sieve, path "
+        "length for DASH); min_depth keeps shallower depths off the figure, "
+        "and the caption states which were dropped.",
     )
     p_depth_curve.add_argument(
         "--metric",
