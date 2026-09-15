@@ -635,10 +635,12 @@ STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A"
 # Built from the same variables the studies ran under, so the figure cannot
 # name an arm or an experiment nobody produced.
 DEPTH_CURVE_ARMS=$(
-  printf '[{"experiment": "%s", "method": "%s", "x_label": "WL depth", "min_depth": 1},' \
-    "$SIEVE_STUDY_A" "$SIEVE_STUDY_A_METHOD"
-  printf ' {"experiment": "%s", "method": "dash", "x_label": "max path depth"}]' \
+  printf '[{"experiment": "%s", "method": "dash", "label": "DASH",' \
     "$DASH_STUDY_A"
+  printf ' "x_label": "Maximum Path Depth"},'
+  printf ' {"experiment": "%s", "method": "%s", "label": "Sieve",' \
+    "$SIEVE_STUDY_A" "$SIEVE_STUDY_A_METHOD"
+  printf ' "x_label": "Maximum Refinement Depth", "min_depth": 1}]' 
 )
 
 # Same two-part guard as compare, for the same reason: mtimes catch new runs,
@@ -648,7 +650,10 @@ depth_curve_is_up_to_date() {
   [ -f "$DEPTH_CURVE_STAMP" ] || return 1
   [ "$(cat "$DEPTH_CURVE_STAMP")" = "$DEPTH_CURVE_METRIC $DEPTH_CURVE_ARMS" ] || return 1
   file_is_newer_than_runs "$DEPTH_CURVE_STEM.pdf" $STUDY_A_RUNS || return 1
-  file_is_newer_than_runs "$DEPTH_CURVE_STEM.png" $STUDY_A_RUNS
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.png" $STUDY_A_RUNS || return 1
+  # The caption carries the run counts and the arms, so it goes stale for
+  # exactly the reasons the figure does.
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.txt" $STUDY_A_RUNS
 }
 
 run_depth_curve() {

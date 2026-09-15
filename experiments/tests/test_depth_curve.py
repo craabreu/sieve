@@ -296,7 +296,7 @@ def test_plot_depth_grid_writes_vector_and_raster(tmp_path):
         _grid(runs_root), tmp_path / "figures" / "depth-curve", store="test-store"
     )
 
-    assert [p.suffix for p in outputs] == [".pdf", ".png"]
+    assert [p.suffix for p in outputs] == [".pdf", ".png", ".txt"]
     assert all(p.exists() and p.stat().st_size > 0 for p in outputs)
 
 
@@ -425,3 +425,101 @@ def test_read_depth_curve_without_min_depth_omits_nothing(tmp_path):
 
     assert [p.depth for p in curve.points] == [0, 1]
     assert curve.omitted_depths == ()
+
+
+# --- confidence intervals ---------------------------------------------------
+
+
+def test_ci_half_width_is_the_corrected_resampled_t_interval():
+    """Nadeau-Bengio's variance with Student's t on k-1 degrees of freedom
+    is the corrected resampled t-test's own interval, so the bars and any
+    later significance claim rest on the same quantity."""
+    pytest.importorskip("scipy")
+    from experiments.depth_curve import ci_half_width
+    from scipy.stats import t as student_t
+
+    se, k = 0.00022, 5
+    assert ci_half_width(se, k) == pytest.approx(student_t.ppf(0.975, k - 1) * se)
+    # k=5 -> t(0.975, 4) = 2.7764
+    assert ci_half_width(se, k) == pytest.approx(2.7764 * se, rel=1e-4)
+
+
+def test_ci_half_width_widens_as_folds_shrink():
+    """Fewer folds means a heavier tail, so the interval must widen even at
+    identical standard error."""
+    pytest.importorskip("scipy")
+    from experiments.depth_curve import ci_half_width
+
+    assert ci_half_width(1.0, 3) > ci_half_width(1.0, 5) > ci_half_width(1.0, 25)
+
+
+def test_ci_half_width_refuses_fewer_than_two_folds():
+    pytest.importorskip("scipy")
+    from experiments.depth_curve import ci_half_width
+
+    with pytest.raises(ValueError, match="at least two"):
+        ci_half_width(1.0, 1)
+
+
+# --- display labels and the caption file ------------------------------------
+
+
+def test_read_depth_curve_carries_a_display_label(tmp_path):
+    """The method key names the runs on disk; the label is what a reader
+    sees. They differ deliberately: 'sieve-element-pooled' identifies an arm
+    unambiguously in a run directory and is noise on an axis."""
+    from experiments.depth_curve import read_depth_curve
+
+    runs_root = tmp_path / "runs"
+    _arm(runs_root, "a", "sieve-element-pooled", depths=[0, 1])
+
+    curve = read_depth_curve(
+        runs_root, "a", method="sieve-element-pooled", metric="rmse", label="Sieve"
+    )
+
+    assert curve.method == "sieve-element-pooled"
+    assert curve.label == "Sieve"
+
+
+def test_read_depth_curve_label_defaults_to_the_method(tmp_path):
+    from experiments.depth_curve import read_depth_curve
+
+    runs_root = tmp_path / "runs"
+    _arm(runs_root, "a", "m", depths=[0, 1])
+
+    assert read_depth_curve(runs_root, "a", method="m", metric="rmse").label == "m"
+
+
+def test_plot_depth_grid_writes_the_caption_beside_the_figure(tmp_path):
+    """The provenance belongs in the manuscript's own caption, so it is
+    written as text rather than burned into the image."""
+    pytest.importorskip("matplotlib")
+    from experiments.depth_curve import plot_depth_grid
+
+    runs_root = tmp_path / "runs"
+    outputs = plot_depth_grid(
+        _grid(runs_root), tmp_path / "figures" / "depth-curve", store="test-store"
+    )
+
+    assert [p.suffix for p in outputs] == [".pdf", ".png", ".txt"]
+    caption = outputs[-1].read_text()
+    assert "test-store" in caption
+    assert caption.endswith("\n")
+
+
+def test_caption_file_uses_display_labels(tmp_path):
+    pytest.importorskip("matplotlib")
+    from experiments.depth_curve import plot_depth_grid, read_depth_curve
+
+    runs_root = tmp_path / "runs"
+    _arm(runs_root, "a", "sieve-element-pooled", depths=[0, 1, 2])
+    row = [
+        read_depth_curve(
+            runs_root, "a", method="sieve-element-pooled", metric="rmse", label="Sieve"
+        )
+    ]
+    outputs = plot_depth_grid([row], tmp_path / "fig", store="s")
+    caption = outputs[-1].read_text()
+
+    assert "Sieve" in caption
+    assert "sieve-element-pooled" not in caption

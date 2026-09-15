@@ -18,10 +18,10 @@ manuscript figure. Styling here comes from the shared sheets under
 from __future__ import annotations
 
 import math
-import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from string import ascii_lowercase
 from typing import Any
 
 from experiments.aggregate import read_runs_from_dirs
@@ -79,6 +79,25 @@ def nadeau_bengio_se(
     return math.sqrt((1.0 / k + n_test / n_train) * variance)
 
 
+def ci_half_width(se: float, n_folds: int, level: float = 0.95) -> float:
+    """Half-width of the ``level`` confidence interval on a fold mean.
+
+    Student's t on ``n_folds - 1`` degrees of freedom applied to the
+    Nadeau-Bengio corrected standard error, which together are the corrected
+    resampled t-test of Ref.~2003. Reporting the interval rather than the
+    bare standard error keeps the bars and any later claim that two depths
+    are indistinguishable resting on exactly the same quantity.
+    """
+    if n_folds < 2:
+        raise ValueError(
+            f"a confidence interval needs at least two folds, got {n_folds}"
+        )
+
+    from scipy.stats import t as student_t
+
+    return float(student_t.ppf(0.5 + level / 2.0, n_folds - 1)) * se
+
+
 @dataclass(frozen=True)
 class DepthPoint:
     """One depth's k folds, and the mean they support."""
@@ -104,6 +123,10 @@ class ArmCurve:
     """The same for the training shards, empty unless the runs were made
     with ``--score-train``."""
     n_runs: int
+    label: str = ""
+    """What a reader sees: "Sieve" rather than "sieve-element-pooled". The
+    method key identifies an arm unambiguously among run directories and is
+    noise on an axis, so the two are kept apart."""
     x_label: str = "depth"
     normalization: str = ""
     omitted_depths: tuple[int, ...] = ()
@@ -163,6 +186,7 @@ def read_depth_curve(
     metric: str,
     x_label: str = "depth",
     min_depth: int | None = None,
+    label: str | None = None,
 ) -> ArmCurve:
     """Read ``method``'s depth curve out of ``experiment``'s run directories.
 
@@ -214,6 +238,7 @@ def read_depth_curve(
         points=points,
         train_points=train_points,
         n_runs=n_runs,
+        label=label or method,
         x_label=x_label,
         normalization=normalization,
         omitted_depths=omitted,
@@ -242,14 +267,16 @@ def _provenance(curves: Sequence[Sequence[ArmCurve]], store: str) -> str:
     directories for a different metric, so summing across rows would report
     each run once per metric.
     """
-    arm_bits = ", ".join(f"{a.method} ({a.n_runs} runs)" for a in curves[0])
+    arm_bits = ", ".join(f"{a.label} ({a.n_runs} runs)" for a in curves[0])
     folds = {len(p.fold_values) for row in curves for a in row for p in a.points}
     k = folds.pop() if len(folds) == 1 else 0
     return (
         f"Store {store}; Study A, one repeat (seed 0); "
         f"arms: {arm_bits}. Points are individual folds; the line is their "
-        f"mean and the bars are the Nadeau-Bengio corrected standard error "
-        f"(Mach. Learn. 52:239, 2003), which accounts for the training "
+        f"mean and the bars are 95% confidence intervals from the "
+        f"Nadeau-Bengio corrected standard error with Student's t on k-1 "
+        f"degrees of freedom (Mach. Learn. 52:239, 2003), which accounts "
+        f"for the training "
         f"molecules the {k or 'k'} folds share -- they are not independent "
         f"replicates. The dashed horizontal line in each panel marks the best "
         f"value the other method reached for that metric."
@@ -271,10 +298,10 @@ def _omission_note(curves: Sequence[Sequence[ArmCurve]]) -> str:
     dominated candidate moves no plotted value and cannot move the argmin.
     It is stated only so a reader knows the sweep ran wider than the axis.
     """
-    omitted = {a.method: a.omitted_depths for row in curves for a in row}
+    omitted = {a.label: a.omitted_depths for row in curves for a in row}
     bits = [
-        f"{method} {', '.join(str(d) for d in depths)}"
-        for method, depths in sorted(omitted.items())
+        f"{label} {', '.join(str(d) for d in depths)}"
+        for label, depths in sorted(omitted.items())
         if depths
     ]
     if not bits:
@@ -362,7 +389,7 @@ def _build_and_save(
             _draw_arm(ax, arm, colors[col_index])
             _draw_reference(ax, arm, row, colors)
             if row_index == 0:
-                ax.set_title(arm.method)
+                ax.set_title(arm.label)
             if row_index == n_rows - 1:
                 ax.set_xlabel(arm.x_label)
             if col_index == 0:
@@ -371,24 +398,37 @@ def _build_and_save(
             # sort behind the plain Line2D of the reference line.
             handles, labels = ax.get_legend_handles_labels()
             order = sorted(
-                range(len(labels)), key=lambda i: not labels[i].startswith(arm.method)
+                range(len(labels)), key=lambda i: not labels[i].startswith(arm.label)
             )
             ax.legend([handles[i] for i in order], [labels[i] for i in order])
 
-    label_panels([ax for row in axes for ax in row])
+    # Tighter than the helper's default (-0.12, 1.04), which parks the
+    # letter far enough out to read as belonging to the figure rather than
+    # to its panel. The left column still has to clear its tick labels, so
+    # the offset is per-column rather than uniform.
+    for row_index, row in enumerate(axes):
+        for col_index, ax in enumerate(row):
+            letter = ascii_lowercase[row_index * len(row) + col_index]
+            # The first column has to clear its tick labels; the rest do not,
+            # sharing the row's y axis.
+            label_panels(
+                [ax],
+                labels=[letter],
+                x=-0.085 if col_index == 0 else -0.045,
+                y=1.01,
+            )
 
-    # Through supxlabel so constrained layout (on, from publication.mplstyle)
-    # measures the caption like any other artist; reserving its space by hand
-    # pushes the axes past the canvas and silently costs titles and legends.
-    fig.supxlabel(
-        "\n".join(textwrap.wrap(_provenance(curves, store), width=125)),
-        fontsize=6,
-        color="0.4",
-        x=0.01,
-        ha="left",
-    )
+    outputs = save_publication_figure(fig, output_stem, formats=formats, close=True)
 
-    return save_publication_figure(fig, output_stem, formats=formats, close=True)
+    # The provenance is written beside the figure rather than burned into
+    # it: this text is the manuscript's own caption, and a caption belongs
+    # in the document, where it can be edited, typeset and translated
+    # without regenerating the image.
+    caption_path = Path(output_stem).with_suffix(".txt")
+    caption_path.parent.mkdir(parents=True, exist_ok=True)
+    caption_path.write_text(_provenance(curves, store) + "\n")
+    outputs.append(caption_path)
+    return outputs
 
 
 def _colors(n: int) -> list[str]:
@@ -408,7 +448,7 @@ def _draw_arm(ax: Any, arm: ArmCurve, color: str) -> None:
             [point.depth] * len(point.fold_values),
             point.fold_values,
             marker="o",
-            markersize=2,
+            markersize=1.2,
             linestyle="none",
             color=color,
             alpha=0.35,
@@ -419,14 +459,14 @@ def _draw_arm(ax: Any, arm: ArmCurve, color: str) -> None:
         ax.errorbar(
             [p.depth for p in arm.points],
             [p.mean for p in arm.points],
-            yerr=[p.se for p in arm.points],
+            yerr=[ci_half_width(p.se, len(p.fold_values)) for p in arm.points],
             marker="o",
-            markersize=3.5,
+            markersize=2.0,
             linestyle="-",
             color=color,
-            capsize=2,
+            capsize=1.5,
             zorder=3,
-            label=f"{arm.method} (validation)",
+            label=f"{arm.label} (validation)",
         )
 
     # Train is distinguished by linestyle AND marker fill, not by colour
@@ -436,15 +476,15 @@ def _draw_arm(ax: Any, arm: ArmCurve, color: str) -> None:
         ax.errorbar(
             [p.depth for p in arm.train_points],
             [p.mean for p in arm.train_points],
-            yerr=[p.se for p in arm.train_points],
+            yerr=[ci_half_width(p.se, len(p.fold_values)) for p in arm.train_points],
             marker="o",
-            markersize=3.5,
+            markersize=2.0,
             markerfacecolor="white",
             linestyle=":",
             color=color,
-            capsize=2,
+            capsize=1.5,
             zorder=3,
-            label=f"{arm.method} (train)",
+            label=f"{arm.label} (train)",
         )
 
 
@@ -467,5 +507,5 @@ def _draw_reference(
             linewidth=1.0,
             alpha=0.9,
             zorder=1,
-            label=f"{other.method} best",
+            label=f"{other.label} best",
         )

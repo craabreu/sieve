@@ -1,1 +1,1 @@
-rmse,r2 [{"experiment": "sieve-cv-study-a", "method": "sieve-element-pooled", "x_label": "WL depth", "min_depth": 1}, {"experiment": "dash-cv-study-a", "method": "dash", "x_label": "max path depth"}]
+rmse,r2 [{"experiment": "dash-cv-study-a", "method": "dash", "label": "DASH", "x_label": "Maximum Path Depth"}, {"experiment": "sieve-cv-study-a", "method": "sieve-element-pooled", "label": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}]
