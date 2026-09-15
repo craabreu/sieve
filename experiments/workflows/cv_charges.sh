@@ -355,19 +355,30 @@ SIEVE_VARIANTS='[
 # specification Study B then scores at that depth. Two copies could drift,
 # and the drift would be silent in the worst way: a depth chosen for one
 # estimator and applied to a slightly different one.
-SIEVE_STUDY_A_METHOD="${SIEVE_STUDY_A_METHOD:-sieve-element-pooled}"
+# Comma-separated, and the FIRST is the arm the depth-curve figure shows and
+# the one SIEVE_SELECTED_DEPTH is read off. The second is here because the
+# manuscript calls continuation the estimator and pooled the naive reading it
+# corrects, while the depth was in fact selected on pooled -- so the two
+# curves have to be seen together before that selection can be defended or
+# moved. Scoring both costs no refit: class_estimator is excluded from
+# schema_version, so continuation is a different reading of the very same
+# shard fits, and adding it to this invocation re-uses each fold's featurized
+# batch rather than building a second one.
+SIEVE_STUDY_A_METHODS="${SIEVE_STUDY_A_METHODS:-sieve-element-pooled,sieve-element-continuation}"
+SIEVE_STUDY_A_METHOD="${SIEVE_STUDY_A_METHODS%%,*}"
 SIEVE_STUDY_A_VARIANTS=$(
   echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
 import json, sys
 
-method = sys.argv[1]
-chosen = [v for v in json.load(sys.stdin) if v["method"] == method]
-if not chosen:
+wanted = [m for m in sys.argv[1].split(",") if m]
+variants = {v["method"]: v for v in json.load(sys.stdin)}
+missing = [m for m in wanted if m not in variants]
+if missing:
     raise SystemExit(
-        f"SIEVE_STUDY_A_METHOD={method!r} names no entry in SIEVE_VARIANTS"
+        f"SIEVE_STUDY_A_METHODS names no entry in SIEVE_VARIANTS: {missing}"
     )
-print(json.dumps(chosen))
-' "$SIEVE_STUDY_A_METHOD"
+print(json.dumps([variants[m] for m in wanted]))
+' "$SIEVE_STUDY_A_METHODS"
 )
 
 CODES_PATH="experiments/stores/$STORE/sieve-codes.json"
@@ -610,11 +621,18 @@ step study-a-dash \
     $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
-# Guarded on the pooled arm by name, not on the experiment's run count: the
-# two are not the same claim here, and were briefly satisfied by different
-# sets of 55 runs (see method_runs_count_is).
+# Guarded arm by arm, never on the experiment's run count: that count is now
+# the sum over however many arms are listed, and was already briefly satisfied
+# by the wrong set of 55 runs once (see method_runs_count_is).
+each_method_runs_count_is() {
+  local experiment=$1 methods=$2 expected=$3 method
+  for method in ${methods//,/ }; do
+    method_runs_count_is "$experiment" "$method" "$expected" || return 1
+  done
+}
+
 step study-a-sieve \
-  "method_runs_count_is $SIEVE_STUDY_A $SIEVE_STUDY_A_METHOD \
+  "each_method_runs_count_is $SIEVE_STUDY_A $SIEVE_STUDY_A_METHODS \
      $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
   "$PYTHON" -m experiments cv-run-sieve "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
