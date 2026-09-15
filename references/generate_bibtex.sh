@@ -181,7 +181,14 @@ for i in "${!keys[@]}"; do
     err "$key ($doi): empty record${from_cache:+ (cached)}"
     continue
   fi
-  if [[ "$(printf '%s' "$raw" | sed 's/^[[:space:]]*//' | cut -c1)" != "@" ]]; then
+  # tr -d, not sed+cut: the record's first *non-whitespace* character must be
+  # '@'. A per-line strip piped to `cut -c1` emits one character per LINE, and
+  # so compares a multi-line string against "@" -- which rejects every valid
+  # entry whose title wraps (the resolver returns embedded newlines for some
+  # publishers, e.g. 10.1021/acs.jctc.8b01176 and 10.1002/wcms.93). Deleting
+  # all whitespace collapses the record to one line first. An HTML error page
+  # still fails this check, starting with '<'.
+  if [[ "$(printf '%s' "$raw" | tr -d '[:space:]' | cut -c1)" != "@" ]]; then
     err "$key ($doi): not BibTeX — DOI not found, network failure, or HTML error page"
     [[ $from_cache -eq 1 ]] && err "  ^ from cache; delete $cache_file and retry"
     continue
