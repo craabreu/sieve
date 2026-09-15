@@ -223,6 +223,30 @@ sys.exit(0 if found == expected else 1)
 PY
 }
 
+# Study B's claim is "K x repeats x variants samples AT THE SELECTED DEPTH",
+# which runs_count_is cannot express: it counts a whole experiment. Once a
+# selected depth changes, the runs from the previous one are still on disk --
+# deliberately, they are evidence -- and a bare count then reads 350 where it
+# expects 175 and wedges the workflow, exactly as the Sieve Study A guard did
+# when a second arm appeared beside the first.
+depth_runs_count_is() {
+  local experiment=$1 depth=$2 expected=$3
+  "$PYTHON" - "$experiment" "$depth" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, depth, expected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += int(cv.get("depth", -1)) == depth
+sys.exit(0 if found == expected else 1)
+PY
+}
+
 # file_exists is the wrong guard for a *derived* artifact: it cannot tell
 # that the runs the artifact was derived from have changed. compare's plots
 # survived a study growing from 2 arms to 7, and the step skipped. This
@@ -395,11 +419,17 @@ if [ "${CV_SCORE_TRAIN:-1}" != "0" ]; then
 fi
 
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
-# 6 was read off the *continuation-eb* curve, which is no longer the arm
-# Study A selects on. Re-read it from the pooled curve before trusting it:
-#   .venv/bin/python -m experiments sweep --experiment sieve-cv-study-a \
-#     --x cv.depth --metric norm/mae --metric mae
-SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-6}"
+# 5, not the 6 that minimizes the curve. Study A's own 95% intervals put
+# depths 4 through 10 in a tie with 6 (RMSE 0.02045 +/- 0.00061 e at the
+# minimum), so the minimum is not distinguishable from its neighbours and
+# picking it would be reading noise. 5 is the shallowest depth inside that
+# interval that still sits on the plateau rather than on the descent, and a
+# shallower tree is cheaper to fit, to merge and to walk.
+#
+# DASH stays at 16: 10 through 16 are likewise tied, but 16 is the published
+# tree's own ceiling and the depth its authors optimized, so the comparison
+# is made against the incumbent as its authors deployed it.
+SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-5}"
 
 DASH_STUDY_A=dash-cv-study-a
 DASH_STUDY_B=dash-cv-study-b
@@ -726,11 +756,13 @@ dispatch_sieve_repeats() {
 }
 
 step study-b-dash \
-  "runs_count_is $DASH_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  "depth_runs_count_is $DASH_STUDY_B $DASH_SELECTED_DEPTH \
+     $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
   dispatch_dash_repeats
 
 step study-b-sieve \
-  "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS") * $(n_variants)))" -- \
+  "depth_runs_count_is $SIEVE_STUDY_B $SIEVE_SELECTED_DEPTH \
+     $((K * $(n_items "$STUDY_B_REPEATS") * $(n_variants)))" -- \
   dispatch_sieve_repeats
 
 # --- compare ---------------------------------------------------------------
