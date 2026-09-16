@@ -16,7 +16,7 @@
 - Generate the full code **once per atom** at the deepest radius and cut shorter keys from it as string prefixes. Never call `get_Hose_codes` once per radius — the spec's §4 measures why.
 - Leave the stereo parameters off: `usestereo`, `wedgebond`, `strict`, `ringsize` all stay at their defaults.
 - Do **not** implement `NormalizablePredictor`. This arm is scored as it predicts.
-- Defaults: `max_radius = 5`, `n_min = 1`.
+- Defaults: `max_radius = 5`, `n_min = 1`. The generator caps at **12** spheres and raises a bare `IndexError` beyond that, so `max_radius` is validated against that ceiling in the constructor.
 - The predictor name registered in the harness is `"hose"`.
 - `hosegen` is an optional dependency. Nothing outside `predictors/hose.py` may import it at module scope, and every test touching it is skipped when it is absent.
 
@@ -54,7 +54,7 @@ Create `experiments/tests/test_hose_keys.py`:
 
 from __future__ import annotations
 
-from experiments.predictors.hose_keys import sphere_prefix
+from experiments.predictors.hose_keys import DELIMITERS, MAX_SPHERES, sphere_prefix
 
 # hosegen.HoseGenerator().get_Hose_codes(ethanol, 0, max_radius=6)
 ETHANOL_METHYL = "C-4;HHHC(HHO/H/)//"
@@ -83,6 +83,12 @@ def test_a_code_shorter_than_k_spheres_is_returned_unchanged():
 
 def test_zero_spheres_is_the_empty_key():
     assert sphere_prefix(ETHANOL_METHYL, 0) == ""
+
+
+def test_the_delimiter_table_matches_the_generator_cap():
+    """12 is hosegen's own ceiling: it indexes sphere_delimiters directly, so
+    a thirteenth sphere raises IndexError inside it."""
+    assert len(DELIMITERS) == MAX_SPHERES == 12
 
 
 def test_a_child_key_never_has_two_parents():
@@ -131,9 +137,12 @@ accident.
 
 from __future__ import annotations
 
-# hosegen.HoseGenerator.sphere_delimiters: "(" closes sphere 1, ")" closes
-# sphere 4, "/" closes every other.
-DELIMITERS: list[str] = ["(", "/", "/", ")"] + ["/"] * 12
+# hosegen.HoseGenerator.sphere_delimiters, copied exactly: "(" closes sphere
+# 1, ")" closes sphere 4, "/" closes every other. The generator indexes this
+# list directly, so 12 is a hard ceiling -- asking it for a thirteenth sphere
+# raises a bare IndexError from inside it, with no message of its own.
+DELIMITERS: list[str] = ["(", "/", "/", ")"] + ["/"] * 8
+MAX_SPHERES: int = len(DELIMITERS)
 
 
 def sphere_prefix(code: str, k: int) -> str:
@@ -154,7 +163,7 @@ def sphere_prefix(code: str, k: int) -> str:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd experiments && python -m pytest tests/test_hose_keys.py -v`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: Lint and commit**
 
@@ -263,6 +272,13 @@ def test_invalid_parameters_raise():
         _predictor(max_radius=0)
     with pytest.raises(ValueError, match="n_min"):
         _predictor(n_min=0)
+
+
+def test_a_radius_above_the_generator_ceiling_is_refused_up_front():
+    """hosegen caps at 12 spheres and raises a bare IndexError past it. Catch
+    that in the constructor rather than hours into a fit."""
+    with pytest.raises(ValueError, match="12"):
+        _predictor(max_radius=13)
 
 
 def test_registered_under_its_name():
@@ -377,7 +393,7 @@ from numpy.typing import NDArray
 from experiments.data import MoleculeSet
 from experiments.predictors import register
 from experiments.predictors.base import Prediction
-from experiments.predictors.hose_keys import sphere_prefix
+from experiments.predictors.hose_keys import MAX_SPHERES, sphere_prefix
 
 
 class HoseLookupPredictor:
@@ -386,6 +402,11 @@ class HoseLookupPredictor:
     def __init__(self, max_radius: int = 5, n_min: int = 1) -> None:
         if max_radius < 1:
             raise ValueError(f"max_radius must be >= 1, got {max_radius}")
+        if max_radius > MAX_SPHERES:
+            raise ValueError(
+                f"max_radius must be <= {MAX_SPHERES}, the generator's own "
+                f"ceiling, got {max_radius}"
+            )
         if n_min < 1:
             raise ValueError(f"n_min must be >= 1, got {n_min}")
         self.max_radius = max_radius

@@ -91,7 +91,15 @@ sequence is positional and comes from `HoseGenerator.sphere_delimiters`:
 ```
 
 so sphere *i* is closed by `sphere_delimiters[i-1]`. A code generated at a
-radius deeper than the molecule reaches simply has empty segments.
+radius deeper than the molecule reaches simply has empty segments: ethanol's
+methyl carbon is `C-4;HHHC(HHO/H/)` at radius 4 and gains only delimiters
+after that, while a C24 chain's content keeps growing to radius 12.
+
+**Twelve spheres is a hard ceiling.** `sphere_delimiters` holds exactly twelve
+entries and the generator indexes it directly, so `max_radius=13` raises a bare
+`IndexError: list index out of range` from inside it, with no message of its
+own. Validate `max_radius` against that ceiling in the constructor rather than
+discovering it partway through a fit.
 
 ## 4. The key construction, and the trap
 
