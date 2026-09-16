@@ -949,8 +949,14 @@ step compare "compare_is_up_to_date" -- run_compare
 # what fragments at depth -- stays exactly the incumbent's. The notebook
 # measured this shape as removing the fragmentation cost of extra centre
 # attributes; it has never been measured against this corpus under CV.
-# Its fit is the expensive one: neighbor_depth doubles the level count
-# (2 + 2x10 = 22 against the others' 11), so it dispatches 4 wide, not 6.
+#
+# It was given shard_jobs 4 on the reasoning that neighbor_depth doubles the
+# level count (2 + 2x10 = 22 against the others' 11) and so should roughly
+# double the footprint. MEASURED: 32.7 GB peak against the flat arms' 32.0, a
+# 2% difference. The level COUNT doubles; the level SIZES do not, because the
+# coarse chain is seeded from element alone and stays near the incumbent's
+# class counts while the expensive main chain is unchanged. It dispatches at
+# the default width like every other arm.
 SIEVE_FEATURIZATIONS='[
   {"label": "el-hyb-arom", "figure_label": "+ hybridization + aromatic",
    "attributes": ["element", "hybridization", "aromatic"]},
@@ -961,7 +967,6 @@ SIEVE_FEATURIZATIONS='[
    "edge_attributes": ["bond_num_ring_memberships"]},
   {"label": "el-hyb-arom-wlel", "figure_label": "+ hyb + arom, WL on element",
    "attributes": ["element", "hybridization", "aromatic"],
-   "shard_jobs": 4,
    "params": {"attribute_levels": [["element"], ["hybridization", "aromatic"]],
               "neighbor_depth": 1}}
 ]'
@@ -1116,13 +1121,25 @@ study_c_codes_exist() {
   done < <(each_featurization)
 }
 
+# Per-arm, not all-or-nothing: study_c_codes_exist fails as soon as ONE arm
+# is missing a vocabulary, so adding a fifth arm would otherwise rebuild the
+# four that already have one. That rebuild is deterministic -- measured, it
+# reproduced the exact schema_version the fits on disk carry, so nothing broke
+# -- but it is minutes of work per arm to write a file back identical, and it
+# rewrites the very file 50 shard fits are pinned to. Skipping is both cheaper
+# and the safer of the two.
 build_study_c_codes() {
-  local label attrs
+  local label attrs edges out
   while IFS=$'\t' read -r label attrs edges; do
+    out="$(featurization_codes "$label")"
+    if file_exists "$out"; then
+      echo "--- codes: $label already frozen; skipping ---"
+      continue
+    fi
     echo "--- codes: $label (node $attrs; edge ${edges:-none}) ---"
     "$PYTHON" -m experiments build-sieve-codes "$STORE" \
       --attributes "$attrs" --edge-attributes "$edges" \
-      --out "$(featurization_codes "$label")"
+      --out "$out"
   done < <(each_featurization)
 }
 
