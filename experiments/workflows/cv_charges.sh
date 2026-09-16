@@ -1055,11 +1055,15 @@ step study-c-codes "study_c_codes_exist" -- build_study_c_codes
 # single-threaded processes, one shard each, at SIEVE_MAX_DEPTH so every
 # shallower depth comes from truncating the merged model.
 #
-# Six concurrent fits, not the incumbent's eight. A Sieve fit's footprint is
-# driven by its CLASS COUNT, and jointly refining three attributes fragments
-# classes faster than one does -- the incumbent's measured 32GB at depth 10 is
-# the floor here, not the estimate, and 8 x 32GB already sat at 256GB of this
-# box's 503GB. Raise it once an arm's real peak RSS has been measured.
+# Six concurrent fits, set before either arm had been measured, on the
+# reasoning that a Sieve fit's footprint is driven by its CLASS COUNT and that
+# jointly refining three attributes fragments classes faster than one does.
+# MEASURED, both arms, depth 10: 32.0 GB peak RSS, the same as the incumbent's.
+# Class fragmentation is real at the seed (27 and 33 level-0 classes against
+# element's 11) but does not inflate peak RSS at depth, where the class count
+# is near saturation either way. Eight is therefore as safe here as it is for
+# the incumbent; six is left as the default only because nothing has needed
+# the extra two, and 8 x 32GB sits at 256GB of this box's 503GB.
 STUDY_C_SHARD_JOBS="${STUDY_C_SHARD_JOBS:-6}"
 
 fit_one_study_c_shard() {
