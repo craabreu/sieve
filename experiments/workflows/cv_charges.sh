@@ -884,6 +884,417 @@ run_compare() {
 
 step compare "compare_is_up_to_date" -- run_compare
 
+# ===========================================================================
+# Study C: which featurization?
+# ===========================================================================
+#
+# Studies A and B both hold the featurization fixed at the incumbent
+# `node:element; edge:none` and vary the estimator. Study C varies the
+# featurization and holds the estimator fixed, against that same incumbent.
+#
+# Unlike Study B's variants, a featurization is NOT a re-reading of an
+# existing fit: `attributes`/`edge_attributes` feed schema_version, so each
+# arm needs its own frozen vocabulary, its own N_SHARDS fits and its own CV
+# runs. That is the whole cost of this study; everything else is reused.
+#
+# It runs in two stages, mirroring A then B, because the effects at stake are
+# small. The attribute notebook (docs/sieve-attribute-experiments-
+# observations.md) measures [group,element,hybridization] at r^2 0.9895
+# against plain element's 0.9907, with a fold-to-fold std of ~0.0004 -- so a
+# one-repeat depth curve, whose Nadeau-Bengio intervals are 1.5x the naive
+# ones at this geometry, cannot separate these arms. It is here to select a
+# depth per arm, not to report a winner; the comparison stage does that, with
+# 25 paired samples per arm and the same ANOVA+Tukey protocol Study B uses.
+#
+# Selecting a depth per arm rather than borrowing the incumbent's matters for
+# this study specifically: the notebook's mechanism for why richer attribute
+# sets lose at depth is class fragmentation, which predicts their optimum
+# sits SHALLOWER than element's. Fixing every arm at 5 would pre-commit the
+# new arms to their competitor's optimum.
+
+# Each entry varies `attributes` and nothing else. Both arms keep
+# `edge_attributes: []`, which is load-bearing rather than incidental: the
+# notebook measured `bond_type` edges as determining atom-level `aromatic`
+# EXACTLY (48 round-1 views, 0 ambiguous, 0 atoms affected), so an arm
+# carrying both would be testing a redundancy, not a featurization.
+#
+# el-hyb-arom is the atom-local side of the notebook's own unrun "clean
+# test"; el-ringmem carries the one thing on offer that 1-WL provably cannot
+# compute, cycle membership, and so is the arm its selection principle
+# ("prefer attributes that neither WL nor an enabled edge attribute can
+# derive") points at most directly.
+SIEVE_FEATURIZATIONS='[
+  {"label": "el-hyb-arom", "attributes": ["element", "hybridization", "aromatic"]},
+  {"label": "el-ringmem",  "attributes": ["element", "num_ring_memberships"]}
+]'
+
+# The incumbent arm is not listed above and is never re-run: Study A already
+# scored `sieve-element-continuation` across SIEVE_DEPTHS at repeat 0, and
+# Study B already scored it at SIEVE_SELECTED_DEPTH across every repeat, both
+# on this same store, shard partition and K. Reusing those runs is not an
+# approximation -- permute_into_folds is deterministic in (n, k, seed=repeat)
+# and not in the caller, so a given (repeat, fold) holds out the same
+# molecules here as it did there, which is what makes the arms pairable
+# subjects in the comparison stage's repeated-measures design rather than
+# merely comparable numbers.
+STUDY_C_INCUMBENT_METHOD=sieve-element-continuation
+
+# `continuation`, no shrinkage: the estimator the manuscript calls the method
+# proper, and one of the two arms Study A and Study B both already carry, so
+# the incumbent stays free in both stages. As in Study A, the arm is reached
+# by PATCHING the fitted config -- the fits below apply empirical_bayes, so
+# only an explicit "shrinkage_weight": null turns it back off.
+STUDY_C_ESTIMATOR='"class_estimator": "continuation", "shrinkage_weight": null'
+
+STUDY_C_REPEATS="$STUDY_B_REPEATS"
+SIEVE_STUDY_C=sieve-cv-study-c      # stage 1, the depth curve
+SIEVE_STUDY_C_B=sieve-cv-study-c-b  # stage 2, the fixed-depth comparison
+
+# Read off stage 1's curve, by a human, exactly as SIEVE_SELECTED_DEPTH is.
+# These defaults are a prior -- the incumbent's own selected depth -- not a
+# result: stage 2 must not be run until the curve has been looked at, which
+# is what `CV_UNTIL=study-c-depth-curve` is for.
+STUDY_C_SELECTED_DEPTHS="${STUDY_C_SELECTED_DEPTHS:-{\"el-hyb-arom\": $SIEVE_SELECTED_DEPTH, \"el-ringmem\": $SIEVE_SELECTED_DEPTH\}}"
+
+# label and comma-joined attributes, one line per arm. Emitted by one python
+# pass rather than parsed in shell, so SIEVE_FEATURIZATIONS stays the single
+# place an arm is described.
+each_featurization() {
+  echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
+import json, sys
+for f in json.load(sys.stdin):
+    print(f["label"], ",".join(f["attributes"]), sep="\t")
+'
+}
+
+# DERIVED from the incumbent's own fit params with `attributes` swapped,
+# never written out a second time. That is what makes "featurization is the
+# only axis that moves" a property of the script rather than a claim in a
+# comment: a change to SIEVE_PREDICTOR_PARAMS reaches every Study C arm too.
+featurization_params() {
+  "$PYTHON" -c '
+import json, sys
+params = json.loads(sys.argv[1])
+params["attributes"] = sys.argv[2].split(",")
+params["edge_attributes"] = []
+print(json.dumps(params))
+' "$SIEVE_PREDICTOR_PARAMS" "$1"
+}
+
+featurization_codes()  { echo "experiments/stores/$STORE/sieve-codes-$1.json"; }
+featurization_label()  { echo "$1-eb"; }   # matches SIEVE_CONFIG_LABEL's convention: the FIT applies empirical_bayes
+featurization_method() { echo "sieve-$1-continuation"; }
+featurization_variant() {
+  printf '[{"method": "%s", %s}]' "$(featurization_method "$1")" "$STUDY_C_ESTIMATOR"
+}
+featurization_depth() {
+  echo "$STUDY_C_SELECTED_DEPTHS" | "$PYTHON" -c '
+import json, sys
+depths = json.load(sys.stdin)
+label = sys.argv[1]
+if label not in depths:
+    raise SystemExit(f"STUDY_C_SELECTED_DEPTHS names no depth for {label!r}")
+print(int(depths[label]))
+' "$1"
+}
+
+# Neither method_runs_count_is nor depth_runs_count_is can express stage 2's
+# claim on its own. Its arms sit at DIFFERENT depths inside one experiment, so
+# counting an experiment's runs at one depth spans arms, and counting one
+# arm's runs across all depths keeps counting the runs from a previously
+# selected depth -- which stay on disk deliberately, as evidence, and would
+# wedge the guard the moment a depth is revised. Both fields are read
+# structurally from the manifest, as the two guards above read theirs.
+method_depth_runs_count_is() {
+  local experiment=$1 method=$2 depth=$3 expected=$4
+  "$PYTHON" - "$experiment" "$method" "$depth" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, method, depth, expected = (
+    sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+)
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += cv.get("method") == method and int(cv.get("depth", -1)) == depth
+sys.exit(0 if found == expected else 1)
+PY
+}
+
+# --- Study C: frozen vocabularies ------------------------------------------
+#
+# One per arm, for the same reason the incumbent has one: shards fit on
+# disjoint molecule sets must agree on what an integer code means, or
+# check_mergeable refuses them.
+study_c_codes_exist() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    file_exists "$(featurization_codes "$label")" || return 1
+  done < <(each_featurization)
+}
+
+build_study_c_codes() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    echo "--- codes: $label ($attrs) ---"
+    "$PYTHON" -m experiments build-sieve-codes "$STORE" \
+      --attributes "$attrs" --edge-attributes "" \
+      --out "$(featurization_codes "$label")"
+  done < <(each_featurization)
+}
+
+step study-c-codes "study_c_codes_exist" -- build_study_c_codes
+
+# --- Study C: shard fits ---------------------------------------------------
+#
+# One dispatch per arm, each the same shape as sieve-shard-fits: N_SHARDS
+# single-threaded processes, one shard each, at SIEVE_MAX_DEPTH so every
+# shallower depth comes from truncating the merged model.
+#
+# Six concurrent fits, not the incumbent's eight. A Sieve fit's footprint is
+# driven by its CLASS COUNT, and jointly refining three attributes fragments
+# classes faster than one does -- the incumbent's measured 32GB at depth 10 is
+# the floor here, not the estimate, and 8 x 32GB already sat at 256GB of this
+# box's 503GB. Raise it once an arm's real peak RSS has been measured.
+STUDY_C_SHARD_JOBS="${STUDY_C_SHARD_JOBS:-6}"
+
+fit_one_study_c_shard() {
+  "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
+    --n-shards "$N_SHARDS" --max-depth "$SIEVE_MAX_DEPTH" --shard "$1" \
+    --codes-path "$FEAT_CODES" --config-label "$FEAT_CONFIG_LABEL" \
+    --predictor-params "$FEAT_PARAMS"
+}
+export -f fit_one_study_c_shard
+
+study_c_shard_fits_done() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    shard_fits_count_is \
+      "fit-sieve-$(featurization_label "$label")-w$SIEVE_MAX_DEPTH-s" \
+      "$N_SHARDS" || return 1
+  done < <(each_featurization)
+}
+
+# The per-arm settings are exported into the environment rather than wrapped
+# in a nested `bash -c`: a nested shell does not inherit the caller's shell
+# FUNCTIONS unless they are exported, so all_shard_ids vanished there and
+# xargs got an empty -P. Exporting and then dispatching in place is also
+# exactly dispatch_sieve_shards' own shape, one arm at a time.
+dispatch_study_c_shards() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    echo "--- shard fits: $label ---"
+    export FEAT_CODES="$(featurization_codes "$label")"
+    export FEAT_CONFIG_LABEL="$(featurization_label "$label")"
+    export FEAT_PARAMS="$(featurization_params "$attrs")"
+    all_shard_ids | xargs -P "$STUDY_C_SHARD_JOBS" -n 1 \
+      bash -c 'fit_one_study_c_shard "$1"' --
+  done < <(each_featurization)
+}
+
+step study-c-shard-fits "study_c_shard_fits_done" -- dispatch_study_c_shards
+
+# --- Study C stage 1: the depth curve --------------------------------------
+#
+# Study A's shape -- one repeat, K folds, every depth -- but deliberately
+# WITHOUT --score-train. That flag is the expensive half (measured ~15 min ->
+# ~1.2 h for Sieve), and what it buys is the train-vs-validation gap, which
+# the attribute notebook has already established for the incumbent and which
+# this study does not report. Dropping it is what pays for stage 2's repeats.
+study_c_curve_done() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    method_runs_count_is "$SIEVE_STUDY_C" "$(featurization_method "$label")" \
+      "$((K * $(n_items "$SIEVE_DEPTHS")))" || return 1
+  done < <(each_featurization)
+}
+
+run_study_c_curve() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    echo "--- study C curve: $label ---"
+    "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+      --n-shards "$N_SHARDS" --k "$K" \
+      --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
+      --codes-path "$(featurization_codes "$label")" \
+      --config-label "$(featurization_label "$label")" \
+      --fit-depth "$SIEVE_MAX_DEPTH" \
+      --predictor-params "$(featurization_params "$attrs")" \
+      --variants "$(featurization_variant "$label")" \
+      $MODEL_CACHE_FLAG \
+      --normalization equal_weighted \
+      --method "$(featurization_method "$label")" \
+      --experiment "$SIEVE_STUDY_C"
+  done < <(each_featurization)
+}
+
+step study-c-curve "study_c_curve_done" -- run_study_c_curve
+
+# --- Study C stage 1's figure ----------------------------------------------
+#
+# One panel per metric, not one per arm: every arm here counts depth in the
+# same unit (WL refinement rounds), so unlike Study A -- where DASH's path
+# length and Sieve's refinement depth are different quantities and cannot
+# share an x axis -- these are read against each other in place.
+#
+# Depth 0 is kept off for the incumbent's own reason: with no refinement the
+# model is attribute-wise pooled means, whose r^2 near 0.46 compresses the
+# 0.99 band where every difference between the real depths lives.
+STUDY_C_CURVE_STEM="$FIGURES_DIR/depth-curve-study-c"
+STUDY_C_CURVE_STAMP="$FIGURES_DIR/.depth-curve-study-c-inputs"
+STUDY_C_RUNS="experiments/runs/$SIEVE_STUDY_A experiments/runs/$SIEVE_STUDY_C"
+
+STUDY_C_CURVE_ARMS=$(
+  printf '[{"experiment": "%s", "method": "%s", "label": "element (incumbent)",' \
+    "$SIEVE_STUDY_A" "$STUDY_C_INCUMBENT_METHOD"
+  printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}'
+  while IFS=$'\t' read -r label attrs; do
+    printf ', {"experiment": "%s", "method": "%s", "label": "%s",' \
+      "$SIEVE_STUDY_C" "$(featurization_method "$label")" "${attrs//,/ + }"
+    printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}'
+  done < <(each_featurization)
+  printf ']'
+)
+
+study_c_curve_is_up_to_date() {
+  [ -f "$STUDY_C_CURVE_STAMP" ] || return 1
+  [ "$(cat "$STUDY_C_CURVE_STAMP")" = "$DEPTH_CURVE_METRIC $STUDY_C_CURVE_ARMS" ] || return 1
+  file_is_newer_than_runs "$STUDY_C_CURVE_STEM.pdf" $STUDY_C_RUNS || return 1
+  file_is_newer_than_runs "$STUDY_C_CURVE_STEM.png" $STUDY_C_RUNS || return 1
+  file_is_newer_than_runs "$STUDY_C_CURVE_STEM.txt" $STUDY_C_RUNS
+}
+
+run_study_c_curve_figure() {
+  mkdir -p "$FIGURES_DIR"
+  "$PYTHON" -m experiments depth-curve \
+    --arms "$STUDY_C_CURVE_ARMS" \
+    --metric "$DEPTH_CURVE_METRIC" \
+    --store "$STORE" \
+    --out "$STUDY_C_CURVE_STEM"
+  printf '%s %s' "$DEPTH_CURVE_METRIC" "$STUDY_C_CURVE_ARMS" > "$STUDY_C_CURVE_STAMP"
+}
+
+step study-c-depth-curve "study_c_curve_is_up_to_date" -- run_study_c_curve_figure
+
+# --- Study C stage 2: the comparison ---------------------------------------
+#
+# Study B's shape: five repeats x K folds = 25 paired samples per arm, each
+# at the depth stage 1 selected for it, with per-atom predictions written.
+#
+# STOP HERE unless STUDY_C_SELECTED_DEPTHS has actually been set from stage
+# 1's curve -- its defaults are the incumbent's depth, which is a prior and
+# not a result.
+#
+# One process per (arm, repeat). Unlike Study B these hold no DASHTree, but a
+# repeat's merge assembly still peaks near 30GB, so the job count stays low.
+STUDY_C_JOBS="${STUDY_C_JOBS:-3}"
+
+run_study_c_repeat() {
+  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --depths "$FEAT_DEPTH" --repeats "$1" \
+    --codes-path "$FEAT_CODES" --config-label "$FEAT_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
+    --predictor-params "$FEAT_PARAMS" \
+    --variants "$FEAT_VARIANT" \
+    $MODEL_CACHE_FLAG \
+    --normalization equal_weighted --method "$FEAT_METHOD" \
+    --experiment "$SIEVE_STUDY_C_B" \
+    $SAVE_PREDICTIONS_FLAG
+}
+export -f run_study_c_repeat
+export SIEVE_STUDY_C_B
+
+study_c_comparison_done() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    method_depth_runs_count_is "$SIEVE_STUDY_C_B" \
+      "$(featurization_method "$label")" "$(featurization_depth "$label")" \
+      "$((K * $(n_items "$STUDY_C_REPEATS")))" || return 1
+  done < <(each_featurization)
+}
+
+dispatch_study_c_repeats() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs; do
+    echo "--- study C comparison: $label at depth $(featurization_depth "$label") ---"
+    export FEAT_CODES="$(featurization_codes "$label")"
+    export FEAT_CONFIG_LABEL="$(featurization_label "$label")"
+    export FEAT_PARAMS="$(featurization_params "$attrs")"
+    export FEAT_VARIANT="$(featurization_variant "$label")"
+    export FEAT_METHOD="$(featurization_method "$label")"
+    export FEAT_DEPTH="$(featurization_depth "$label")"
+    echo "$STUDY_C_REPEATS" | tr ',' '\n' \
+      | xargs -P "$STUDY_C_JOBS" -n 1 \
+          bash -c 'run_study_c_repeat "$1"' --
+  done < <(each_featurization)
+}
+
+step study-c-comparison "study_c_comparison_done" -- dispatch_study_c_repeats
+
+# --- Study C stage 2's figures ---------------------------------------------
+#
+# The same ANOVA + Tukey protocol and the same metric set as `compare`, over
+# Study B's incumbent arm plus Study C's -- pooled across two experiments
+# because the incumbent's 25 samples are already there and share this study's
+# subjects exactly. Read the effect sizes and interval widths, not the stars:
+# at ~62.8k held-out molecules per fold almost any systematic difference
+# reaches significance, and the differences this study is looking for are
+# around 0.001 in r^2.
+tukey_plot_c()  { echo "$FIGURES_DIR/tukey-study-c-$(metric_slug "$1").png"; }
+simult_plot_c() { echo "$FIGURES_DIR/simultaneous-study-c-$(metric_slug "$1").png"; }
+
+STUDY_C_DEPTH_BY_METHOD=$(
+  {
+    printf '%s\t%s\n' "$STUDY_C_INCUMBENT_METHOD" "$SIEVE_SELECTED_DEPTH"
+    while IFS=$'\t' read -r label attrs; do
+      printf '%s\t%s\n' "$(featurization_method "$label")" "$(featurization_depth "$label")"
+    done < <(each_featurization)
+  } | "$PYTHON" -c '
+import json, sys
+print(json.dumps({
+    m: int(d) for m, d in (line.split("\t") for line in sys.stdin.read().splitlines() if line)
+}))
+'
+)
+
+STUDY_C_COMPARE_STAMP="$FIGURES_DIR/.compare-study-c-inputs"
+STUDY_C_B_RUNS="experiments/runs/$SIEVE_STUDY_B experiments/runs/$SIEVE_STUDY_C_B"
+
+study_c_compare_is_up_to_date() {
+  [ -f "$STUDY_C_COMPARE_STAMP" ] || return 1
+  [ "$(cat "$STUDY_C_COMPARE_STAMP")" = "$COMPARE_METRICS $STUDY_C_DEPTH_BY_METHOD" ] || return 1
+  local m
+  for m in $(each_metric); do
+    file_is_newer_than_runs "$(tukey_plot_c "$m")" $STUDY_C_B_RUNS || return 1
+    file_is_newer_than_runs "$(simult_plot_c "$m")" $STUDY_C_B_RUNS || return 1
+  done
+}
+
+run_study_c_compare() {
+  mkdir -p "$FIGURES_DIR"
+  local m flag
+  for m in $(each_metric); do
+    flag=""
+    case ",$COMPARE_HIGHER_IS_BETTER," in *",$m,"*) flag="--higher-is-better" ;; esac
+    echo "--- $m ---"
+    "$PYTHON" -m experiments compare \
+      --experiment "$SIEVE_STUDY_B" --experiment "$SIEVE_STUDY_C_B" \
+      --metric "$m" \
+      --depth-by-method "$STUDY_C_DEPTH_BY_METHOD" \
+      --out "$(tukey_plot_c "$m")" \
+      --out-simultaneous "$(simult_plot_c "$m")" \
+      $flag
+  done
+  printf '%s %s' "$COMPARE_METRICS" "$STUDY_C_DEPTH_BY_METHOD" > "$STUDY_C_COMPARE_STAMP"
+}
+
+step study-c-compare "study_c_compare_is_up_to_date" -- run_study_c_compare
+
 # --- final held-out evaluation ---------------------------------------------
 #
 # Once, at the end, outside both studies: merge every shard into one
