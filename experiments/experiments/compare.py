@@ -27,6 +27,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -367,6 +368,70 @@ def simultaneous_ci(
     )
 
 
+def draw_simultaneous_ci(
+    ax: Any,
+    ci: SimultaneousCI,
+    *,
+    comparison_name: str | None = None,
+    title: str = "",
+    xlabel: str = "",
+) -> None:
+    """Draw one simultaneous-interval panel onto ``ax``.
+
+    Extracted from ``write_simultaneous_ci_plot`` so that a caller composing
+    several metrics side by side gets the same layout and the same colours as
+    the single-metric figure, rather than a second implementation of them
+    that could drift. The writer below is now this function plus a figure.
+    """
+    if comparison_name is not None and comparison_name not in ci.methods:
+        raise ValueError(
+            f"comparison_name {comparison_name!r} is not one of {list(ci.methods)}"
+        )
+
+    k = len(ci.methods)
+    y = np.arange(k)
+    lo, hi = ci.lo, ci.hi
+
+    if comparison_name is None:
+        ax.errorbar(
+            ci.means, y, xerr=ci.halfwidths, marker="o", linestyle="None", color="k"
+        )
+    else:
+        midx = ci.methods.index(comparison_name)
+        differs = ci.differs_from(comparison_name)
+        sig = [i for i, m in enumerate(ci.methods) if i != midx and differs[m]]
+        nsig = [i for i, m in enumerate(ci.methods) if i != midx and not differs[m]]
+
+        ax.errorbar(
+            ci.means[midx],
+            midx,
+            xerr=ci.halfwidths[midx],
+            marker="o",
+            linestyle="None",
+            color="b",
+        )
+        for bound in (lo[midx], hi[midx]):
+            ax.plot([bound] * 2, [-1, k], linestyle="--", color="0.7")
+        for idx, color in ((sig, "r"), (nsig, "0.5")):
+            if idx:
+                ax.errorbar(
+                    ci.means[idx],
+                    idx,
+                    xerr=ci.halfwidths[idx],
+                    marker="o",
+                    linestyle="None",
+                    color=color,
+                )
+
+    ax.set_title(title)
+    span = float(np.max(hi) - np.min(lo))
+    ax.set_ylim((-1.0, float(k)))
+    ax.set_xlim((float(np.min(lo)) - span / 10.0, float(np.max(hi)) + span / 10.0))
+    ax.set_yticks(y)
+    ax.set_yticklabels(list(ci.methods))
+    ax.set_xlabel(xlabel)
+
+
 def write_simultaneous_ci_plot(
     ci: SimultaneousCI,
     path: str | Path,
@@ -410,48 +475,9 @@ def write_simultaneous_ci_plot(
             0.5 * k + 2.0,
         )
     fig, ax = plt.subplots(figsize=figsize)
-
-    y = np.arange(k)
-    lo, hi = ci.lo, ci.hi
-
-    if comparison_name is None:
-        ax.errorbar(
-            ci.means, y, xerr=ci.halfwidths, marker="o", linestyle="None", color="k"
-        )
-    else:
-        midx = ci.methods.index(comparison_name)
-        differs = ci.differs_from(comparison_name)
-        sig = [i for i, m in enumerate(ci.methods) if i != midx and differs[m]]
-        nsig = [i for i, m in enumerate(ci.methods) if i != midx and not differs[m]]
-
-        ax.errorbar(
-            ci.means[midx],
-            midx,
-            xerr=ci.halfwidths[midx],
-            marker="o",
-            linestyle="None",
-            color="b",
-        )
-        for bound in (lo[midx], hi[midx]):
-            ax.plot([bound] * 2, [-1, k], linestyle="--", color="0.7")
-        for idx, color in ((sig, "r"), (nsig, "0.5")):
-            if idx:
-                ax.errorbar(
-                    ci.means[idx],
-                    idx,
-                    xerr=ci.halfwidths[idx],
-                    marker="o",
-                    linestyle="None",
-                    color=color,
-                )
-
-    ax.set_title(title)
-    span = float(np.max(hi) - np.min(lo))
-    ax.set_ylim((-1.0, float(k)))
-    ax.set_xlim((float(np.min(lo)) - span / 10.0, float(np.max(hi)) + span / 10.0))
-    ax.set_yticks(y)
-    ax.set_yticklabels(list(ci.methods))
-    ax.set_xlabel(xlabel)
+    draw_simultaneous_ci(
+        ax, ci, comparison_name=comparison_name, title=title, xlabel=xlabel
+    )
 
     if provenance:
         # Wrapped to the figure width rather than run off the edge: the
