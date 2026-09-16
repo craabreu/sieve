@@ -923,9 +923,47 @@ step compare "compare_is_up_to_date" -- run_compare
 # compute, cycle membership, and so is the arm its selection principle
 # ("prefer attributes that neither WL nor an enabled edge attribute can
 # derive") points at most directly.
+# Each entry names the arm and the flat attribute list its vocabulary is
+# frozen over. `edge_attributes` defaults to none. `params` carries anything
+# else SievePredictor takes that changes the SHAPE of the refinement rather
+# than the attribute set -- attribute_levels, neighbor_depth -- and
+# `shard_jobs` overrides the dispatch width for an arm whose fit is bigger
+# than the rest.
+#
+# el-hyb-arom is the atom-local side of the attribute notebook's own unrun
+# "clean test". el-ringmem carries the one thing on offer that 1-WL provably
+# cannot compute, cycle membership.
+#
+# el-edgering asks the same ring question from the other side: the same count,
+# moved onto the BONDS. It leaves the node alphabet at element's 11 and lets
+# ring information enter through WL's (neighbor label, edge) pair encoding
+# instead, so it separates "ring membership does not help" from "ring
+# membership as a node attribute fragments the seed partition" -- two readings
+# el-ringmem alone cannot tell apart, since it realizes 33 level-0 classes of
+# which ~20 hold under 0.05% of atoms.
+#
+# el-hyb-arom-wlel is design.md 3.6's own hypothesis, and the direct response
+# to el-hyb-arom's measured crossover: keep the full triple on the CENTRE,
+# where it earned r^2 0.953 against element's 0.941 at depth 1, but seed the
+# WL neighbour chain from element alone, so the neighbour alphabet -- which is
+# what fragments at depth -- stays exactly the incumbent's. The notebook
+# measured this shape as removing the fragmentation cost of extra centre
+# attributes; it has never been measured against this corpus under CV.
+# Its fit is the expensive one: neighbor_depth doubles the level count
+# (2 + 2x10 = 22 against the others' 11), so it dispatches 4 wide, not 6.
 SIEVE_FEATURIZATIONS='[
-  {"label": "el-hyb-arom", "attributes": ["element", "hybridization", "aromatic"]},
-  {"label": "el-ringmem",  "attributes": ["element", "num_ring_memberships"]}
+  {"label": "el-hyb-arom", "figure_label": "+ hybridization + aromatic",
+   "attributes": ["element", "hybridization", "aromatic"]},
+  {"label": "el-ringmem",  "figure_label": "+ num_ring_memberships (atoms)",
+   "attributes": ["element", "num_ring_memberships"]},
+  {"label": "el-edgering", "figure_label": "+ num_ring_memberships (bonds)",
+   "attributes": ["element"],
+   "edge_attributes": ["bond_num_ring_memberships"]},
+  {"label": "el-hyb-arom-wlel", "figure_label": "+ hyb + arom, WL on element",
+   "attributes": ["element", "hybridization", "aromatic"],
+   "shard_jobs": 4,
+   "params": {"attribute_levels": [["element"], ["hybridization", "aromatic"]],
+              "neighbor_depth": 1}}
 ]'
 
 # The incumbent arm is not listed above and is never re-run: Study A already
@@ -954,17 +992,37 @@ SIEVE_STUDY_C_B=sieve-cv-study-c-b  # stage 2, the fixed-depth comparison
 # These defaults are a prior -- the incumbent's own selected depth -- not a
 # result: stage 2 must not be run until the curve has been looked at, which
 # is what `CV_UNTIL=study-c-depth-curve` is for.
-STUDY_C_SELECTED_DEPTHS="${STUDY_C_SELECTED_DEPTHS:-{\"el-hyb-arom\": $SIEVE_SELECTED_DEPTH, \"el-ringmem\": $SIEVE_SELECTED_DEPTH\}}"
+STUDY_C_SELECTED_DEPTHS="${STUDY_C_SELECTED_DEPTHS:-$(
+  echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
+import json, sys
+print(json.dumps({f["label"]: int(sys.argv[1]) for f in json.load(sys.stdin)}))
+' "$SIEVE_SELECTED_DEPTH"
+)}"
 
-# label and comma-joined attributes, one line per arm. Emitted by one python
-# pass rather than parsed in shell, so SIEVE_FEATURIZATIONS stays the single
-# place an arm is described.
+# label, comma-joined attributes, comma-joined edge attributes: one line per
+# arm. Emitted by one python pass rather than parsed in shell, so
+# SIEVE_FEATURIZATIONS stays the single place an arm is described.
 each_featurization() {
   echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
 import json, sys
 for f in json.load(sys.stdin):
-    print(f["label"], ",".join(f["attributes"]), sep="\t")
+    print(f["label"], ",".join(f["attributes"]),
+          ",".join(f.get("edge_attributes", [])), sep="\t")
 '
+}
+
+# One arm entry, by label, for the helpers that need more than the three TSV
+# fields.
+featurization_entry() {
+  echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
+import json, sys
+label = sys.argv[1]
+for f in json.load(sys.stdin):
+    if f["label"] == label:
+        print(json.dumps(f)); break
+else:
+    raise SystemExit(f"SIEVE_FEATURIZATIONS has no arm {label!r}")
+' "$1"
 }
 
 # DERIVED from the incumbent's own fit params with `attributes` swapped,
@@ -972,13 +1030,34 @@ for f in json.load(sys.stdin):
 # only axis that moves" a property of the script rather than a claim in a
 # comment: a change to SIEVE_PREDICTOR_PARAMS reaches every Study C arm too.
 featurization_params() {
-  "$PYTHON" -c '
+  featurization_entry "$1" | "$PYTHON" -c '
 import json, sys
 params = json.loads(sys.argv[1])
-params["attributes"] = sys.argv[2].split(",")
-params["edge_attributes"] = []
+arm = json.load(sys.stdin)
+params["attributes"] = arm["attributes"]
+params["edge_attributes"] = arm.get("edge_attributes", [])
+params.update(arm.get("params", {}))
 print(json.dumps(params))
-' "$SIEVE_PREDICTOR_PARAMS" "$1"
+' "$SIEVE_PREDICTOR_PARAMS"
+}
+
+# Per-arm dispatch width, for an arm whose fit is bigger than the rest.
+featurization_jobs() {
+  featurization_entry "$1" | "$PYTHON" -c '
+import json, sys
+print(int(json.load(sys.stdin).get("shard_jobs", sys.argv[1])))
+' "$STUDY_C_SHARD_JOBS"
+}
+
+# What the legend shows. Explicit per arm, because the attribute join alone
+# cannot tell an arm that moved information onto the EDGES, or into the
+# neighbour chain, from one that did neither -- both would read "element".
+featurization_figure_label() {
+  featurization_entry "$1" | "$PYTHON" -c '
+import json, sys
+arm = json.load(sys.stdin)
+print(arm.get("figure_label") or " + ".join(arm["attributes"]))
+'
 }
 
 featurization_codes()  { echo "experiments/stores/$STORE/sieve-codes-$1.json"; }
@@ -1032,17 +1111,17 @@ PY
 # check_mergeable refuses them.
 study_c_codes_exist() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     file_exists "$(featurization_codes "$label")" || return 1
   done < <(each_featurization)
 }
 
 build_study_c_codes() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
-    echo "--- codes: $label ($attrs) ---"
+  while IFS=$'\t' read -r label attrs edges; do
+    echo "--- codes: $label (node $attrs; edge ${edges:-none}) ---"
     "$PYTHON" -m experiments build-sieve-codes "$STORE" \
-      --attributes "$attrs" --edge-attributes "" \
+      --attributes "$attrs" --edge-attributes "$edges" \
       --out "$(featurization_codes "$label")"
   done < <(each_featurization)
 }
@@ -1076,7 +1155,7 @@ export -f fit_one_study_c_shard
 
 study_c_shard_fits_done() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     shard_fits_count_is \
       "fit-sieve-$(featurization_label "$label")-w$SIEVE_MAX_DEPTH-s" \
       "$N_SHARDS" || return 1
@@ -1090,12 +1169,12 @@ study_c_shard_fits_done() {
 # exactly dispatch_sieve_shards' own shape, one arm at a time.
 dispatch_study_c_shards() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     echo "--- shard fits: $label ---"
     export FEAT_CODES="$(featurization_codes "$label")"
     export FEAT_CONFIG_LABEL="$(featurization_label "$label")"
-    export FEAT_PARAMS="$(featurization_params "$attrs")"
-    all_shard_ids | xargs -P "$STUDY_C_SHARD_JOBS" -n 1 \
+    export FEAT_PARAMS="$(featurization_params "$label")"
+    all_shard_ids | xargs -P "$(featurization_jobs "$label")" -n 1 \
       bash -c 'fit_one_study_c_shard "$1"' --
   done < <(each_featurization)
 }
@@ -1111,7 +1190,7 @@ step study-c-shard-fits "study_c_shard_fits_done" -- dispatch_study_c_shards
 # this study does not report. Dropping it is what pays for stage 2's repeats.
 study_c_curve_done() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     method_runs_count_is "$SIEVE_STUDY_C" "$(featurization_method "$label")" \
       "$((K * $(n_items "$SIEVE_DEPTHS")))" || return 1
   done < <(each_featurization)
@@ -1119,7 +1198,7 @@ study_c_curve_done() {
 
 run_study_c_curve() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     echo "--- study C curve: $label ---"
     "$PYTHON" -m experiments cv-run-sieve "$STORE" \
       --n-shards "$N_SHARDS" --k "$K" \
@@ -1127,7 +1206,7 @@ run_study_c_curve() {
       --codes-path "$(featurization_codes "$label")" \
       --config-label "$(featurization_label "$label")" \
       --fit-depth "$SIEVE_MAX_DEPTH" \
-      --predictor-params "$(featurization_params "$attrs")" \
+      --predictor-params "$(featurization_params "$label")" \
       --variants "$(featurization_variant "$label")" \
       $MODEL_CACHE_FLAG \
       --normalization equal_weighted \
@@ -1156,9 +1235,10 @@ STUDY_C_CURVE_ARMS=$(
   printf '[{"experiment": "%s", "method": "%s", "label": "element (incumbent)",' \
     "$SIEVE_STUDY_A" "$STUDY_C_INCUMBENT_METHOD"
   printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}'
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     printf ', {"experiment": "%s", "method": "%s", "label": "%s",' \
-      "$SIEVE_STUDY_C" "$(featurization_method "$label")" "${attrs//,/ + }"
+      "$SIEVE_STUDY_C" "$(featurization_method "$label")" \
+      "$(featurization_figure_label "$label")"
     printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}'
   done < <(each_featurization)
   printf ']'
@@ -1215,7 +1295,7 @@ export SIEVE_STUDY_C_B
 
 study_c_comparison_done() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     method_depth_runs_count_is "$SIEVE_STUDY_C_B" \
       "$(featurization_method "$label")" "$(featurization_depth "$label")" \
       "$((K * $(n_items "$STUDY_C_REPEATS")))" || return 1
@@ -1224,11 +1304,11 @@ study_c_comparison_done() {
 
 dispatch_study_c_repeats() {
   local label attrs
-  while IFS=$'\t' read -r label attrs; do
+  while IFS=$'\t' read -r label attrs edges; do
     echo "--- study C comparison: $label at depth $(featurization_depth "$label") ---"
     export FEAT_CODES="$(featurization_codes "$label")"
     export FEAT_CONFIG_LABEL="$(featurization_label "$label")"
-    export FEAT_PARAMS="$(featurization_params "$attrs")"
+    export FEAT_PARAMS="$(featurization_params "$label")"
     export FEAT_VARIANT="$(featurization_variant "$label")"
     export FEAT_METHOD="$(featurization_method "$label")"
     export FEAT_DEPTH="$(featurization_depth "$label")"
@@ -1255,7 +1335,7 @@ simult_plot_c() { echo "$FIGURES_DIR/simultaneous-study-c-$(metric_slug "$1").pn
 STUDY_C_DEPTH_BY_METHOD=$(
   {
     printf '%s\t%s\n' "$STUDY_C_INCUMBENT_METHOD" "$SIEVE_SELECTED_DEPTH"
-    while IFS=$'\t' read -r label attrs; do
+    while IFS=$'\t' read -r label attrs edges; do
       printf '%s\t%s\n' "$(featurization_method "$label")" "$(featurization_depth "$label")"
     done < <(each_featurization)
   } | "$PYTHON" -c '

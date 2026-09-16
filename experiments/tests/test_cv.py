@@ -415,7 +415,62 @@ def test_truncate_model_matches_a_native_fit_at_every_depth():
         )
 
 
-def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
+def test_truncate_model_matches_a_native_fit_under_neighbor_depth():
+    """The neighbor_depth counterpart of the equivalence test above, and the
+    claim Study C's WL:element arm rests on.
+
+    Here the level tuple is ``[attr][coarse WL chain][main WL_PAIR chain]``
+    (design.md 3.6), so the main chain is the LAST block and a prefix slice
+    would cut through the coarse one. Truncation has to slice both blocks and
+    rejoin them, and the only convincing evidence that it rejoins them
+    correctly is that the result is bit-for-bit a native shallow fit -- a
+    misalignment between the two chains would show up as wrong predictions,
+    not as an exception.
+    """
+    from experiments.cv import truncate_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=24, seed=0)
+    test = synthetic_molecule_set(n_mol=8, seed=7)
+    params: dict[str, Any] = {
+        "attributes": ("element", "degree"),
+        "attribute_levels": (("element",), ("degree",)),
+        "neighbor_depth": 1,
+        "edge_attributes": (),
+        "class_estimator": "continuation",
+        "shrinkage_weight": "empirical_bayes",
+        "minimum_support": 1,
+    }
+
+    def fit(depth):
+        p = SievePredictor(max_wl_depth=depth, **params)
+        p.fit(train, train, rng=np.random.default_rng(0))
+        return p
+
+    deep = fit(6)
+    # From 1, not 0: at max_wl_depth=0 SieveConfig drops neighbor_depth back
+    # to None (the coarse chain would be zero levels long), so a depth-0
+    # native fit is a different schema and not this function's business.
+    for depth in range(1, 7):
+        native = fit(depth)
+        truncated = SievePredictor(max_wl_depth=depth, **params)
+        truncated.set_model(truncate_model(deep._model, depth))
+
+        assert (
+            truncated._model.config.schema_version
+            == native._model.config.schema_version
+        ), depth
+        assert truncated._model.config.n_levels == native._model.config.n_levels
+        np.testing.assert_array_equal(
+            truncated.predict(test).atom_value,
+            native.predict(test).atom_value,
+            err_msg=f"depth {depth}",
+        )
+
+
+def test_truncate_model_refuses_to_deepen_or_to_slice_an_inconsistent_model():
     import dataclasses
 
     from experiments.cv import truncate_model
@@ -432,8 +487,12 @@ def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
     with pytest.raises(ValueError, match="up to depth"):
         truncate_model(p._model, 5)
 
-    # A neighbor_depth model's main WL chain is the *last* level block, so a
-    # prefix slice would cut the coarse chain instead -- refused, not risked.
+    # A model whose level tuple does not match the config it claims. This one
+    # is a FLAT depth-3 fit (attr + 3 WL) relabelled as neighbor_depth, which
+    # would need attr + 3 coarse + 3 main. Truncation slices the two WL blocks
+    # at offsets the real tuple is too short to have, so the result would
+    # silently be the wrong levels rather than an error -- hence the explicit
+    # length check it trips instead.
     faked = dataclasses.replace(
         p._model,
         config=dataclasses.replace(
@@ -446,7 +505,7 @@ def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
             neighbor_depth=1,
         ),
     )
-    with pytest.raises(ValueError, match="neighbor_depth"):
+    with pytest.raises(AssertionError, match="levels but config declares"):
         truncate_model(faked, 1)
 
 

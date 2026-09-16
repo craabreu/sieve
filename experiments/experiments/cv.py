@@ -645,30 +645,51 @@ def truncate_model(model: Any, depth: int) -> Any:
     every depth, and it gives the same answer, since ``merge_models`` works
     level by level and level *k*'s merge reads only level *k*.
 
-    Refuses a ``neighbor_depth`` config: there the level tuple is
-    ``[attr][coarse WL chain][main WL_PAIR chain]`` (design.md 3.6), so the
-    main chain is the *last* block and a prefix slice would cut through the
-    coarse one, silently misaligning every level.
+    Handles a ``neighbor_depth`` config too, but not by slicing a prefix:
+    there the level tuple is ``[attr][coarse WL chain][main WL_PAIR chain]``
+    (design.md 3.6), so the main chain is the *last* block and a prefix slice
+    would keep the whole coarse chain and cut the main one to nothing. The
+    two WL blocks are sliced to ``depth`` separately and rejoined, which
+    reproduces the layout ``config.level_kinds`` declares at that depth.
+    Verified bit-for-bit against native fits in
+    ``test_truncate_model_matches_a_native_fit_under_neighbor_depth``.
     """
     import dataclasses
 
     import sieve
 
-    if model.config.neighbor_depth is not None:
-        raise ValueError(
-            "truncate_model does not support neighbor_depth configs: the "
-            "main WL chain is the last level block, so a prefix slice would "
-            "cut through the coarse chain instead of shortening the main one"
-        )
     if depth > model.config.max_wl_depth:
         raise ValueError(
             f"cannot truncate a max_wl_depth={model.config.max_wl_depth} "
             f"model up to depth {depth}"
         )
     cfg = dataclasses.replace(model.config, max_wl_depth=depth)
+    if model.config.neighbor_depth is None:
+        levels = model.levels[: cfg.n_levels]
+    else:
+        # [attr a][coarse D][main D] -> [attr a][coarse d][main d]. Taking the
+        # main block's slice from its own offset (a + D) is the whole point:
+        # a prefix would have kept every coarse level and dropped the main
+        # chain entirely. `cfg` is rebuilt at the shallower depth, so
+        # level_parents/neighbor_source already describe the joined layout --
+        # note neighbor_source points each main level at a + r, which lands on
+        # the *sliced* coarse block precisely because both blocks shorten by
+        # the same amount.
+        a = len(model.config.attribute_levels)
+        deep = model.config.max_wl_depth
+        levels = (
+            model.levels[:a]
+            + model.levels[a : a + depth]
+            + model.levels[a + deep : a + deep + depth]
+        )
+        if len(levels) != cfg.n_levels:  # pragma: no cover - guards the slice
+            raise AssertionError(
+                f"truncated to {len(levels)} levels but config declares "
+                f"{cfg.n_levels}"
+            )
     return sieve.SieveModel(
         cfg,
-        tuple(model.levels[: cfg.n_levels]),
+        tuple(levels),
         model.global_count,
         model.global_mean,
         model.global_msd,
