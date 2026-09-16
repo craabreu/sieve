@@ -118,7 +118,7 @@ class ArmCurve:
     method: str
     metric: str
     points: tuple[DepthPoint, ...]
-    """The held-out (validation) curve: one point per depth."""
+    """The validation curve: one point per depth."""
     train_points: tuple[DepthPoint, ...]
     """The same for the training shards, empty unless the runs were made
     with ``--score-train``."""
@@ -357,6 +357,39 @@ def train_groups(
     return groups
 
 
+# Colour alone cannot separate two arms whose curves nearly coincide, and it
+# separates nothing at all for a reader who cannot distinguish the hues. Each
+# arm therefore carries a marker and a dash pattern as well. The patterns stay
+# clear of the dotted training curves and of the dashed reference lines.
+_ARM_STYLES: tuple[tuple[str, Any], ...] = (
+    ("o", "-"),
+    ("s", (0, (6, 1.5))),
+    ("^", (0, (4, 1, 1, 1))),
+    ("D", (0, (2, 1))),
+)
+
+
+def _style_by_label(
+    curves: Sequence[Sequence[Sequence[ArmCurve]]],
+) -> dict[str, tuple[str, Any]]:
+    """One marker and dash pattern per arm, assigned across the whole figure."""
+    return {
+        label: _ARM_STYLES[i % len(_ARM_STYLES)]
+        for i, label in enumerate(_arm_labels(curves))
+    }
+
+
+def _arm_labels(curves: Sequence[Sequence[Sequence[ArmCurve]]]) -> list[str]:
+    """Every arm label once, in the order the arms were given."""
+    labels: list[str] = []
+    for row in curves:
+        for panel in row:
+            for arm in panel:
+                if arm.label not in labels:
+                    labels.append(arm.label)
+    return labels
+
+
 def _colour_by_label(
     curves: Sequence[Sequence[Sequence[ArmCurve]]],
 ) -> dict[str, str]:
@@ -369,13 +402,7 @@ def _colour_by_label(
     import matplotlib.pyplot as plt
 
     cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    labels: list[str] = []
-    for row in curves:
-        for panel in row:
-            for arm in panel:
-                if arm.label not in labels:
-                    labels.append(arm.label)
-    return {label: cycle[i % len(cycle)] for i, label in enumerate(labels)}
+    return {label: cycle[i % len(cycle)] for i, label in enumerate(_arm_labels(curves))}
 
 
 def other_panel_reference(
@@ -465,6 +492,7 @@ def _build_and_save(
 
     n_rows, n_cols = len(curves), len(curves[0])
     colours = _colour_by_label(curves)
+    styles = _style_by_label(curves)
 
     fig, axes = plt.subplots(n_rows, n_cols, sharex="col", sharey="row", squeeze=False)
 
@@ -472,13 +500,14 @@ def _build_and_save(
         for col_index, panel in enumerate(row):
             ax = axes[row_index][col_index]
             for arm in panel:
-                _draw_validation(ax, arm, colours[arm.label])
+                _draw_validation(ax, arm, colours[arm.label], styles[arm.label])
             title = panel[0].panel or panel[0].label
             for representative, labels in train_groups(panel):
                 _draw_train(
                     ax,
                     representative,
                     colours[representative.label],
+                    styles[representative.label],
                     label=(
                         f"{title} (train)"
                         if len(labels) == len(panel) and len(panel) > 1
@@ -530,8 +559,11 @@ def _order_legend(ax: Any, panel: Sequence[ArmCurve]) -> None:
     ax.legend([handles[i] for i in order], [labels[i] for i in order])
 
 
-def _draw_validation(ax: Any, arm: ArmCurve, color: str) -> None:
-    """Every fold, then the held-out mean and its confidence interval."""
+def _draw_validation(
+    ax: Any, arm: ArmCurve, color: str, style: tuple[str, Any]
+) -> None:
+    """Every fold, then the validation mean and its confidence interval."""
+    marker, dashes = style
     # Five points per depth is well within what can be shown, and showing
     # them keeps the interval from being the only record of what was
     # measured.
@@ -539,7 +571,7 @@ def _draw_validation(ax: Any, arm: ArmCurve, color: str) -> None:
         ax.plot(
             [point.depth] * len(point.fold_values),
             point.fold_values,
-            marker="o",
+            marker=marker,
             markersize=1.2,
             linestyle="none",
             color=color,
@@ -552,9 +584,9 @@ def _draw_validation(ax: Any, arm: ArmCurve, color: str) -> None:
             [p.depth for p in arm.points],
             [p.mean for p in arm.points],
             yerr=[ci_half_width(p.se, len(p.fold_values)) for p in arm.points],
-            marker="o",
+            marker=marker,
             markersize=2.0,
-            linestyle="-",
+            linestyle=dashes,
             color=color,
             capsize=1.5,
             zorder=3,
@@ -562,14 +594,16 @@ def _draw_validation(ax: Any, arm: ArmCurve, color: str) -> None:
         )
 
 
-def _draw_train(ax: Any, arm: ArmCurve, color: str, *, label: str) -> None:
-    """The training curve, distinguished by linestyle and marker fill rather
-    than by colour, which already identifies the arm."""
+def _draw_train(
+    ax: Any, arm: ArmCurve, color: str, style: tuple[str, Any], *, label: str
+) -> None:
+    """The training curve, distinguished by a dotted line and a hollow marker
+    rather than by colour, which already identifies the arm."""
     ax.errorbar(
         [p.depth for p in arm.train_points],
         [p.mean for p in arm.train_points],
         yerr=[ci_half_width(p.se, len(p.fold_values)) for p in arm.train_points],
-        marker="o",
+        marker=style[0],
         markersize=2.0,
         markerfacecolor="white",
         linestyle=":",
