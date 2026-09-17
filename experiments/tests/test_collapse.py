@@ -138,3 +138,153 @@ def test_annotate_collapse_refuses_a_group_that_straddles_a_shard(tmp_path):
     )
     with pytest.raises(ValueError, match="straddles"):
         annotate_collapse(store, stores_root=root)
+
+
+def _charged(smiles: str, charges: dict[int, float]):
+    """A molecule whose MBIScharge is set per atom index."""
+    m = _mol(smiles)
+    for atom in m.GetAtoms():
+        atom.SetDoubleProp("MBIScharge", charges.get(atom.GetIdx(), 0.0))
+    return m
+
+
+def test_collapse_averages_conformers_of_one_molecule():
+    import numpy as np
+    from experiments.collapse import collapse_key, collapse_molecule_set
+    from experiments.data import MoleculeSet
+
+    a = _charged("CCO", {0: 1.0, 1: 2.0, 2: 3.0})
+    b = _charged("CCO", {0: 3.0, 1: 4.0, 2: 5.0})
+    key = collapse_key(a)
+    mset = MoleculeSet(
+        mols=[a, b],
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [key, key],
+            "dash_id": ["d1", "d1"],
+            "conf_id": ["c0", "c1"],
+        },
+    )
+    out = collapse_molecule_set(mset)
+    assert out.n_conformers == 1
+    heavy = out.atom_target[:3]
+    np.testing.assert_allclose(sorted(heavy), sorted([2.0, 3.0, 4.0]))
+
+
+def test_collapse_leaves_distinct_keys_alone():
+    from experiments.collapse import collapse_key, collapse_molecule_set
+    from experiments.data import MoleculeSet
+
+    a = _charged("CCO", {0: 1.0})
+    b = _charged("CCC", {0: 1.0})
+    mset = MoleculeSet(
+        mols=[a, b],
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [collapse_key(a), collapse_key(b)],
+            "dash_id": ["d1", "d2"],
+            "conf_id": ["c0", "c0"],
+        },
+    )
+    assert collapse_molecule_set(mset).n_conformers == 2
+
+
+def test_collapse_matches_enantiomer_atoms_through_the_mirror():
+    """The correspondence is the point: averaging positionally would pair
+    atoms that are not the same atom."""
+    import numpy as np
+    from experiments.collapse import collapse_key, collapse_molecule_set
+    from experiments.data import MoleculeSet
+
+    a = _charged("N[C@@H](C)C(=O)O", {})
+    b = _charged("N[C@H](C)C(=O)O", {})
+    for atom in a.GetAtoms():
+        atom.SetDoubleProp("MBIScharge", float(atom.GetAtomicNum()))
+    for atom in b.GetAtoms():
+        atom.SetDoubleProp("MBIScharge", float(atom.GetAtomicNum()))
+    key = collapse_key(a)
+    assert key == collapse_key(b)
+    mset = MoleculeSet(
+        mols=[a, b],
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [key, key],
+            "dash_id": ["d1", "d2"],
+            "conf_id": ["c0", "c0"],
+        },
+    )
+    out = collapse_molecule_set(mset)
+    assert out.n_conformers == 1
+    # charges were set to the atomic number, identical under any correct
+    # correspondence, so every averaged value must still be an integer
+    np.testing.assert_allclose(out.atom_target, np.round(out.atom_target))
+
+
+def test_collapse_equals_fractional_weighting_for_the_mean():
+    """The equivalence that justifies the design (spec section 5): the
+    collapsed class mean equals the 1/n_collapsed-weighted mean of all rows."""
+    import numpy as np
+    from experiments.collapse import collapse_key, collapse_molecule_set
+    from experiments.data import MoleculeSet
+
+    rows = [
+        _charged("CCO", {0: 1.0, 1: 2.0, 2: 3.0}),
+        _charged("CCO", {0: 3.0, 1: 4.0, 2: 5.0}),
+        _charged("CCO", {0: 5.0, 1: 6.0, 2: 7.0}),
+    ]
+    key = collapse_key(rows[0])
+    mset = MoleculeSet(
+        mols=rows,
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [key] * 3,
+            "dash_id": ["d1"] * 3,
+            "conf_id": ["c0", "c1", "c2"],
+        },
+    )
+    collapsed = sorted(collapse_molecule_set(mset).atom_target[:3])
+    # the 1/n-weighted mean of all rows, computed independently per atom index
+    fractional = sorted(
+        sum(m.GetAtomWithIdx(i).GetDoubleProp("MBIScharge") for m in rows) / len(rows)
+        for i in range(3)
+    )
+    np.testing.assert_allclose(collapsed, fractional)
+    np.testing.assert_allclose(collapsed, [3.0, 4.0, 5.0])
+
+
+def test_weight_by_collapse_repeats_each_representative():
+    """The migration setting: weighting by n_collapsed must reproduce the
+    uncollapsed row count and leave the mean unchanged (spec section 9)."""
+    import numpy as np
+    from experiments.collapse import collapse_key, collapse_molecule_set
+    from experiments.data import MoleculeSet
+
+    rows = [
+        _charged("CCO", {0: 1.0, 1: 2.0, 2: 3.0}),
+        _charged("CCO", {0: 3.0, 1: 4.0, 2: 5.0}),
+        _charged("CCC", {0: 9.0}),
+    ]
+    # list[str | None], not the inferred list[str]: MoleculeSet.ids expects
+    # Mapping[str, list[str | None]], and a variable assigned before the dict
+    # literal can't be widened by the dict's own expected-type context the way
+    # an inline list literal can.
+    keys: list[str | None] = [collapse_key(m) for m in rows]
+    mset = MoleculeSet(
+        mols=rows,
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": keys,
+            "dash_id": ["d1", "d1", "d2"],
+            "conf_id": ["c0", "c1", "c0"],
+        },
+    )
+    plain = collapse_molecule_set(mset)
+    weighted = collapse_molecule_set(mset, weight_by_collapse=True)
+
+    assert plain.n_conformers == 2  # two keys
+    assert weighted.n_conformers == 3  # CCO twice, CCC once
+    # the CCO representative carries the same averaged target either way
+    np.testing.assert_allclose(
+        sorted(plain.atom_target[: rows[0].GetNumAtoms()]),
+        sorted(weighted.atom_target[: rows[0].GetNumAtoms()]),
+    )
