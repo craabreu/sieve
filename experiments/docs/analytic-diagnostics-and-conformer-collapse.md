@@ -296,10 +296,33 @@ adapter's edge attributes, and `charge_experiments` holds an
 
 ## 7. What this enables
 
-- Drop `--score-train` from Study A: the workflow records it as taking Sieve's
-  Study A from ~15 min to ~1.2 h, and it is recoverable for RMSE and R^2 at no
-  cost. Study C's five arms, which were run without train curves precisely
-  because of that cost, can have them retroactively from cached models.
+**Implemented** (`docs/superpowers/specs/2026-09-17-analytic-training-metrics-
+design.md`, `experiments/analytic.py`): `run_sieve_cv` and `run_hose_cv` now
+record `train/rmse`, `train/r2`, `train/eta2`, `train/matched_fraction` and
+the support distribution on every run, computed from the fitted model's own
+stored statistics -- no extra fit, no extra walk, no molecules loaded.
+`--score-train` was dropped from Study A's Sieve and HOSE steps and from
+Study C's stage-1 curve, which had skipped it outright to afford stage 2's
+repeats; both now get the train curve for free. A standalone
+`analytic-curve` command reads the same numbers from any saved state.
+
+**DASH was measured and excluded, not merely left out.** Its per-node
+statistics describe the atoms passing *through* a node, and at a shallower
+depth some of those atoms are answered at a shallower, *terminal* node whose
+own moments the stored columns cannot isolate. On a real DASH shard the
+terminal group is 94% of training atoms at depth 16 -- the depth Study A
+selects -- so no analytic shortcut exists there, and DASH keeps
+`--score-train` as its only route to a training curve.
+
+**HOSE's curve is exact only at the baseline `n_min=1`**, where a training
+atom's own deepest key always answers it and no backoff occurs; generalizing
+to `n_min>1` would mean implementing prefix backoff over the key tables for
+a method nobody runs. It also needed one new stored column (`sumsq` per
+key), so a HOSE state saved before this landed still loads and predicts
+exactly as before, but raises rather than fabricate an analytic number.
+
+Still open, not yet implemented:
+
 - Select depth from the analytic LOO curve and use CV to confirm rather than to
   discover.
 - Sweep `shrinkage_strength` against analytic LOO, which is closed-form in the
@@ -307,18 +330,23 @@ adapter's edge attributes, and `charge_experiments` holds an
   names that sweep as the experiment most likely to move test R^2 off its
   plateau. It should be validated against one real CV point first: LOO's
   leakage may interact with shrinkage differently than with depth.
-- Report the support distribution beside every depth curve, since it is the
-  mechanism the fragmentation argument rests on.
+- The per-conformer reconstruction under `--collapse`
+  (`train/rmse_per_conformer`, spec section 5): the identity is derived, but
+  it needs a second, k-weighted shard-fit artifact whose class signatures
+  align with the unweighted fit's, doubling shard-fit storage and merge
+  time. Deferred pending a decision on that cost; `train/rmse` in collapsed
+  units is still correct and already recorded for a `--collapse` run.
 
 ## 8. Open
 
 - Leave-one-cluster-out: derived but not implemented, and its size against
   leave-one-molecule-out is unmeasured.
-- The analytic identity for `class_estimator="continuation"` should hold, since
-  the deepest level uses its pooled mean, but only `pooled` was checked.
-  Under empirical-Bayes shrinkage the prediction is the shrunk estimate, giving
-  `SSE = sum_c (ss_c - 2*v_c*sum_c + n_c*v_c^2)` with `v_c` the shrunk value --
-  still closed-form, still untested.
+- ~~The analytic identity for `class_estimator="continuation"` should hold...
+  still untested.~~ Resolved: `experiments/analytic.py`'s general backoff
+  walk covers `continuation` and every `shrinkage_weight` rule, each checked
+  against `sieve.predict`'s own output rather than assumed. Verifying it
+  this way caught two real bugs in the walk itself -- see the
+  analytic-training-metrics design spec and its implementation plan.
 - Whether the collapsed dataset changes any ranking in Study B. It should not,
   since the removed term is a common additive constant across graph-based arms,
   but that is an argument rather than a measurement.

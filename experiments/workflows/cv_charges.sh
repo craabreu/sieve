@@ -412,18 +412,26 @@ if [ -n "$CV_MODEL_CACHE" ]; then
   MODEL_CACHE_FLAG="--model-cache $CV_MODEL_CACHE"
 fi
 
-# Study A also scores each fold's TRAINING shards, so the depth curve can
-# show the train-vs-validation gap -- where a method starts fitting its own
-# training molecules rather than the chemistry. It is the expensive half:
-# training is ~4x the held-out molecules, and while the walk/featurize it
-# adds is paid once per fold (not once per depth), it still roughly doubles
-# Study A's wall clock -- measured ~15 min -> ~1.2 h for Sieve and ~1.1 h ->
-# ~5.3 h for DASH, whose per-fold tree walk dominates. Set CV_SCORE_TRAIN=0
-# to skip it.
+# DASH's Study A also scores each fold's TRAINING shards with --score-train,
+# so its depth curve can show the train-vs-validation gap -- where DASH
+# starts fitting its own training molecules rather than the chemistry. It is
+# DASH's only route to that curve (docs/superpowers/specs/2026-09-17-
+# analytic-training-metrics-design.md section 2: its node stats describe the
+# atoms passing *through* a node, not the ones a shallower depth would answer
+# at their own terminal node, so no analytic shortcut exists for it) and it
+# is expensive: measured ~1.1 h -> ~5.3 h, since the per-fold tree walk
+# dominates. Set CV_SCORE_TRAIN=0 to skip it.
 #
-# Study B deliberately does not: it compares methods at one fixed depth, a
-# question the training error does not enter, and it would pay that cost 5
-# times over (five repeats) for a number no Tukey interval reads.
+# Sieve and HOSE need no such flag any more: run_sieve_cv/run_hose_cv record
+# train/rmse, train/r2, train/eta2, train/matched_fraction and the support
+# distribution on every run already, computed analytically from the fitted
+# model's own stored statistics -- no extra fit, no extra walk, no molecules
+# loaded. That is what made Sieve's own former --score-train pass (~15 min ->
+# ~1.2 h) worth dropping outright, here and in Study C's stage-1 curve below.
+#
+# Study B does not carry even the DASH flag: it compares methods at one fixed
+# depth, a question the training error does not enter, and it would pay
+# DASH's cost 5 times over (five repeats) for a number no Tukey interval reads.
 SCORE_TRAIN_FLAG=""
 if [ "${CV_SCORE_TRAIN:-1}" != "0" ]; then
   SCORE_TRAIN_FLAG="--score-train"
@@ -728,7 +736,7 @@ step study-a-sieve \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --variants "$SIEVE_STUDY_A_VARIANTS" \
-    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
+    $MODEL_CACHE_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
 
@@ -1363,11 +1371,11 @@ step study-c-shard-fits "study_c_shard_fits_done" -- dispatch_study_c_shards
 
 # --- Study C stage 1: the depth curve --------------------------------------
 #
-# Study A's shape -- one repeat, K folds, every depth -- but deliberately
-# WITHOUT --score-train. That flag is the expensive half (measured ~15 min ->
-# ~1.2 h for Sieve), and what it buys is the train-vs-validation gap, which
-# the attribute notebook has already established for the incumbent and which
-# this study does not report. Dropping it is what pays for stage 2's repeats.
+# Study A's shape -- one repeat, K folds, every depth -- and, like Study A,
+# no --score-train flag needed: run_sieve_cv already records train/rmse and
+# friends analytically, from the fitted model's own stored statistics, for
+# every arm here at no extra cost. Five arms that would once have skipped
+# the train curve outright to afford stage 2's repeats now get it for free.
 study_c_curve_done() {
   local label attrs
   while IFS=$'\t' read -r label attrs edges; do
