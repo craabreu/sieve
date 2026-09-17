@@ -682,10 +682,9 @@ def truncate_model(model: Any, depth: int) -> Any:
             + model.levels[a : a + depth]
             + model.levels[a + deep : a + deep + depth]
         )
-        if len(levels) != cfg.n_levels:  # pragma: no cover - guards the slice
+        if len(levels) != cfg.n_levels:
             raise AssertionError(
-                f"truncated to {len(levels)} levels but config declares "
-                f"{cfg.n_levels}"
+                f"truncated to {len(levels)} levels but config declares {cfg.n_levels}"
             )
     return sieve.SieveModel(
         cfg,
