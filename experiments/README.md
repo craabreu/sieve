@@ -183,6 +183,19 @@ representative selection at once. `--collapse` alone changes the fit, which is
 the point; `minimum_support` then counts distinct structures, so the present
 value of 12 (chosen as "at least four molecules") becomes 4.
 
+**Use a non-empirical-Bayes arm for that check.** `--weight-by-collapse`
+replaces a group's *k* members with *k* copies of their mean, which preserves
+each class's count and sum -- and therefore its mean -- exactly, but *not* its
+variance: the within-group scatter is gone. Measured on a synthetic corpus
+with known duplicate groups, the largest discrepancy in a class mean is 0 and
+in a class variance 8.2e-02, and predictions come back bit-for-bit identical
+under `pooled`, under `continuation`, and under count-rule shrinkage (3e-18,
+i.e. rounding). Under `shrinkage_weight="empirical_bayes"` they differ by
+1.2e-01, because EB estimates its own alpha from exactly the variance
+components that mean-replication destroys. That is correct behaviour, not a
+broken annotation -- but run the check on `sieve-element-continuation-eb` and
+it looks identical to one, so don't.
+
 See `docs/superpowers/specs/2026-09-17-fit-time-collapse-design.md`.
 
 ### Collecting results
