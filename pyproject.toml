@@ -7,6 +7,15 @@ dependencies = ["numpy>=1.24", "scipy>=1.10", "joblib>=1.3"]
 [project.optional-dependencies]
 chem = ["rdkit>=2023.3"]
 sklearn = ["scikit-learn>=1.3"]
+# The HOSE-code baseline arm (experiments/predictors/hose.py). Stefan Kuhn's
+# generator, a Python port of the Java CDK HOSECodeGenerator, not on PyPI.
+# Two traps: the distribution is named hose-code-generator while the import is
+# hosegen, and its install_requires names xmlrunner, which drags in unittest2
+# and fails to build on modern Python. hosegen never imports xmlrunner, so
+# install it with --no-deps; rdkit and numpy, all it actually needs, are
+# already here:
+#   pip install --no-deps "hose-code-generator @ git+https://github.com/Ratsemaat/HOSE-code-generator"
+hose = ["hose-code-generator"]
 dev = [
     "pytest>=7.4",
     "ruff>=0.16",
@@ -121,6 +130,12 @@ allowed-unresolved-imports = [
     # see experiments/predictors/dash.py.
     "serenityff",
     "serenityff.**",
+    # Stefan Kuhn's HOSE-code generator, the optional `hose` extra above --
+    # installed from git with --no-deps, so not in CI's [dev,chem] install.
+    # hose.py imports it inside _codes() rather than at module scope, so the
+    # harness loads without it (see test_predictor_hose_optional.py).
+    "hosegen",
+    "hosegen.**",
 ]
 
 [[tool.ty.overrides]]
