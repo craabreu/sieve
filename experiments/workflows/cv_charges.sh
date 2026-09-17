@@ -194,6 +194,59 @@ runs_count_is() {
   [ "$found" -eq "$expected" ]
 }
 
+# Guards on the *arm*, not merely on how many runs an experiment holds.
+# runs_count_is cannot tell one method's curve from another's: the Sieve
+# Study A experiment held exactly 55 runs both when they were all
+# continuation-eb and when they were all pooled, so a bare count happily
+# skips a study that never ran the arm the depth is being selected on --
+# the same blind spot file_is_newer_than_runs was written to close for
+# compare, one artifact over.
+#
+# The method is read from each run's *structured* manifest field, never
+# parsed back out of the batch_id string; the design records repeat, fold,
+# method and depth structurally for exactly this reason.
+method_runs_count_is() {
+  local experiment=$1 method=$2 expected=$3
+  "$PYTHON" - "$experiment" "$method" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, method, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += cv.get("method") == method
+sys.exit(0 if found == expected else 1)
+PY
+}
+
+# Study B's claim is "K x repeats x variants samples AT THE SELECTED DEPTH",
+# which runs_count_is cannot express: it counts a whole experiment. Once a
+# selected depth changes, the runs from the previous one are still on disk --
+# deliberately, they are evidence -- and a bare count then reads 350 where it
+# expects 175 and wedges the workflow, exactly as the Sieve Study A guard did
+# when a second arm appeared beside the first.
+depth_runs_count_is() {
+  local experiment=$1 depth=$2 expected=$3
+  "$PYTHON" - "$experiment" "$depth" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, depth, expected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += int(cv.get("depth", -1)) == depth
+sys.exit(0 if found == expected else 1)
+PY
+}
+
 # file_exists is the wrong guard for a *derived* artifact: it cannot tell
 # that the runs the artifact was derived from have changed. compare's plots
 # survived a study growing from 2 arms to 7, and the step skipped. This
@@ -285,9 +338,48 @@ SIEVE_VARIANTS='[
   {"method": "sieve-element-recursive-eb",    "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"},
   {"method": "sieve-element-continuation-cutoff", "class_estimator": "continuation",        "shrinkage_weight": null, "minimum_support": 12}
 ]'
-# Every variant is scored at SIEVE_SELECTED_DEPTH. Depth selection is done
-# once, on SIEVE_METHOD alone (Study A below); the variants are a comparison
-# of estimators at a fixed depth, not four more depth studies.
+# Every variant is scored at SIEVE_SELECTED_DEPTH; the variants are a
+# comparison of estimators at a fixed depth, not seven more depth studies.
+#
+# Depth selection (Study A) runs exactly ONE of them, named here. It used to
+# run the fit's own reading, sieve-element-continuation-eb, passed as plain
+# --method; it now selects on the pooled arm, and that necessarily moves
+# Study A onto --variants as well. The reason is the patch semantics above:
+# the fitted config applies empirical_bayes, so "pooled" as a bare --method
+# would still be scored with the fit's shrinkage, and only a variant can say
+# "shrinkage_weight": null to turn it back off. Scoring pooled is a different
+# *reading* of the same 50 shard fits, so switching arms costs no refit.
+#
+# Derived from SIEVE_VARIANTS by name rather than written out a second time,
+# so the arm Study A selects a depth for is, by construction, the same
+# specification Study B then scores at that depth. Two copies could drift,
+# and the drift would be silent in the worst way: a depth chosen for one
+# estimator and applied to a slightly different one.
+# Comma-separated, and the FIRST is the arm the depth-curve figure shows and
+# the one SIEVE_SELECTED_DEPTH is read off. The second is here because the
+# manuscript calls continuation the estimator and pooled the naive reading it
+# corrects, while the depth was in fact selected on pooled -- so the two
+# curves have to be seen together before that selection can be defended or
+# moved. Scoring both costs no refit: class_estimator is excluded from
+# schema_version, so continuation is a different reading of the very same
+# shard fits, and adding it to this invocation re-uses each fold's featurized
+# batch rather than building a second one.
+SIEVE_STUDY_A_METHODS="${SIEVE_STUDY_A_METHODS:-sieve-element-pooled,sieve-element-continuation}"
+SIEVE_STUDY_A_METHOD="${SIEVE_STUDY_A_METHODS%%,*}"
+SIEVE_STUDY_A_VARIANTS=$(
+  echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
+import json, sys
+
+wanted = [m for m in sys.argv[1].split(",") if m]
+variants = {v["method"]: v for v in json.load(sys.stdin)}
+missing = [m for m in wanted if m not in variants]
+if missing:
+    raise SystemExit(
+        f"SIEVE_STUDY_A_METHODS names no entry in SIEVE_VARIANTS: {missing}"
+    )
+print(json.dumps([variants[m] for m in wanted]))
+' "$SIEVE_STUDY_A_METHODS"
+)
 
 CODES_PATH="experiments/stores/$STORE/sieve-codes.json"
 CLUSTER_REPORT="experiments/results/cluster-report.txt"
@@ -320,8 +412,35 @@ if [ -n "$CV_MODEL_CACHE" ]; then
   MODEL_CACHE_FLAG="--model-cache $CV_MODEL_CACHE"
 fi
 
+# Study A also scores each fold's TRAINING shards, so the depth curve can
+# show the train-vs-validation gap -- where a method starts fitting its own
+# training molecules rather than the chemistry. It is the expensive half:
+# training is ~4x the held-out molecules, and while the walk/featurize it
+# adds is paid once per fold (not once per depth), it still roughly doubles
+# Study A's wall clock -- measured ~15 min -> ~1.2 h for Sieve and ~1.1 h ->
+# ~5.3 h for DASH, whose per-fold tree walk dominates. Set CV_SCORE_TRAIN=0
+# to skip it.
+#
+# Study B deliberately does not: it compares methods at one fixed depth, a
+# question the training error does not enter, and it would pay that cost 5
+# times over (five repeats) for a number no Tukey interval reads.
+SCORE_TRAIN_FLAG=""
+if [ "${CV_SCORE_TRAIN:-1}" != "0" ]; then
+  SCORE_TRAIN_FLAG="--score-train"
+fi
+
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
-SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-6}"
+# 5, not the 6 that minimizes the curve. Study A's own 95% intervals put
+# depths 4 through 10 in a tie with 6 (RMSE 0.02045 +/- 0.00061 e at the
+# minimum), so the minimum is not distinguishable from its neighbours and
+# picking it would be reading noise. 5 is the shallowest depth inside that
+# interval that still sits on the plateau rather than on the descent, and a
+# shallower tree is cheaper to fit, to merge and to walk.
+#
+# DASH stays at 16: 10 through 16 are likewise tied, but 16 is the published
+# tree's own ceiling and the depth its authors optimized, so the comparison
+# is made against the incumbent as its authors deployed it.
+SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-5}"
 
 DASH_STUDY_A=dash-cv-study-a
 DASH_STUDY_B=dash-cv-study-b
@@ -493,26 +612,121 @@ step sieve-shard-fits \
 # groups' shards. Read the normalized curve (the form each method is
 # actually deployed in) to pick the depths Study B then fixes:
 #   "$PYTHON" -m experiments sweep --experiment dash-cv-study-a \
-#     --x config.cv.depth --metric norm/mae --metric mae
+#     --x cv.depth --metric norm/mae --metric mae
 step study-a-dash \
   "runs_count_is $DASH_STUDY_A $((K * $(n_items "$DASH_DEPTHS")))" -- \
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
     --depths "$DASH_DEPTHS" --repeats "$STUDY_A_REPEATS" \
-    $MODEL_CACHE_FLAG \
+    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
+# Guarded arm by arm, never on the experiment's run count: that count is now
+# the sum over however many arms are listed, and was already briefly satisfied
+# by the wrong set of 55 runs once (see method_runs_count_is).
+each_method_runs_count_is() {
+  local experiment=$1 methods=$2 expected=$3 method
+  for method in ${methods//,/ }; do
+    method_runs_count_is "$experiment" "$method" "$expected" || return 1
+  done
+}
+
 step study-a-sieve \
-  "runs_count_is $SIEVE_STUDY_A $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
+  "each_method_runs_count_is $SIEVE_STUDY_A $SIEVE_STUDY_A_METHODS \
+     $((K * $(n_items "$SIEVE_DEPTHS")))" -- \
   "$PYTHON" -m experiments cv-run-sieve "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
     --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
-    $MODEL_CACHE_FLAG \
+    --variants "$SIEVE_STUDY_A_VARIANTS" \
+    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
+
+# --- Study A's figure -------------------------------------------------------
+#
+# The depth curve as a manuscript figure rather than as sweep's diagnostic
+# PNG: one panel per method, each on its own depth axis (Sieve counts WL
+# iterations, DASH counts path length -- different quantities, so they do not
+# share an x axis), sharing the metric axis.
+#
+# The error bars are Nadeau-Bengio corrected (Mach. Learn. 52:239, 2003).
+# Study A is ONE repeat, so its k folds are not independent replicates: any
+# two share k-2 of their k-1 training groups, and the naive s/sqrt(k) is
+# optimistic by sqrt(1 + k*n_test/n_train) -- exactly 1.5x at this study's
+# geometry (k=5, 10 of 50 shards held out). Drawing the naive interval would
+# make neighbouring depths look more separated than the data supports, which
+# is the one thing a depth-selection figure must not do.
+#
+# Drawn on the RAW metrics only. Same reason the compare step gives: the two
+# methods use different normalizers, so anything normalized would report the
+# normalizer as much as the estimator.
+#
+# One row of panels per metric, in this order, sharing a y axis across the
+# row; columns share the depth axis down the column. Each panel also carries
+# a dashed line at the best value the OTHER method reached for that metric --
+# the two count depth in different units so they cannot share an x axis, and
+# that line is what still lets one be read against the other.
+DEPTH_CURVE_METRIC="${DEPTH_CURVE_METRIC:-rmse,r2}"
+DEPTH_CURVE_STEM="$FIGURES_DIR/depth-curve-study-a"
+DEPTH_CURVE_STAMP="$FIGURES_DIR/.depth-curve-inputs"
+STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A"
+
+# Sieve's WL depth 0 is kept off the figure: with no refinement at all the
+# model is element-wise pooled means, whose R^2 of 0.46 compresses the 0.99
+# band where every difference between the real depths lives. It is scored
+# and recorded like any other depth, and the caption names it as dropped.
+# DASH needs no floor, its own sweep starting at 2.
+#
+# Built from the same variables the studies ran under, so the figure cannot
+# name an arm or an experiment nobody produced.
+DEPTH_CURVE_ARMS=$(
+  printf '[{"experiment": "%s", "method": "dash", "label": "DASH",' \
+    "$DASH_STUDY_A"
+  printf ' "x_label": "Maximum Path Depth"},'
+  # Every Sieve arm shares one panel, so the estimators are read against
+  # each other in place rather than across the figure; DASH keeps its own,
+  # since its depth axis counts something else entirely.
+  # DASH's entry above already ends in a comma, so the separator goes
+  # before every Sieve arm after the first.
+  sep=""
+  for method in ${SIEVE_STUDY_A_METHODS//,/ }; do
+    printf '%s {"experiment": "%s", "method": "%s", "label": "Sieve, %s",' \
+      "$sep" "$SIEVE_STUDY_A" "$method" "${method#sieve-element-}"
+    printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth",'
+    printf ' "min_depth": 1}'
+    sep=","
+  done
+  printf ']' 
+)
+
+# Same two-part guard as compare, for the same reason: mtimes catch new runs,
+# but neither a changed metric nor a changed set of arms moves any run's
+# mtime, and both change the figure.
+depth_curve_is_up_to_date() {
+  [ -f "$DEPTH_CURVE_STAMP" ] || return 1
+  [ "$(cat "$DEPTH_CURVE_STAMP")" = "$DEPTH_CURVE_METRIC $DEPTH_CURVE_ARMS" ] || return 1
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.pdf" $STUDY_A_RUNS || return 1
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.png" $STUDY_A_RUNS || return 1
+  # The caption carries the run counts and the arms, so it goes stale for
+  # exactly the reasons the figure does.
+  file_is_newer_than_runs "$DEPTH_CURVE_STEM.txt" $STUDY_A_RUNS
+}
+
+run_depth_curve() {
+  mkdir -p "$FIGURES_DIR"
+  "$PYTHON" -m experiments depth-curve \
+    --arms "$DEPTH_CURVE_ARMS" \
+    --metric "$DEPTH_CURVE_METRIC" \
+    --store "$STORE" \
+    --out "$DEPTH_CURVE_STEM"
+  # Written only after the figure succeeded, so a failed run reads as a miss.
+  printf '%s %s' "$DEPTH_CURVE_METRIC" "$DEPTH_CURVE_ARMS" > "$DEPTH_CURVE_STAMP"
+}
+
+step depth-curve "depth_curve_is_up_to_date" -- run_depth_curve
 
 # --- Study B: model comparison ---------------------------------------------
 #
@@ -571,11 +785,13 @@ dispatch_sieve_repeats() {
 }
 
 step study-b-dash \
-  "runs_count_is $DASH_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  "depth_runs_count_is $DASH_STUDY_B $DASH_SELECTED_DEPTH \
+     $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
   dispatch_dash_repeats
 
 step study-b-sieve \
-  "runs_count_is $SIEVE_STUDY_B $((K * $(n_items "$STUDY_B_REPEATS") * $(n_variants)))" -- \
+  "depth_runs_count_is $SIEVE_STUDY_B $SIEVE_SELECTED_DEPTH \
+     $((K * $(n_items "$STUDY_B_REPEATS") * $(n_variants)))" -- \
   dispatch_sieve_repeats
 
 # --- compare ---------------------------------------------------------------
@@ -667,6 +883,518 @@ run_compare() {
 }
 
 step compare "compare_is_up_to_date" -- run_compare
+
+# ===========================================================================
+# Study C: which featurization?
+# ===========================================================================
+#
+# Studies A and B both hold the featurization fixed at the incumbent
+# `node:element; edge:none` and vary the estimator. Study C varies the
+# featurization and holds the estimator fixed, against that same incumbent.
+#
+# Unlike Study B's variants, a featurization is NOT a re-reading of an
+# existing fit: `attributes`/`edge_attributes` feed schema_version, so each
+# arm needs its own frozen vocabulary, its own N_SHARDS fits and its own CV
+# runs. That is the whole cost of this study; everything else is reused.
+#
+# It runs in two stages, mirroring A then B, because the effects at stake are
+# small. The attribute notebook (docs/sieve-attribute-experiments-
+# observations.md) measures [group,element,hybridization] at r^2 0.9895
+# against plain element's 0.9907, with a fold-to-fold std of ~0.0004 -- so a
+# one-repeat depth curve, whose Nadeau-Bengio intervals are 1.5x the naive
+# ones at this geometry, cannot separate these arms. It is here to select a
+# depth per arm, not to report a winner; the comparison stage does that, with
+# 25 paired samples per arm and the same ANOVA+Tukey protocol Study B uses.
+#
+# Selecting a depth per arm rather than borrowing the incumbent's matters for
+# this study specifically: the notebook's mechanism for why richer attribute
+# sets lose at depth is class fragmentation, which predicts their optimum
+# sits SHALLOWER than element's. Fixing every arm at 5 would pre-commit the
+# new arms to their competitor's optimum.
+
+# Each entry varies `attributes` and nothing else. Both arms keep
+# `edge_attributes: []`, which is load-bearing rather than incidental: the
+# notebook measured `bond_type` edges as determining atom-level `aromatic`
+# EXACTLY (48 round-1 views, 0 ambiguous, 0 atoms affected), so an arm
+# carrying both would be testing a redundancy, not a featurization.
+#
+# el-hyb-arom is the atom-local side of the notebook's own unrun "clean
+# test"; el-ringmem carries the one thing on offer that 1-WL provably cannot
+# compute, cycle membership, and so is the arm its selection principle
+# ("prefer attributes that neither WL nor an enabled edge attribute can
+# derive") points at most directly.
+# Each entry names the arm and the flat attribute list its vocabulary is
+# frozen over. `edge_attributes` defaults to none. `params` carries anything
+# else SievePredictor takes that changes the SHAPE of the refinement rather
+# than the attribute set -- attribute_levels, neighbor_depth -- and
+# `shard_jobs` overrides the dispatch width for an arm whose fit is bigger
+# than the rest.
+#
+# el-hyb-arom is the atom-local side of the attribute notebook's own unrun
+# "clean test". el-ringmem carries the one thing on offer that 1-WL provably
+# cannot compute, cycle membership.
+#
+# el-edgering asks the same ring question from the other side: the same count,
+# moved onto the BONDS. It leaves the node alphabet at element's 11 and lets
+# ring information enter through WL's (neighbor label, edge) pair encoding
+# instead, so it separates "ring membership does not help" from "ring
+# membership as a node attribute fragments the seed partition" -- two readings
+# el-ringmem alone cannot tell apart, since it realizes 33 level-0 classes of
+# which ~20 hold under 0.05% of atoms.
+#
+# el-hyb-arom-wlel is design.md 3.6's own hypothesis, and the direct response
+# to el-hyb-arom's measured crossover: keep the full triple on the CENTRE,
+# where it earned r^2 0.953 against element's 0.941 at depth 1, but seed the
+# WL neighbour chain from element alone, so the neighbour alphabet -- which is
+# what fragments at depth -- stays exactly the incumbent's. The notebook
+# measured this shape as removing the fragmentation cost of extra centre
+# attributes; it has never been measured against this corpus under CV.
+#
+# It was given shard_jobs 4 on the reasoning that neighbor_depth doubles the
+# level count (2 + 2x10 = 22 against the others' 11) and so should roughly
+# double the footprint. MEASURED: 32.7 GB peak against the flat arms' 32.0, a
+# 2% difference. The level COUNT doubles; the level SIZES do not, because the
+# coarse chain is seeded from element alone and stays near the incumbent's
+# class counts while the expensive main chain is unchanged. It dispatches at
+# the default width like every other arm.
+SIEVE_FEATURIZATIONS='[
+  {"label": "el-hyb-arom", "figure_label": "+ hybridization + aromatic",
+   "attributes": ["element", "hybridization", "aromatic"]},
+  {"label": "el-ringmem",  "figure_label": "+ num_ring_memberships (atoms)",
+   "attributes": ["element", "num_ring_memberships"]},
+  {"label": "el-edgering", "figure_label": "+ num_ring_memberships (bonds)",
+   "attributes": ["element"],
+   "edge_attributes": ["bond_num_ring_memberships"]},
+  {"label": "el-hyb-arom-wlel", "figure_label": "+ hyb + arom, WL on element",
+   "attributes": ["element", "hybridization", "aromatic"],
+   "params": {"attribute_levels": [["element"], ["hybridization", "aromatic"]],
+              "neighbor_depth": 1}}
+]'
+
+# The incumbent arm is not listed above and is never re-run: Study A already
+# scored `sieve-element-continuation` across SIEVE_DEPTHS at repeat 0, and
+# Study B already scored it at SIEVE_SELECTED_DEPTH across every repeat, both
+# on this same store, shard partition and K. Reusing those runs is not an
+# approximation -- permute_into_folds is deterministic in (n, k, seed=repeat)
+# and not in the caller, so a given (repeat, fold) holds out the same
+# molecules here as it did there, which is what makes the arms pairable
+# subjects in the comparison stage's repeated-measures design rather than
+# merely comparable numbers.
+STUDY_C_INCUMBENT_METHOD=sieve-element-continuation
+
+# `continuation`, no shrinkage: the estimator the manuscript calls the method
+# proper, and one of the two arms Study A and Study B both already carry, so
+# the incumbent stays free in both stages. As in Study A, the arm is reached
+# by PATCHING the fitted config -- the fits below apply empirical_bayes, so
+# only an explicit "shrinkage_weight": null turns it back off.
+STUDY_C_ESTIMATOR='"class_estimator": "continuation", "shrinkage_weight": null'
+
+STUDY_C_REPEATS="$STUDY_B_REPEATS"
+SIEVE_STUDY_C=sieve-cv-study-c      # stage 1, the depth curve
+SIEVE_STUDY_C_B=sieve-cv-study-c-b  # stage 2, the fixed-depth comparison
+
+# Read off stage 1's curve, by a human, exactly as SIEVE_SELECTED_DEPTH is.
+# These defaults are a prior -- the incumbent's own selected depth -- not a
+# result: stage 2 must not be run until the curve has been looked at, which
+# is what `CV_UNTIL=study-c-depth-curve` is for.
+STUDY_C_SELECTED_DEPTHS="${STUDY_C_SELECTED_DEPTHS:-$(
+  echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
+import json, sys
+print(json.dumps({f["label"]: int(sys.argv[1]) for f in json.load(sys.stdin)}))
+' "$SIEVE_SELECTED_DEPTH"
+)}"
+
+# label, comma-joined attributes, comma-joined edge attributes: one line per
+# arm. Emitted by one python pass rather than parsed in shell, so
+# SIEVE_FEATURIZATIONS stays the single place an arm is described.
+each_featurization() {
+  echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
+import json, sys
+for f in json.load(sys.stdin):
+    print(f["label"], ",".join(f["attributes"]),
+          ",".join(f.get("edge_attributes", [])), sep="\t")
+'
+}
+
+# One arm entry, by label, for the helpers that need more than the three TSV
+# fields.
+featurization_entry() {
+  echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
+import json, sys
+label = sys.argv[1]
+for f in json.load(sys.stdin):
+    if f["label"] == label:
+        print(json.dumps(f)); break
+else:
+    raise SystemExit(f"SIEVE_FEATURIZATIONS has no arm {label!r}")
+' "$1"
+}
+
+# DERIVED from the incumbent's own fit params with `attributes` swapped,
+# never written out a second time. That is what makes "featurization is the
+# only axis that moves" a property of the script rather than a claim in a
+# comment: a change to SIEVE_PREDICTOR_PARAMS reaches every Study C arm too.
+featurization_params() {
+  featurization_entry "$1" | "$PYTHON" -c '
+import json, sys
+params = json.loads(sys.argv[1])
+arm = json.load(sys.stdin)
+params["attributes"] = arm["attributes"]
+params["edge_attributes"] = arm.get("edge_attributes", [])
+params.update(arm.get("params", {}))
+print(json.dumps(params))
+' "$SIEVE_PREDICTOR_PARAMS"
+}
+
+# Per-arm dispatch width, for an arm whose fit is bigger than the rest.
+featurization_jobs() {
+  featurization_entry "$1" | "$PYTHON" -c '
+import json, sys
+print(int(json.load(sys.stdin).get("shard_jobs", sys.argv[1])))
+' "$STUDY_C_SHARD_JOBS"
+}
+
+# What the legend shows. Explicit per arm, because the attribute join alone
+# cannot tell an arm that moved information onto the EDGES, or into the
+# neighbour chain, from one that did neither -- both would read "element".
+featurization_figure_label() {
+  featurization_entry "$1" | "$PYTHON" -c '
+import json, sys
+arm = json.load(sys.stdin)
+print(arm.get("figure_label") or " + ".join(arm["attributes"]))
+'
+}
+
+featurization_codes()  { echo "experiments/stores/$STORE/sieve-codes-$1.json"; }
+featurization_label()  { echo "$1-eb"; }   # matches SIEVE_CONFIG_LABEL's convention: the FIT applies empirical_bayes
+featurization_method() { echo "sieve-$1-continuation"; }
+featurization_variant() {
+  printf '[{"method": "%s", %s}]' "$(featurization_method "$1")" "$STUDY_C_ESTIMATOR"
+}
+featurization_depth() {
+  echo "$STUDY_C_SELECTED_DEPTHS" | "$PYTHON" -c '
+import json, sys
+depths = json.load(sys.stdin)
+label = sys.argv[1]
+if label not in depths:
+    raise SystemExit(f"STUDY_C_SELECTED_DEPTHS names no depth for {label!r}")
+print(int(depths[label]))
+' "$1"
+}
+
+# Neither method_runs_count_is nor depth_runs_count_is can express stage 2's
+# claim on its own. Its arms sit at DIFFERENT depths inside one experiment, so
+# counting an experiment's runs at one depth spans arms, and counting one
+# arm's runs across all depths keeps counting the runs from a previously
+# selected depth -- which stay on disk deliberately, as evidence, and would
+# wedge the guard the moment a depth is revised. Both fields are read
+# structurally from the manifest, as the two guards above read theirs.
+method_depth_runs_count_is() {
+  local experiment=$1 method=$2 depth=$3 expected=$4
+  "$PYTHON" - "$experiment" "$method" "$depth" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, method, depth, expected = (
+    sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+)
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += cv.get("method") == method and int(cv.get("depth", -1)) == depth
+sys.exit(0 if found == expected else 1)
+PY
+}
+
+# --- Study C: frozen vocabularies ------------------------------------------
+#
+# One per arm, for the same reason the incumbent has one: shards fit on
+# disjoint molecule sets must agree on what an integer code means, or
+# check_mergeable refuses them.
+study_c_codes_exist() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    file_exists "$(featurization_codes "$label")" || return 1
+  done < <(each_featurization)
+}
+
+# Per-arm, not all-or-nothing: study_c_codes_exist fails as soon as ONE arm
+# is missing a vocabulary, so adding a fifth arm would otherwise rebuild the
+# four that already have one. That rebuild is deterministic -- measured, it
+# reproduced the exact schema_version the fits on disk carry, so nothing broke
+# -- but it is minutes of work per arm to write a file back identical, and it
+# rewrites the very file 50 shard fits are pinned to. Skipping is both cheaper
+# and the safer of the two.
+build_study_c_codes() {
+  local label attrs edges out
+  while IFS=$'\t' read -r label attrs edges; do
+    out="$(featurization_codes "$label")"
+    if file_exists "$out"; then
+      echo "--- codes: $label already frozen; skipping ---"
+      continue
+    fi
+    echo "--- codes: $label (node $attrs; edge ${edges:-none}) ---"
+    "$PYTHON" -m experiments build-sieve-codes "$STORE" \
+      --attributes "$attrs" --edge-attributes "$edges" \
+      --out "$out"
+  done < <(each_featurization)
+}
+
+step study-c-codes "study_c_codes_exist" -- build_study_c_codes
+
+# --- Study C: shard fits ---------------------------------------------------
+#
+# One dispatch per arm, each the same shape as sieve-shard-fits: N_SHARDS
+# single-threaded processes, one shard each, at SIEVE_MAX_DEPTH so every
+# shallower depth comes from truncating the merged model.
+#
+# Six concurrent fits, set before either arm had been measured, on the
+# reasoning that a Sieve fit's footprint is driven by its CLASS COUNT and that
+# jointly refining three attributes fragments classes faster than one does.
+# MEASURED, both arms, depth 10: 32.0 GB peak RSS, the same as the incumbent's.
+# Class fragmentation is real at the seed (27 and 33 level-0 classes against
+# element's 11) but does not inflate peak RSS at depth, where the class count
+# is near saturation either way. Eight is therefore as safe here as it is for
+# the incumbent; six is left as the default only because nothing has needed
+# the extra two, and 8 x 32GB sits at 256GB of this box's 503GB.
+STUDY_C_SHARD_JOBS="${STUDY_C_SHARD_JOBS:-6}"
+
+fit_one_study_c_shard() {
+  "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
+    --n-shards "$N_SHARDS" --max-depth "$SIEVE_MAX_DEPTH" --shard "$1" \
+    --codes-path "$FEAT_CODES" --config-label "$FEAT_CONFIG_LABEL" \
+    --predictor-params "$FEAT_PARAMS"
+}
+export -f fit_one_study_c_shard
+
+study_c_shard_fits_done() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    shard_fits_count_is \
+      "fit-sieve-$(featurization_label "$label")-w$SIEVE_MAX_DEPTH-s" \
+      "$N_SHARDS" || return 1
+  done < <(each_featurization)
+}
+
+# The per-arm settings are exported into the environment rather than wrapped
+# in a nested `bash -c`: a nested shell does not inherit the caller's shell
+# FUNCTIONS unless they are exported, so all_shard_ids vanished there and
+# xargs got an empty -P. Exporting and then dispatching in place is also
+# exactly dispatch_sieve_shards' own shape, one arm at a time.
+dispatch_study_c_shards() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    echo "--- shard fits: $label ---"
+    export FEAT_CODES="$(featurization_codes "$label")"
+    export FEAT_CONFIG_LABEL="$(featurization_label "$label")"
+    export FEAT_PARAMS="$(featurization_params "$label")"
+    all_shard_ids | xargs -P "$(featurization_jobs "$label")" -n 1 \
+      bash -c 'fit_one_study_c_shard "$1"' --
+  done < <(each_featurization)
+}
+
+step study-c-shard-fits "study_c_shard_fits_done" -- dispatch_study_c_shards
+
+# --- Study C stage 1: the depth curve --------------------------------------
+#
+# Study A's shape -- one repeat, K folds, every depth -- but deliberately
+# WITHOUT --score-train. That flag is the expensive half (measured ~15 min ->
+# ~1.2 h for Sieve), and what it buys is the train-vs-validation gap, which
+# the attribute notebook has already established for the incumbent and which
+# this study does not report. Dropping it is what pays for stage 2's repeats.
+study_c_curve_done() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    method_runs_count_is "$SIEVE_STUDY_C" "$(featurization_method "$label")" \
+      "$((K * $(n_items "$SIEVE_DEPTHS")))" || return 1
+  done < <(each_featurization)
+}
+
+run_study_c_curve() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    echo "--- study C curve: $label ---"
+    "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+      --n-shards "$N_SHARDS" --k "$K" \
+      --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
+      --codes-path "$(featurization_codes "$label")" \
+      --config-label "$(featurization_label "$label")" \
+      --fit-depth "$SIEVE_MAX_DEPTH" \
+      --predictor-params "$(featurization_params "$label")" \
+      --variants "$(featurization_variant "$label")" \
+      $MODEL_CACHE_FLAG \
+      --normalization equal_weighted \
+      --method "$(featurization_method "$label")" \
+      --experiment "$SIEVE_STUDY_C"
+  done < <(each_featurization)
+}
+
+step study-c-curve "study_c_curve_done" -- run_study_c_curve
+
+# --- Study C stage 1's figure ----------------------------------------------
+#
+# One panel per metric, not one per arm: every arm here counts depth in the
+# same unit (WL refinement rounds), so unlike Study A -- where DASH's path
+# length and Sieve's refinement depth are different quantities and cannot
+# share an x axis -- these are read against each other in place.
+#
+# Depth 0 is kept off for the incumbent's own reason: with no refinement the
+# model is attribute-wise pooled means, whose r^2 near 0.46 compresses the
+# 0.99 band where every difference between the real depths lives.
+STUDY_C_CURVE_STEM="$FIGURES_DIR/depth-curve-study-c"
+STUDY_C_CURVE_STAMP="$FIGURES_DIR/.depth-curve-study-c-inputs"
+STUDY_C_RUNS="experiments/runs/$SIEVE_STUDY_A experiments/runs/$SIEVE_STUDY_C"
+
+STUDY_C_CURVE_ARMS=$(
+  printf '[{"experiment": "%s", "method": "%s", "label": "element (incumbent)",' \
+    "$SIEVE_STUDY_A" "$STUDY_C_INCUMBENT_METHOD"
+  printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}'
+  while IFS=$'\t' read -r label attrs edges; do
+    printf ', {"experiment": "%s", "method": "%s", "label": "%s",' \
+      "$SIEVE_STUDY_C" "$(featurization_method "$label")" \
+      "$(featurization_figure_label "$label")"
+    printf ' "panel": "Sieve", "x_label": "Maximum Refinement Depth", "min_depth": 1}'
+  done < <(each_featurization)
+  printf ']'
+)
+
+study_c_curve_is_up_to_date() {
+  [ -f "$STUDY_C_CURVE_STAMP" ] || return 1
+  [ "$(cat "$STUDY_C_CURVE_STAMP")" = "$DEPTH_CURVE_METRIC $STUDY_C_CURVE_ARMS" ] || return 1
+  file_is_newer_than_runs "$STUDY_C_CURVE_STEM.pdf" $STUDY_C_RUNS || return 1
+  file_is_newer_than_runs "$STUDY_C_CURVE_STEM.png" $STUDY_C_RUNS || return 1
+  file_is_newer_than_runs "$STUDY_C_CURVE_STEM.txt" $STUDY_C_RUNS
+}
+
+run_study_c_curve_figure() {
+  mkdir -p "$FIGURES_DIR"
+  "$PYTHON" -m experiments depth-curve \
+    --arms "$STUDY_C_CURVE_ARMS" \
+    --metric "$DEPTH_CURVE_METRIC" \
+    --store "$STORE" \
+    --out "$STUDY_C_CURVE_STEM"
+  printf '%s %s' "$DEPTH_CURVE_METRIC" "$STUDY_C_CURVE_ARMS" > "$STUDY_C_CURVE_STAMP"
+}
+
+step study-c-depth-curve "study_c_curve_is_up_to_date" -- run_study_c_curve_figure
+
+# --- Study C stage 2: the comparison ---------------------------------------
+#
+# Study B's shape: five repeats x K folds = 25 paired samples per arm, each
+# at the depth stage 1 selected for it, with per-atom predictions written.
+#
+# STOP HERE unless STUDY_C_SELECTED_DEPTHS has actually been set from stage
+# 1's curve -- its defaults are the incumbent's depth, which is a prior and
+# not a result.
+#
+# One process per (arm, repeat). Unlike Study B these hold no DASHTree, but a
+# repeat's merge assembly still peaks near 30GB, so the job count stays low.
+STUDY_C_JOBS="${STUDY_C_JOBS:-3}"
+
+run_study_c_repeat() {
+  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --depths "$FEAT_DEPTH" --repeats "$1" \
+    --codes-path "$FEAT_CODES" --config-label "$FEAT_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
+    --predictor-params "$FEAT_PARAMS" \
+    --variants "$FEAT_VARIANT" \
+    $MODEL_CACHE_FLAG \
+    --normalization equal_weighted --method "$FEAT_METHOD" \
+    --experiment "$SIEVE_STUDY_C_B" \
+    $SAVE_PREDICTIONS_FLAG
+}
+export -f run_study_c_repeat
+export SIEVE_STUDY_C_B
+
+study_c_comparison_done() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    method_depth_runs_count_is "$SIEVE_STUDY_C_B" \
+      "$(featurization_method "$label")" "$(featurization_depth "$label")" \
+      "$((K * $(n_items "$STUDY_C_REPEATS")))" || return 1
+  done < <(each_featurization)
+}
+
+dispatch_study_c_repeats() {
+  local label attrs
+  while IFS=$'\t' read -r label attrs edges; do
+    echo "--- study C comparison: $label at depth $(featurization_depth "$label") ---"
+    export FEAT_CODES="$(featurization_codes "$label")"
+    export FEAT_CONFIG_LABEL="$(featurization_label "$label")"
+    export FEAT_PARAMS="$(featurization_params "$label")"
+    export FEAT_VARIANT="$(featurization_variant "$label")"
+    export FEAT_METHOD="$(featurization_method "$label")"
+    export FEAT_DEPTH="$(featurization_depth "$label")"
+    echo "$STUDY_C_REPEATS" | tr ',' '\n' \
+      | xargs -P "$STUDY_C_JOBS" -n 1 \
+          bash -c 'run_study_c_repeat "$1"' --
+  done < <(each_featurization)
+}
+
+step study-c-comparison "study_c_comparison_done" -- dispatch_study_c_repeats
+
+# --- Study C stage 2's figures ---------------------------------------------
+#
+# The same ANOVA + Tukey protocol and the same metric set as `compare`, over
+# Study B's incumbent arm plus Study C's -- pooled across two experiments
+# because the incumbent's 25 samples are already there and share this study's
+# subjects exactly. Read the effect sizes and interval widths, not the stars:
+# at ~62.8k held-out molecules per fold almost any systematic difference
+# reaches significance, and the differences this study is looking for are
+# around 0.001 in r^2.
+tukey_plot_c()  { echo "$FIGURES_DIR/tukey-study-c-$(metric_slug "$1").png"; }
+simult_plot_c() { echo "$FIGURES_DIR/simultaneous-study-c-$(metric_slug "$1").png"; }
+
+STUDY_C_DEPTH_BY_METHOD=$(
+  {
+    printf '%s\t%s\n' "$STUDY_C_INCUMBENT_METHOD" "$SIEVE_SELECTED_DEPTH"
+    while IFS=$'\t' read -r label attrs edges; do
+      printf '%s\t%s\n' "$(featurization_method "$label")" "$(featurization_depth "$label")"
+    done < <(each_featurization)
+  } | "$PYTHON" -c '
+import json, sys
+print(json.dumps({
+    m: int(d) for m, d in (line.split("\t") for line in sys.stdin.read().splitlines() if line)
+}))
+'
+)
+
+STUDY_C_COMPARE_STAMP="$FIGURES_DIR/.compare-study-c-inputs"
+STUDY_C_B_RUNS="experiments/runs/$SIEVE_STUDY_B experiments/runs/$SIEVE_STUDY_C_B"
+
+study_c_compare_is_up_to_date() {
+  [ -f "$STUDY_C_COMPARE_STAMP" ] || return 1
+  [ "$(cat "$STUDY_C_COMPARE_STAMP")" = "$COMPARE_METRICS $STUDY_C_DEPTH_BY_METHOD" ] || return 1
+  local m
+  for m in $(each_metric); do
+    file_is_newer_than_runs "$(tukey_plot_c "$m")" $STUDY_C_B_RUNS || return 1
+    file_is_newer_than_runs "$(simult_plot_c "$m")" $STUDY_C_B_RUNS || return 1
+  done
+}
+
+run_study_c_compare() {
+  mkdir -p "$FIGURES_DIR"
+  local m flag
+  for m in $(each_metric); do
+    flag=""
+    case ",$COMPARE_HIGHER_IS_BETTER," in *",$m,"*) flag="--higher-is-better" ;; esac
+    echo "--- $m ---"
+    "$PYTHON" -m experiments compare \
+      --experiment "$SIEVE_STUDY_B" --experiment "$SIEVE_STUDY_C_B" \
+      --metric "$m" \
+      --depth-by-method "$STUDY_C_DEPTH_BY_METHOD" \
+      --out "$(tukey_plot_c "$m")" \
+      --out-simultaneous "$(simult_plot_c "$m")" \
+      $flag
+  done
+  printf '%s %s' "$COMPARE_METRICS" "$STUDY_C_DEPTH_BY_METHOD" > "$STUDY_C_COMPARE_STAMP"
+}
+
+step study-c-compare "study_c_compare_is_up_to_date" -- run_study_c_compare
 
 # --- final held-out evaluation ---------------------------------------------
 #

@@ -1,0 +1,7 @@
+# Unboxed overlay: remove the top and right spines and their mirrored ticks,
+# leaving an open L-shaped frame. Apply after publication.mplstyle (or via
+# use_publication_style(box=False)).
+axes.spines.top   : False
+axes.spines.right : False
+xtick.top         : False
+ytick.right       : False

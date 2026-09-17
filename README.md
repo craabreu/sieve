@@ -1,6 +1,6 @@
 # Sieve
 
-**S**upport-gated **I**nference over **E**nriched **V**ertex **E**nvironments.
+**S**tatistical **I**nference over **E**xpanding **V**ertex **E**nvironments.
 
 Sieve is a node-level regressor for labeled graphs (molecules, in practice)
 that generalizes the classical regressogram to a *nested hierarchy* of

@@ -373,6 +373,7 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
         experiment=args.experiment,
         seed=args.seed,
         save_predictions=args.save_predictions,
+        score_train=args.score_train,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -416,6 +417,7 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         experiment=args.experiment,
         seed=args.seed,
         save_predictions=args.save_predictions,
+        score_train=args.score_train,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -424,6 +426,63 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         return 0
     for r in results:
         print(f"{r.run_dir}: mae={r.metrics.get('mae')}")
+    return 0
+
+
+def _cmd_depth_curve(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.depth_curve import plot_depth_grid, read_depth_curve
+
+    arms_spec = _json.loads(args.arms)
+    if not arms_spec:
+        raise SystemExit("--arms is empty; nothing to draw")
+    metrics = [m for m in args.metric.split(",") if m]
+    if not metrics:
+        raise SystemExit("--metric is empty; nothing to draw")
+
+    curves = []
+    for metric in metrics:
+        panels: dict[str, list] = {}
+        for spec in arms_spec:
+            try:
+                experiment, method = spec["experiment"], spec["method"]
+            except KeyError as exc:
+                raise SystemExit(
+                    f"arm spec needs 'experiment' and 'method': {spec}"
+                ) from exc
+            label = spec.get("label") or method
+            panel = spec.get("panel") or label
+            try:
+                arm = read_depth_curve(
+                    DEFAULT_RUNS_ROOT,
+                    experiment,
+                    method=method,
+                    metric=metric,
+                    x_label=spec.get("x_label", "depth"),
+                    min_depth=spec.get("min_depth"),
+                    label=label,
+                    panel=panel,
+                )
+            except ValueError as exc:
+                # An arm nobody ran is a missing study, not an empty panel.
+                raise SystemExit(str(exc)) from exc
+            panels.setdefault(panel, []).append(arm)
+        curves.append(list(panels.values()))
+
+    for row in curves:
+        for arm in [a for panel in row for a in panel]:
+            print(f"{arm.method} / {arm.metric}: {arm.n_runs} runs")
+            for point in arm.points:
+                print(
+                    f"  depth {point.depth}: {point.mean:.6g} "
+                    f"+/- {point.se:.3g} (corrected SE, "
+                    f"{len(point.fold_values)} folds)"
+                )
+
+    outputs = plot_depth_grid(curves, args.out, store=args.store)
+    for path in outputs:
+        print(f"wrote {path}")
     return 0
 
 
@@ -934,6 +993,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cv_run_dash.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_dash.add_argument(
+        "--score-train",
+        action="store_true",
+        help="also score each fold's TRAINING shards, recorded under a "
+        "train/ prefix. Off by default because it is the expensive half: "
+        "training is ~4x the held-out molecules, and the walk/featurize it "
+        "adds is paid once per fold. What it buys is the train-vs-validation "
+        "gap over depth, i.e. where a method starts overfitting.",
+    )
     p_cv_run_dash.set_defaults(func=_cmd_cv_run_dash)
 
     p_cv_run_sieve = sub.add_parser(
@@ -1002,7 +1070,45 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cv_run_sieve.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_sieve.add_argument(
+        "--score-train",
+        action="store_true",
+        help="also score each fold's TRAINING shards, recorded under a "
+        "train/ prefix. Off by default because it is the expensive half: "
+        "training is ~4x the held-out molecules, and the walk/featurize it "
+        "adds is paid once per fold. What it buys is the train-vs-validation "
+        "gap over depth, i.e. where a method starts overfitting.",
+    )
     p_cv_run_sieve.set_defaults(func=_cmd_cv_run_sieve)
+
+    p_depth_curve = sub.add_parser(
+        "depth-curve",
+        help="publication-quality Study A depth curves, one panel per arm, "
+        "with Nadeau-Bengio corrected error bars",
+    )
+    p_depth_curve.add_argument(
+        "--arms",
+        required=True,
+        help='JSON list of arms: [{"experiment": ..., "method": ..., '
+        '"label": ..., "panel": ..., "x_label": ..., "min_depth": ...}]. '
+        'Arms sharing a "panel" are drawn together in it, which is how two '
+        "estimators of one method are read against each other; label is what "
+        "the legend shows, defaulting to the method key; x_label names what "
+        "depth means for that panel; min_depth keeps shallower depths off "
+        "the figure, and the caption states which were dropped.",
+    )
+    p_depth_curve.add_argument(
+        "--metric",
+        default="rmse,r2",
+        help="comma-separated; one row of panels per metric, in this order",
+    )
+    p_depth_curve.add_argument(
+        "--out",
+        required=True,
+        help="output path without extension; .pdf and .png are both written",
+    )
+    p_depth_curve.add_argument("--store", default="dash-molecules")
+    p_depth_curve.set_defaults(func=_cmd_depth_curve)
 
     p_compare = sub.add_parser(
         "compare",

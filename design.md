@@ -1,6 +1,6 @@
 # Sieve — Core Data Structure and Estimator Design
 
-**Sieve:** Support-gated Inference over Enriched Vertex Environments.
+**Sieve:** Statistical Inference over Expanding Vertex Environments.
 
 **Status:** working design note, actively edited
 **Date:** 2026-08-17

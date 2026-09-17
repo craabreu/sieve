@@ -1,0 +1,27 @@
+# Slide preset: 16:9 presentation figure with type sized for projection.
+# Apply after publication.mplstyle. Override figure.figsize to fit the slide
+# region (e.g. 8x4.5 fills a wide content area; 5x4.5 a half-slide).
+figure.figsize        : 8.0, 4.5
+
+font.size             : 16
+axes.labelsize        : 18
+axes.titlesize        : 20
+xtick.labelsize       : 14
+ytick.labelsize       : 14
+legend.fontsize       : 14
+figure.titlesize      : 22
+
+axes.linewidth        : 1.2
+lines.linewidth       : 2.2
+lines.markersize      : 8
+lines.markeredgewidth : 1.0
+patch.linewidth       : 1.2
+errorbar.capsize      : 3
+
+xtick.major.size      : 4.5
+xtick.major.width     : 1.2
+ytick.major.size      : 4.5
+ytick.major.width     : 1.2
+
+legend.handlelength   : 1.8
+legend.labelspacing   : 0.4

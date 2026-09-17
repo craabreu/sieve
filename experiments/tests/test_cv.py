@@ -415,7 +415,62 @@ def test_truncate_model_matches_a_native_fit_at_every_depth():
         )
 
 
-def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
+def test_truncate_model_matches_a_native_fit_under_neighbor_depth():
+    """The neighbor_depth counterpart of the equivalence test above, and the
+    claim Study C's WL:element arm rests on.
+
+    Here the level tuple is ``[attr][coarse WL chain][main WL_PAIR chain]``
+    (design.md 3.6), so the main chain is the LAST block and a prefix slice
+    would cut through the coarse one. Truncation has to slice both blocks and
+    rejoin them, and the only convincing evidence that it rejoins them
+    correctly is that the result is bit-for-bit a native shallow fit -- a
+    misalignment between the two chains would show up as wrong predictions,
+    not as an exception.
+    """
+    from experiments.cv import truncate_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=24, seed=0)
+    test = synthetic_molecule_set(n_mol=8, seed=7)
+    params: dict[str, Any] = {
+        "attributes": ("element", "degree"),
+        "attribute_levels": (("element",), ("degree",)),
+        "neighbor_depth": 1,
+        "edge_attributes": (),
+        "class_estimator": "continuation",
+        "shrinkage_weight": "empirical_bayes",
+        "minimum_support": 1,
+    }
+
+    def fit(depth):
+        p = SievePredictor(max_wl_depth=depth, **params)
+        p.fit(train, train, rng=np.random.default_rng(0))
+        return p
+
+    deep = fit(6)
+    # From 1, not 0: at max_wl_depth=0 SieveConfig drops neighbor_depth back
+    # to None (the coarse chain would be zero levels long), so a depth-0
+    # native fit is a different schema and not this function's business.
+    for depth in range(1, 7):
+        native = fit(depth)
+        truncated = SievePredictor(max_wl_depth=depth, **params)
+        truncated.set_model(truncate_model(deep._model, depth))
+
+        assert (
+            truncated._model.config.schema_version
+            == native._model.config.schema_version
+        ), depth
+        assert truncated._model.config.n_levels == native._model.config.n_levels
+        np.testing.assert_array_equal(
+            truncated.predict(test).atom_value,
+            native.predict(test).atom_value,
+            err_msg=f"depth {depth}",
+        )
+
+
+def test_truncate_model_refuses_to_deepen_or_to_slice_an_inconsistent_model():
     import dataclasses
 
     from experiments.cv import truncate_model
@@ -432,8 +487,12 @@ def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
     with pytest.raises(ValueError, match="up to depth"):
         truncate_model(p._model, 5)
 
-    # A neighbor_depth model's main WL chain is the *last* level block, so a
-    # prefix slice would cut the coarse chain instead -- refused, not risked.
+    # A model whose level tuple does not match the config it claims. This one
+    # is a FLAT depth-3 fit (attr + 3 WL) relabelled as neighbor_depth, which
+    # would need attr + 3 coarse + 3 main. Truncation slices the two WL blocks
+    # at offsets the real tuple is too short to have, so the result would
+    # silently be the wrong levels rather than an error -- hence the explicit
+    # length check it trips instead.
     faked = dataclasses.replace(
         p._model,
         config=dataclasses.replace(
@@ -446,7 +505,7 @@ def test_truncate_model_refuses_to_deepen_or_to_touch_neighbor_depth():
             neighbor_depth=1,
         ),
     )
-    with pytest.raises(ValueError, match="neighbor_depth"):
+    with pytest.raises(AssertionError, match="levels but config declares"):
         truncate_model(faked, 1)
 
 
@@ -1115,3 +1174,114 @@ def test_recursive_continuation_is_not_a_duplicate_arm():
     # max |diff| 0.0135, twice the whole DASH-vs-Sieve RMSE gap. So this is a
     # distinct arm, and the assertion above is the part a unit test can hold.
     assert np.array_equal(_predict("continuation"), _predict("continuation"))
+
+
+def test_run_sieve_cv_scores_train_when_asked(tmp_path):
+    """--score-train adds a train/ family scored on the fold's own training
+    shards. Its error must be below the held-out error on the same fold --
+    that gap is what the depth curve is drawn to show."""
+    import json
+
+    from experiments.cv import run_sieve_cv, run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    n_mol, n_shards, k = 20, 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    runs_root = tmp_path / "runs"
+    whole = synthetic_molecule_set(n_mol=n_mol, seed=2)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+
+    # dict[str, Any] for the same reason the annotation above gives: `**common`
+    # would otherwise check every keyword of run_sieve_shard_fits/run_sieve_cv
+    # against this dict's own inferred value union, so the `int` entries are
+    # reported against the `str` parameters (method/experiment/normalization).
+    common: dict[str, Any] = {
+        "store": store,
+        "n_shards": n_shards,
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "runs_root": runs_root,
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+    run_sieve_shard_fits(max_depth=1, **common)
+    results = run_sieve_cv(
+        depths=[1], repeats=[0], k=k, method="sieve-cfg", score_train=True, **common
+    )
+
+    assert len(results) == k
+    for result in results:
+        metrics = json.loads((result.run_dir / "metrics.json").read_text())
+        assert "train/rmse" in metrics
+        assert "train/n_conformers" in metrics
+        # scored on 4x the shards the fold held out
+        assert metrics["train/n_conformers"] > metrics["n_test_conformers"]
+        # and never under the normalized spelling: train is raw only
+        assert not any(key.startswith("train/norm/") for key in metrics)
+
+
+def test_run_sieve_cv_does_not_score_train_by_default(tmp_path):
+    """The expensive half stays off unless asked: an unflagged run must
+    record exactly what it recorded before this flag existed."""
+    import json
+
+    from experiments.cv import run_sieve_cv, run_sieve_shard_fits
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    n_mol, n_shards, k = 20, 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=n_mol, n_shards=n_shards, seed=2
+    )
+    runs_root = tmp_path / "runs"
+    whole = synthetic_molecule_set(n_mol=n_mol, seed=2)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+    params = {"attributes": ("element",), "edge_attributes": ()}
+
+    # dict[str, Any] for the same reason the annotation above gives: `**common`
+    # would otherwise check every keyword of run_sieve_shard_fits/run_sieve_cv
+    # against this dict's own inferred value union, so the `int` entries are
+    # reported against the `str` parameters (method/experiment/normalization).
+    common: dict[str, Any] = {
+        "store": store,
+        "n_shards": n_shards,
+        "codes_path": codes_path,
+        "config_label": "cfg",
+        "predictor_params": params,
+        "runs_root": runs_root,
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+    run_sieve_shard_fits(max_depth=1, **common)
+    results = run_sieve_cv(depths=[1], repeats=[0], k=k, method="sieve-cfg", **common)
+
+    for result in results:
+        metrics = json.loads((result.run_dir / "metrics.json").read_text())
+        assert not any(key.startswith("train/") for key in metrics)

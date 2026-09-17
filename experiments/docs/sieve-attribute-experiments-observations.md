@@ -546,9 +546,13 @@ RDKit's perception is more resonance-aware than naive Lewis reading, so
 the three attributes differ:
 
 - `hybridization`: **invariant** in practice. Both carboxylate oxygens get
-  `SP2`; amide N gets `SP2` (conjugation perceived), not `SP3`.
+  `SP2`; amide N gets `SP2` (conjugation perceived), not `SP3`. (Measured
+  corpus-wide since, with two named exceptions — see *Invariance, measured*
+  below. The two examples here are the easy cases.)
 - `aromatic`: **Kekulé-invariant by construction** — `C1=CC=CC=C1` and
-  `c1ccccc1` produce byte-identical attributes after sanitization.
+  `c1ccccc1` produce byte-identical attributes after sanitization. (Now
+  measured, 0/40,000 — but *model* invariance is a different question, and
+  it fails; same section.)
 - `formal_charge`: **not invariant.** Resonance-equivalent atoms get
   different values: carboxylate O's (0 / −1), nitro O's (0 / −1),
   guanidinium N's (+1 / 0 / 0).
@@ -610,3 +614,75 @@ refined further by `hybridization`. **`neighbor_depth`'s payoff depends
 entirely on what the coarse level itself still encodes** — coarsening
 all the way down to a constant discards something WL evidently can't
 route around from the center alone, even after 6 rounds.
+
+
+## Invariance, measured
+
+Three claims above were asserted from hand-picked examples; the section they
+sit in measured only `formal_charge`'s failure. Measured on the real
+`dash-molecules` store (2026-09-16), by the same method: enumerate
+resonance-equivalent atom sets by SMARTS, then ask whether the attribute
+differs *within* a set whose members must carry the same charge.
+
+### `hybridization` is resonance-invariant, with two rare exceptions
+
+150,000 conformers. % of equivalent sets in which the attribute differs:
+
+| group | sets | `hybridization` | `formal_charge` |
+|---|---:|---:|---:|
+| amide N/O (control) | 50,063 | 0.00% | 0.00% |
+| carboxylic OH | 15,498 | 0.00% | 0.00% |
+| amidinium N | 14,514 | 0.00% | 0.02% |
+| sulfone O | 6,807 | 0.00% | 0.00% |
+| nitro O | 5,180 | 0.00% | **100%** |
+| guanidinium N | 3,391 | 0.00% | 0.09% |
+| carboxylate O | 61 | 0.00% | **100%** |
+| **sulfonate O** | 21 | **100%** | 100% |
+| **phosphate O** | 39 | **100%** | 100% |
+
+The claim holds across ~95,000 sets of the common groups. The run also
+reproduces `formal_charge`'s failure on the full store (nitro and carboxylate
+at 100%), which is what validates the method rather than just the result.
+
+The two exceptions are real: RDKit gives the `=O` `SP2` and the `O-` `SP3` in
+sulfonate and phosphate despite resonance equivalence. Together 60 sets in
+150k conformers, ~0.002% of atoms — three orders of magnitude too rare to
+matter for any arm measured here. Their charge means differ, though, and not
+alike: sulfonate SP2 −0.7499 vs SP3 −0.7492 (agreeing to 0.0007, so a pure
+fragmentation cost, the `formal_charge` pathology in miniature), but phosphate
+−0.8977 vs −0.9212, a gap far too large to be a resonance artefact. The
+phosphate case is more likely the SMARTS catching monoesters whose oxygens are
+genuinely inequivalent; it should not be cited as an invariance failure
+without a closer look.
+
+### `aromatic`: invariant to representation, NOT to the aromaticity model
+
+Two questions the "Kekulé-invariant by construction" claim runs together.
+
+**Representation — holds.** 40,000 conformers round-tripped through both
+aromatic and Kekulé SMILES and re-parsed: **0 disagreements**. Compare the two
+*canonical SMILES*, never per-atom flags by index — the two round-trips
+produce different canonical atom orderings, and comparing flags positionally
+reports a spurious ~23% disagreement whose tell is halogens appearing to
+change aromaticity.
+
+**Model — fails, and largely.** Re-perceiving each molecule under RDKit's own
+aromaticity models, against `AROMATICITY_RDKIT`:
+
+| model | molecules differing | atoms differing |
+|---|---:|---:|
+| DEFAULT | 0.000% | 0.0000% |
+| **MDL** | **40.6%** | **7.96%** |
+| SIMPLE | 3.27% | 0.56% |
+
+Flips by element: C 52,669 · N 27,423 · S 3,389 · O 3,186 — concentrated in
+5-membered heteroaromatics (`Cn1ccnc1`, `Cc1ncc[nH]1`), exactly where the
+models are known to disagree.
+
+This closes the "aromaticity model dependence across toolkits" item listed as
+open above, with a bigger number than expected. **Within one pipeline it costs
+nothing** — one model is used throughout, so classes stay self-consistent and
+no result here is affected. What it costs is portability: a fitted vocabulary
+encodes an RDKit convention, not a chemical fact, and ~8% of atoms would
+change class under an MDL-perceiving toolkit. Same concern that made
+`chirality` use rigorous CIP labeling rather than raw RDKit tags.

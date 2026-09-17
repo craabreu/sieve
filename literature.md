@@ -227,6 +227,15 @@ optimal-assignment kernel [Kriege2016WLOA]. This is the citation to use when def
 parent/ancestor relation, so that the backoff chain is presented as a known property of WL rather
 than a construction of this work.
 
+**A note on the name.** The second author of the 1968 refinement algorithm is Andrey Andreevich
+Leman, Андрей Андреевич Леман, and a faithful transliteration of Леман carries no *h*. The spelling
+*Weisfeiler–Lehman* is nonetheless the one the graph-learning literature settled on, and it is what
+this repository writes throughout, so that a reader searching for the method finds it. Both forms
+appear in the bibliography below, because each is reproduced as its own paper prints it:
+[Shervashidze2011WL] and [Schulz2022GeneralizedWL] use *Lehman*, while [Morris2019WLGoNeural] uses
+*Leman* in its title and makes this very point. Quoted titles keep their published spelling; our own
+prose uses *Lehman*.
+
 ### 4.6 ECFP / Morgan identifiers
 
 Extended-connectivity fingerprints assign each atom an identifier that is iteratively updated from its
