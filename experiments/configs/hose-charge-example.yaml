@@ -1,0 +1,15 @@
+run:
+  experiment: hose-charges
+  seed: 0
+data:
+  store: dash-molecules
+  split_column: split
+target:
+  atom_property: MBIScharge
+  molecule_property: net_charge
+  label: charge (e)
+predictor:
+  name: hose
+  params:
+    max_radius: 5
+    n_min: 1
