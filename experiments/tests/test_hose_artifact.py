@@ -157,3 +157,42 @@ def test_run_hose_cv_names_the_radius_whose_shards_are_missing(tmp_path):
     run_hose_shard_fits(radius=2, **common)
     with pytest.raises(FileNotFoundError, match="radius 3"):
         run_hose_cv(radii=[3], repeats=[0], k=2, **common)
+
+
+def test_merge_states_entry_point_folds_shards_and_refuses_mixed_radii(tmp_path):
+    """The seam `experiments merge-states` discovers by name. It must agree
+    with a direct fit on the union, and must refuse shards of different radii
+    rather than pooling two linearizations (spec s7)."""
+    from experiments.data import concat_molecule_sets
+    from experiments.hose_artifact import load_hose_state
+    from experiments.predictors.hose import HoseLookupPredictor
+
+    a = synthetic_molecule_set(n_mol=8, seed=0)
+    b = synthetic_molecule_set(n_mol=8, seed=1)
+
+    pa, pb = tmp_path / "a.npz", tmp_path / "b.npz"
+    _fit(a, 3).save_model_state(pa)
+    _fit(b, 3).save_model_state(pb)
+
+    out = tmp_path / "merged.npz"
+    HoseLookupPredictor.merge_states([pa, pb], out)
+
+    merged = HoseLookupPredictor(max_radius=3)
+    merged.set_model_state(load_hose_state(out))
+    direct = _fit(concat_molecule_sets([a, b]), 3)
+
+    test = synthetic_molecule_set(n_mol=4, seed=7)
+    np.testing.assert_allclose(
+        merged.predict(test).atom_value,
+        direct.predict(test).atom_value,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+    shallow = tmp_path / "r2.npz"
+    _fit(a, 2).save_model_state(shallow)
+    with pytest.raises(ValueError, match="different radii"):
+        HoseLookupPredictor.merge_states([pa, shallow], tmp_path / "bad.npz")
+
+    with pytest.raises(ValueError, match="at least one shard"):
+        HoseLookupPredictor.merge_states([], tmp_path / "empty.npz")

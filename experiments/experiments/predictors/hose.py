@@ -173,6 +173,30 @@ class HoseLookupPredictor:
             atom_std=np.ones_like(pred.atom_value),
         )
 
+    @staticmethod
+    def merge_states(paths: list[str | Any], out: str | Any) -> None:
+        """Merge N saved HOSE shard states into one, exact, no re-fit.
+
+        Discovered by name by the generic ``experiments merge-states`` seam,
+        the same duck-typed convention ``SievePredictor.merge_states`` follows.
+
+        Every shard must have been fitted at the SAME radius, and
+        ``merge_hose_states`` refuses a mismatch rather than reconciling it: a
+        radius-6 fit's 3-sphere table is not a radius-3 fit's, because the
+        generator re-renders shallower spheres when it goes deeper (spec
+        section 7). That is the one way this merge differs from the other two
+        predictors', whose shards are radius/depth-agnostic.
+        """
+        from experiments.hose_artifact import (
+            fold_hose_states,
+            load_hose_state,
+            save_hose_state,
+        )
+
+        if not paths:
+            raise ValueError("merge_states needs at least one shard path")
+        save_hose_state(fold_hose_states(load_hose_state(p) for p in paths), out)
+
 
 def _build(params: Mapping[str, Any]) -> HoseLookupPredictor:
     return HoseLookupPredictor(**params)

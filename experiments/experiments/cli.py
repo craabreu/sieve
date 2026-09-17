@@ -928,7 +928,11 @@ def build_parser() -> argparse.ArgumentParser:
         "predictor via its own merge_states",
     )
     p_merge_states.add_argument(
-        "--predictor", required=True, choices=("dash", "sieve"), help="which predictor"
+        "--predictor",
+        required=True,
+        choices=("dash", "sieve", "hose"),
+        help="which predictor. `hose` shards must all share one radius -- "
+        "its states are radius-specific, unlike the other two",
     )
     p_merge_states.add_argument(
         "shard", nargs="+", type=Path, help="shard tree_stats.npz path(s) to merge"
