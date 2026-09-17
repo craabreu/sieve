@@ -90,9 +90,15 @@ def test_a_radius_above_the_generator_ceiling_is_refused_up_front():
 
 def test_registered_under_its_name():
     from experiments.predictors import build
+    from experiments.predictors.hose import HoseLookupPredictor
 
     p = build("hose", {"max_radius": 3})
     assert p.name == "hose"
+    # Narrowed rather than accessed straight off `build`'s return: that is the
+    # `Predictor` protocol, which has no max_radius. The isinstance is the
+    # assertion this test actually means -- that the registry hands back the
+    # HOSE predictor itself, not merely something answering to the name.
+    assert isinstance(p, HoseLookupPredictor)
     assert p.max_radius == 3
 
 

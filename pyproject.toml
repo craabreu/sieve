@@ -130,6 +130,12 @@ allowed-unresolved-imports = [
     # see experiments/predictors/dash.py.
     "serenityff",
     "serenityff.**",
+    # Stefan Kuhn's HOSE-code generator, the optional `hose` extra above --
+    # installed from git with --no-deps, so not in CI's [dev,chem] install.
+    # hose.py imports it inside _codes() rather than at module scope, so the
+    # harness loads without it (see test_predictor_hose_optional.py).
+    "hosegen",
+    "hosegen.**",
 ]
 
 [[tool.ty.overrides]]
