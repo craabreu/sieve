@@ -32,7 +32,9 @@ def build(name: str, params: Mapping[str, Any]) -> Predictor:
     if name == "sieve" and name not in REGISTRY:
         import experiments.predictors.sieve_predictor
     if name == "dash_pretrained" and name not in REGISTRY:
-        import experiments.predictors.dash_pretrained  # noqa: F401
+        import experiments.predictors.dash_pretrained
+    if name == "hose" and name not in REGISTRY:
+        import experiments.predictors.hose  # noqa: F401
     if name not in REGISTRY:
         raise ValueError(f"unknown predictor {name!r}; known: {sorted(REGISTRY)}")
     return REGISTRY[name](params)
