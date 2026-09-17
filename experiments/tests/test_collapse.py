@@ -60,8 +60,15 @@ def test_mirror_of_a_mirror_is_the_original():
 
 
 def _write_store(tmp_path, rows):
-    """A minimal store: one row per (smiles, dash_id, split, cluster, shard)."""
-    import pandas as pd
+    """A minimal store: one row per (smiles, dash_id, split, cluster, shard).
+
+    pandas and pyarrow live in the `charges` extra, which CI's [dev,chem]
+    install does not carry -- guarded the way test_cv_optional.py guards its
+    own store writes.
+    """
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+
     from experiments.data import mol_to_blob
 
     recs = []
@@ -89,7 +96,8 @@ def _write_store(tmp_path, rows):
 def test_annotate_collapse_adds_key_and_counts(tmp_path):
     """Two conformers of one molecule, plus its enantiomer, plus an unrelated
     molecule: the first three share a key, the fourth does not."""
-    import pandas as pd
+    pd = pytest.importorskip("pandas")
+
     from experiments.store_ops import annotate_collapse
 
     store, root = _write_store(
@@ -296,7 +304,8 @@ def test_fit_sieve_shard_collapses_only_the_training_side(tmp_path):
     hold one row per conformer."""
     import json
 
-    import pandas as pd
+    pd = pytest.importorskip("pandas")
+
     from experiments.cv import fit_sieve_shard
     from experiments.predictors.sieve_predictor import _build_config, save_codes
     from experiments.store_ops import annotate_collapse
