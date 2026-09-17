@@ -45,8 +45,12 @@ from typing import Any, TypeVar, cast
 
 import numpy as np
 
-from experiments.collapse import held_out_floors
-from experiments.data import REPO_ROOT, MoleculeSet, concat_molecule_sets
+from experiments.data import (
+    DEFAULT_STORES_ROOT,
+    REPO_ROOT,
+    MoleculeSet,
+    concat_molecule_sets,
+)
 from experiments.normalize import NORMALIZERS
 from experiments.predictors.base import Prediction, RawPrediction
 from experiments.runner import (
@@ -901,6 +905,55 @@ def _cv_run_done(runs_root: Path, experiment: str, batch_id: str) -> Path | None
     return matches[-1].parent if matches else None
 
 
+def floor_cache_path(store: str, *, stores_root: Path | None = None) -> Path:
+    root = Path(stores_root) if stores_root is not None else DEFAULT_STORES_ROOT
+    return root / store / "floor-components.json"
+
+
+def build_floor_cache(
+    store: str, *, n_shards: int, stores_root: Path | None = None
+) -> Path:
+    """Per-shard floor components, computed once and written beside the store.
+
+    A floor depends only on which molecules are held out -- not on the model,
+    the depth, the variant or which arm is scoring -- so recomputing it per
+    run repeats identical work across every depth, every variant, all three
+    arms and all three studies. The components are additive over shards
+    (``collapse.floor_components``), so this is computed once per shard and
+    every fold's floors are a sum.
+    """
+    from experiments.collapse import floor_components
+
+    ids = shard_ids(n_shards)
+    by_shard = load_shards(store, ids, stores_root=stores_root)
+    out = {sid: floor_components(by_shard[sid]) for sid in ids}
+    path = floor_cache_path(store, stores_root=stores_root)
+    path.write_text(json.dumps(out, indent=2, sort_keys=True))
+    return path
+
+
+def _floors_for(
+    store: str,
+    held_out_shards: Sequence[str],
+    held_out: MoleculeSet,
+    *,
+    stores_root: Path | None = None,
+) -> dict[str, float]:
+    """This fold's floors, from the cache when it covers every held-out shard.
+
+    Falls back to computing them directly, so a store without a cache still
+    reports floors -- just slowly.
+    """
+    from experiments.collapse import floors_from_components, held_out_floors
+
+    path = floor_cache_path(store, stores_root=stores_root)
+    if path.exists():
+        cache = json.loads(path.read_text())
+        if all(sid in cache for sid in held_out_shards):
+            return floors_from_components(cache[sid] for sid in held_out_shards)
+    return held_out_floors(held_out)
+
+
 def _write_cv_run(
     *,
     experiment: str,
@@ -968,6 +1021,8 @@ def _write_cv_run(
         # Fallback for a caller that has not hoisted it. The drivers pass it
         # in, because a fold's held-out set is shared by every depth and
         # variant scored against it and this costs ~21 s a time.
+        from experiments.collapse import held_out_floors
+
         floors = held_out_floors(held_out)
     run_metrics.update({k: v for k, v in floors.items() if v})
 
@@ -1188,7 +1243,7 @@ def run_hose_cv(
                     continue
 
                 held_out = concat_molecule_sets([mset_by_shard[sid] for sid in group])
-                floors = held_out_floors(held_out)
+                floors = _floors_for(store, group, held_out, stores_root=stores_root)
                 predictor = HoseLookupPredictor(max_radius=radius)
                 predictor.set_model_state(train_states[fold])
 
@@ -1381,7 +1436,7 @@ def run_dash_cv(
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
-            floors = held_out_floors(held_out)
+            floors = _floors_for(store, group, held_out, stores_root=stores_root)
 
             t0 = time.perf_counter()
             paths = predictor.match_paths(held_out, split="cv")
@@ -1605,7 +1660,7 @@ def run_sieve_cv(
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
-            floors = held_out_floors(held_out)
+            floors = _floors_for(store, group, held_out, stores_root=stores_root)
 
             predictor.set_model(train_models[fold])
             t0 = time.perf_counter()

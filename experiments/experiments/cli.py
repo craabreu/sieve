@@ -230,6 +230,16 @@ def _cmd_merge_states(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_build_floor_cache(args: argparse.Namespace) -> int:
+    from experiments.cv import build_floor_cache
+
+    path = build_floor_cache(
+        args.store, n_shards=args.n_shards, stores_root=DEFAULT_STORES_ROOT
+    )
+    print(f"wrote per-shard floor components -> {path}")
+    return 0
+
+
 def _cmd_analytic_curve(args: argparse.Namespace) -> int:
     """Training error, R^2, eta^2, support distribution and LOO for a saved
     model state -- computed from its own stored statistics, no store, no
@@ -991,6 +1001,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_merge_states.add_argument("--out", required=True, type=Path)
     p_merge_states.set_defaults(func=_cmd_merge_states)
+
+    p_floor = sub.add_parser(
+        "build-floor-cache",
+        help="per-shard irreducible-floor components, computed once and "
+        "written beside the store -- a floor depends only on which molecules "
+        "are held out, never on the model, depth, variant or arm",
+    )
+    p_floor.add_argument("store", nargs="?", default="dash-molecules")
+    p_floor.add_argument("--n-shards", type=int, required=True)
+    p_floor.set_defaults(func=_cmd_build_floor_cache)
 
     p_analytic = sub.add_parser(
         "analytic-curve",

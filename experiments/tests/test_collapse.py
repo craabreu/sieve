@@ -488,3 +488,37 @@ def test_held_out_floors_reports_both():
     out = held_out_floors(_floor_set([("CCO", {0: 1.0}), ("CCO", {0: 2.0})]))
     assert set(out) == {"floor/rmse", "floor/rmse_stereo_blind"}
     assert out["floor/rmse"] > 0.0
+
+
+def test_floor_components_sum_to_the_directly_computed_floors():
+    """The decomposition the per-shard cache rests on: a union's floors are
+    recoverable from its parts' components, because no group spans a part."""
+    from experiments.collapse import (
+        floor_components,
+        floors_from_components,
+        held_out_floors,
+    )
+    from experiments.data import MoleculeSet
+
+    # two disjoint "shards", each self-contained: no key spans them
+    a = _floor_set([("CCO", {0: 1.0}), ("CCO", {0: 2.0}), ("CCC", {0: 0.5})])
+    b = _floor_set(
+        [("C/C=C/CO", {0: 1.0}), ("C/C=C\\CO", {0: 2.0}), ("CCN", {0: 0.25})]
+    )
+    union = MoleculeSet(
+        mols=[*a.mols, *b.mols],
+        atom_property="MBIScharge",
+        ids={k: [*a.ids[k], *b.ids[k]] for k in a.ids},
+    )
+
+    combined = floors_from_components([floor_components(a), floor_components(b)])
+    direct = held_out_floors(union)
+    for key in ("floor/rmse", "floor/rmse_stereo_blind"):
+        assert combined[key] == pytest.approx(direct[key], rel=1e-12), key
+
+
+def test_floors_from_components_of_an_empty_set_is_zero():
+    from experiments.collapse import floors_from_components
+
+    out = floors_from_components([])
+    assert out == {"floor/rmse": 0.0, "floor/rmse_stereo_blind": 0.0}

@@ -601,6 +601,21 @@ step annotate-collapse \
   "store_has_columns $STORE collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
   "$PYTHON" -m experiments annotate-collapse "$STORE"
 
+# --- irreducible-floor components ------------------------------------------
+#
+# A floor depends only on which molecules are held out -- never on the model,
+# the depth, the variant or which arm is scoring -- so computing it per run
+# repeats identical work across every depth, every variant, all three arms
+# and all three studies (~5 h over the campaign). The components are additive
+# over shards, which is valid because no collapse group spans one: the
+# annotation refuses a straddling collapse_key group, and the coarser
+# stereo-blind grouping was measured at 0 straddling on the real corpus.
+#
+# So: 50 shard computations, once, and every fold's floors are a sum.
+step floor-cache \
+  "file_exists experiments/stores/$STORE/floor-components.json" -- \
+  "$PYTHON" -m experiments build-floor-cache "$STORE" --n-shards "$N_SHARDS"
+
 # --- freeze the Sieve vocabulary -------------------------------------------
 #
 # Blocking for Sieve, not optional: a shard that discovers its own

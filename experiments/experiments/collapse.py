@@ -11,7 +11,7 @@ See docs/superpowers/specs/2026-09-17-fit-time-collapse-design.md section 3.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -242,6 +242,61 @@ def held_out_floor_stereo_blind(mset: MoleculeSet) -> float:
     }
     sse = _within_group_sse(mset, groups, lambda i: orders[i])
     return float(np.sqrt(sse / mset.n_atoms))
+
+
+def floor_components(mset: MoleculeSet) -> dict[str, float]:
+    """The additive pieces a floor is made of: two SSEs and an atom count.
+
+    A floor is ``sqrt(SSE / n_atoms)``, and both terms are plain sums over
+    rows -- so the pieces for a union of shards are the pieces of each shard
+    added together, and a fold's floor never needs recomputing from
+    molecules. That is only valid because no group spans a shard, which is
+    not an assumption: ``annotate_collapse`` refuses a ``collapse_key`` group
+    that straddles one, and the stereo-blind grouping (coarser, so the one
+    that could break it) was measured on the real corpus at 0 straddling
+    across split, cluster and shard alike.
+    """
+    keyed = mset.ids.get("collapse_key")
+    sse_keyed = 0.0
+    if keyed is not None and mset.n_atoms:
+        sse_keyed = _within_group_sse(
+            mset,
+            _group_indices(keyed),
+            lambda i: _canonical_order(mset.mols[i], str(keyed[i])),
+        )
+
+    sse_blind = 0.0
+    if mset.n_atoms:
+        stripped = [_strip_stereo(m) for m in mset.mols]
+        groups = _group_indices([Chem.MolToSmiles(x) for x in stripped])
+        orders = {
+            i: np.argsort(np.asarray(CanonicalRankAtoms(stripped[i])))
+            for members in groups.values()
+            if len(members) > 1
+            for i in members
+        }
+        sse_blind = _within_group_sse(mset, groups, lambda i: orders[i])
+
+    return {
+        "sse": sse_keyed,
+        "sse_stereo_blind": sse_blind,
+        "n_atoms": float(mset.n_atoms),
+    }
+
+
+def floors_from_components(parts: Iterable[Mapping[str, float]]) -> dict[str, float]:
+    """Combine per-shard ``floor_components`` into one held-out set's floors."""
+    sse = sse_blind = n_atoms = 0.0
+    for part in parts:
+        sse += part["sse"]
+        sse_blind += part["sse_stereo_blind"]
+        n_atoms += part["n_atoms"]
+    if not n_atoms:
+        return {"floor/rmse": 0.0, "floor/rmse_stereo_blind": 0.0}
+    return {
+        "floor/rmse": float(np.sqrt(sse / n_atoms)),
+        "floor/rmse_stereo_blind": float(np.sqrt(sse_blind / n_atoms)),
+    }
 
 
 def held_out_floors(mset: MoleculeSet) -> dict[str, float]:
