@@ -187,7 +187,114 @@ and every Study A and Study B gains the same factor.
 silently produces one 449,776-conformer "molecule". `dash_id` is complete and
 is the correct key.
 
-## 6. What this enables
+## 6. Corpus properties found while checking the above
+
+These came out of smoke tests run against the collapse design. They are
+recorded because each one changes what a number in this repository means, and
+none of them is visible from the store's schema.
+
+### `chembl_id` is null on 449,776 train rows
+
+Grouping conformers by `chembl_id` silently fuses every null into a single
+449,776-conformer "molecule", which is how the first conformer-count
+measurement produced a mean of 5.69 and a maximum of 449,776. `dash_id` is
+complete on every row and is the correct molecule key. Nothing downstream
+uses `chembl_id`, so no result was affected; the trap is for the next person
+who reaches for the obvious column.
+
+### 7,780 molecules are duplicated, and none of them leaks
+
+Taking one conformer per `dash_id` and comparing isomeric canonical SMILES
+over the whole store:
+
+| | |
+|---|---:|
+| conformers scanned | 1,027,538 |
+| distinct `dash_id` | 348,849 |
+| distinct canonical SMILES | 340,905 |
+| SMILES with more than one `dash_id` | 7,780 (15,724 molecules) |
+| group sizes | 2: 7,633, 3: 132, 4: 13, 5: 2 |
+| groups straddling a **split** | **0** |
+| groups straddling a **cluster** | **0** |
+| groups straddling a **shard** | **0** |
+
+So about 2.2% of `dash_id`s are redundant, and every duplicate group sits
+entirely inside one split, one Butina cluster and one shard. **No fold in any
+study was tested on a molecule whose copy it had trained on.**
+
+That is not luck. Identical molecules have identical fingerprints, so Butina
+necessarily assigns them to one cluster, and both the split and the sharding
+are by whole cluster. The zeros are what a correct cluster-clean partition
+must produce, which is exactly what makes the check worth running: a non-zero
+would have meant the partition was broken.
+
+Two consequences, both small. The effective number of distinct structures is
+~2.2% below the `dash_id` count, so the "313,964 train molecules" quoted above
+is really ~307k distinct structures. And a duplicated molecule contributes
+about six conformers to its class rather than three, inflating that class's
+support -- the same arbitrary weighting that collapsing conformers removes,
+and an argument for keying any leave-one-molecule-out on the canonical SMILES
+rather than on `dash_id`.
+
+### Stereochemistry: only enantiomers are interchangeable
+
+Stripping stereochemistry collapses 345,865 molecules onto 319,477 flat
+graphs, so **7.6% of the corpus is distinguished from something else by
+stereo alone** -- more than the 2.2% that are exact duplicates.
+
+Whether that matters depends on which kind of stereoisomerism. Charges were
+averaged over each molecule's conformers first, hydrogens folded onto their
+heavy neighbour, and corresponding atoms matched through the canonical
+ranking of the stereo-stripped graph, which is a valid correspondence exactly
+because those graphs are identical. A pair counts as enantiomers iff
+inverting every tetrahedral centre of one reproduces the other.
+
+| pair type | pairs | median | mean | p95 | excess over control |
+|---|---:|---:|---:|---:|---:|
+| **enantiomers (control)** | 8,264 | 0.00780 | 0.00897 | 0.01920 | -- |
+| diastereomers | 2,342 | 0.01047 | 0.01199 | 0.02610 | 0.00698 |
+| E/Z only | 9,189 | 0.01093 | 0.01201 | 0.02215 | 0.00766 |
+| mixed | 558 | 0.01077 | 0.01185 | 0.02235 | 0.00743 |
+
+**Enantiomers are the only valid control**, and separating them matters. A
+first pass grouped every chirality difference together and measured 0.00952;
+that bucket mixed mirror images with diastereomers, which are *not* mirror
+images and may legitimately differ. The clean control is **0.00780**, and
+every effect measured against it is correspondingly larger than that first
+pass reported.
+
+The control also sits below the 0.00945 predicted from conformer averaging
+alone, so the prediction was an overestimate -- plausibly because folding
+hydrogen charges onto heavy atoms sums correlated quantities. The measured
+control, not the prediction, is the floor to use.
+
+**Both diastereomers and E/Z show real, comparable excesses**, about 0.0070
+and 0.0077 per-atom RMS. So the intuition that chirality is irrelevant while
+cis/trans matters is only half right: enantiomers are interchangeable,
+everything else is not, and diastereomers differ nearly as much as geometric
+isomers do.
+
+**No arm in this series can see any of it.** Sieve here carries `element` on
+nodes with no edge attributes, DASH's tuple is
+`(element, degree, formal_charge, aromatic, num_h)`, and HOSE codes carry bond
+order but not bond stereo. Stereoisomers therefore land in the same class and
+receive one prediction, so roughly half the pair difference is incurred on
+each. Being common to all three arms, it cannot change their ranking -- it is
+a shared floor, like the conformational one.
+
+Two limits on reading these numbers. The penalty is only paid where **both**
+isomers are present and collide in a class, which is the ~5% of molecules with
+a stereoisomer twin in the corpus, so the corpus-wide contribution is much
+smaller than 0.0077 and has not been measured. And diastereomers differ in 3D
+shape, so part of their excess may be that two diastereomers' conformer
+ensembles are not comparable samples rather than an electronic difference;
+this measurement cannot separate those.
+
+The lever exists if it is ever worth pulling: `bond_stereo` is in the RDKit
+adapter's edge attributes, and `charge_experiments` holds an
+`element-bondstereo-10fold` run from the earlier harness.
+
+## 7. What this enables
 
 - Drop `--score-train` from Study A: the workflow records it as taking Sieve's
   Study A from ~15 min to ~1.2 h, and it is recoverable for RMSE and R^2 at no
@@ -203,7 +310,7 @@ is the correct key.
 - Report the support distribution beside every depth curve, since it is the
   mechanism the fragmentation argument rests on.
 
-## 7. Open
+## 8. Open
 
 - Leave-one-cluster-out: derived but not implemented, and its size against
   leave-one-molecule-out is unmeasured.
@@ -215,3 +322,12 @@ is the correct key.
 - Whether the collapsed dataset changes any ranking in Study B. It should not,
   since the removed term is a common additive constant across graph-based arms,
   but that is an argument rather than a measurement.
+- The corpus-wide cost of stereo blindness. The per-pair excess is measured
+  (~0.0077 for E/Z, ~0.0070 for diastereomers) but the fraction of the total
+  error it accounts for is not, because the penalty is paid only where both
+  isomers collide in one class.
+- Whether the diastereomer excess is electronic or an artifact of two
+  diastereomers' conformer ensembles not being comparable samples. Averaging
+  2-3 conformers does not settle it.
+- Whether leave-one-molecule-out should key on `dash_id` or on canonical
+  SMILES. The 7,780 duplicate groups leak between copies under the former.
