@@ -254,10 +254,69 @@ separately at each radius would be `max_radius` times that — the other reason
 
 It parallelizes cleanly over molecules, and the corpus is already sharded, so
 this is minutes on a handful of cores. Featurization is deterministic and
-depends only on the molecule, so cache codes per conformer and reuse them
-across every cross-validation fold rather than regenerating per fold.
+depends only on the molecule and on `max_radius`, so cache codes and reuse
+them across every cross-validation fold rather than regenerating per fold.
+Key the cache by molecule rather than by conformer: the codes read the 2D
+graph, so all conformers of a molecule share them, and the corpus holds
+1,029,785 conformers of 348,935 molecules.
 
-## 7. Acceptance checks
+**The cache does not survive a change of `max_radius`.** See §7.
+
+## 7. Sweeping the radius
+
+A depth sweep here does **not** have the economy that the manuscript's Sec. 4.1
+claims for the other two arms, and the difference is structural rather than
+incidental.
+
+Sieve's levels are built bottom-up, so levels 0 through *k* of a model fitted
+at the deepest radius are exactly the model fitted at radius *k*; DASH
+recovers a shallower depth by truncating walked paths. In both, "depth *k*"
+means one thing however deep the sweep went, and one fit serves every setting.
+
+A HOSE code is a *linearization*, and ordering a sphere's branches consults
+what lies beyond them, so generating deeper re-renders shallower spheres. The
+containment fails. Measured over 780 (atom, *k*) pairs generated at
+`max_radius` in {5, 6, 8, 12}, 66 of them -- 8.5% -- give a different *k*-sphere
+prefix depending on which radius the code was cut from. For example, at *k*=3
+in caffeine:
+
+```
+from max_radius 5, 6, 8   N-3;*C*CC(*C*C,H*N,HHH/*N*&,*N=O,*&/
+from max_radius 12        N-3;*C*CC(*C*C,H*N,HHH/*N*&,=O*N,*&/
+```
+
+So **each point of a sweep regenerates its codes at its own `max_radius`**,
+and the point at *k* is the arm you would actually deploy at *k*. Reading
+every point out of one deep cache would instead sweep a family of arms none
+of which is the deployed one, and would put a different meaning on the axis
+than DASH's and Sieve's carry.
+
+The predictor needs no flag for this. It already generates once at its own
+`max_radius` and cuts its shallower backoff keys from that; a sweep is simply
+one instance per candidate radius. What changes is only the expectation about
+caching: the cache is reusable across folds at a fixed `max_radius`, and never
+across settings.
+
+The price, measured on a 41-atom drug-like molecule:
+
+| `max_radius` | µs/atom | | `max_radius` | µs/atom |
+|---:|---:|---|---:|---:|
+| 1 | 94 | | 6 | 418 |
+| 2 | 108 | | 7 | 546 |
+| 3 | 163 | | 8 | 681 |
+| 4 | 232 | | 9 | 856 |
+| 5 | 309 | | 10 | 1085 |
+
+One deep pass at radius 10 is 1085 µs/atom; ten native passes over *k*=1…10
+total 4491 µs/atom, a factor of **4.1**. Much less than the ten-fold the naive
+count suggests, because the shallow settings are cheap. That is the cost of an
+axis that means the same thing as the other two arms'.
+
+A sweep that only ever reports one radius does not pay this: fit the arm once
+at the radius chosen and cut its backoff keys from that single generation, as
+§4 says and as nmrshiftdb2 does.
+
+## 8. Acceptance checks
 
 1. `sphere_prefix(code, k)` is a prefix of `sphere_prefix(code, k+1)` for every
    code and every k. Property test it.
@@ -274,7 +333,7 @@ across every cross-validation fold rather than regenerating per fold.
    Sieve arms too, since both read the 2D graph, and it puts a floor under the
    error that neither method can cross. Worth stating once in the write-up.
 
-## 8. Running it
+## 9. Running it
 
 The comparison harness is `experiments/experiments/cv.py` and
 `experiments/experiments/compare.py`, which implement the repeated-measures
@@ -288,7 +347,7 @@ to the full cross-validation. If the throughput above holds, the full run is
 cheap; if the corpus has atoms the generator chokes on, better to find out on
 one shard.
 
-## 9. Sources
+## 10. Sources
 
 - Bremser, W. *HOSE — a novel substructure code.* Anal. Chim. Acta **103**,
   355–365 (1978). doi:10.1016/S0003-2670(01)83100-7

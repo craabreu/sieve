@@ -18,6 +18,7 @@
 - Do **not** implement `NormalizablePredictor`. This arm is scored as it predicts.
 - Defaults: `max_radius = 5`, `n_min = 1`. The generator caps at **12** spheres and raises a bare `IndexError` beyond that, so `max_radius` is validated against that ceiling in the constructor.
 - The predictor name registered in the harness is `"hose"`.
+- A depth sweep **regenerates** codes at each candidate `max_radius`. The containment that lets Sieve read a shallow setting out of a deep fit, and DASH out of truncated paths, does not hold for HOSE codes: branch ordering consults what lies beyond the sphere, so a deeper generation re-renders shallower spheres and 8.5% of *k*-prefixes change. The predictor needs no flag for this — a sweep is one instance per radius — but the code cache is reusable across folds at a fixed `max_radius` and **never** across settings. Spec §7.
 - `hosegen` is an optional dependency. Nothing outside `predictors/hose.py` may import it at module scope, and every test touching it is skipped when it is absent.
 
 ## File Structure
@@ -765,12 +766,21 @@ git add docs/superpowers/plans/2026-09-16-hose-baseline-results.md
 git commit -m "docs: one-shard timing and error for the HOSE arm"
 ```
 
-- [ ] **Step 5: Stop and report**
+- [ ] **Step 5: Price the sweep as well as the single fit**
 
-Do **not** start the full cross-validation. Report the numbers and let the
-author decide whether the full comparison is worth its wall clock, and at which
-`max_radius` — the spec notes NMRShiftDB and Kuhn et al. both use six spheres
-while this defaults to five, and both are worth reporting.
+If a Study-A-style depth sweep is wanted, it costs more here than it does for
+the other two arms, because each point regenerates. From the spec's §7 table,
+one pass at radius 10 is 1085 µs/atom while native passes over *k*=1…10 total
+4491 µs/atom, a factor of 4.1. Multiply your measured per-atom rate from Step 1
+by the corpus size both ways and record both figures, so the choice between a
+single setting and a full sweep is made on wall clock rather than on hope.
+
+- [ ] **Step 6: Stop and report**
+
+Do **not** start the full cross-validation or the sweep. Report the numbers and
+let the author decide whether the comparison is worth its wall clock, and at
+which `max_radius` — the spec notes NMRShiftDB and Kuhn et al. both use six
+spheres while this defaults to five, and both are worth reporting.
 
 ---
 
