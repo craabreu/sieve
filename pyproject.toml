@@ -143,7 +143,12 @@ allowed-unresolved-imports = [
 # **arrays)` passes arbitrary ndarrays through **kwds, but the stub
 # resolves that against `allow_pickle: bool` instead of `**kwds:
 # ArrayLike`, reporting every array argument as "expected bool".
-include = ["src/sieve/model.py"]
+include = [
+    "src/sieve/model.py",
+    # save_hose_state's `np.savez_compressed(path, **arrays)` -- the same
+    # splat against the same stub.
+    "experiments/experiments/hose_artifact.py",
+]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"
