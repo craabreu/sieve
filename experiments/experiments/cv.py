@@ -1042,7 +1042,25 @@ def run_hose_cv(
     from experiments.predictors.hose import HoseLookupPredictor
 
     ids = shard_ids(n_shards)
-    mset_by_shard = load_shards(store, ids, stores_root=stores_root)
+
+    # Load only the shards this call will actually predict on, not all N.
+    # The training side is read from the shard STATES (small .npz tables),
+    # never from molecules, so a process scoring one (radius, fold) needs
+    # just that fold's held-out group. Loading all N instead costs the whole
+    # store's molecules in every one of the ~25-30 concurrent processes the
+    # fold-level dispatch runs, which is what makes that dispatch affordable
+    # at all. ``score_train`` opts back into the training molecules, since
+    # then they really are scored.
+    needed: set[str] = set()
+    for repeat in repeats:
+        plan = build_cv_plan(ids, k=k, repeat=repeat)
+        for fold, group in enumerate(plan.groups):
+            if folds is not None and fold not in folds:
+                continue
+            needed.update(group)
+            if score_train:
+                needed.update(s for g in _other_groups(plan, fold) for s in g)
+    mset_by_shard = load_shards(store, sorted(needed), stores_root=stores_root)
     git_info = _check_clean(allow_dirty)
 
     results: list[RunResult] = []
