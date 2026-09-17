@@ -410,6 +410,7 @@ def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
         n_shards=args.n_shards,
         radii=[int(r) for r in args.radii.split(",")],
         repeats=[int(r) for r in args.repeats.split(",")],
+        folds=[int(f) for f in args.folds.split(",")] if args.folds else None,
         k=args.k,
         normalization=args.normalization,
         method=args.method,
@@ -1034,6 +1035,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--radii", required=True, help="comma-separated; each needs its own shard fits"
     )
     p_cv_run_hose.add_argument("--repeats", default="0")
+    p_cv_run_hose.add_argument(
+        "--folds",
+        default=None,
+        help="comma-separated fold indices; default every fold. The seam an "
+        "xargs -P dispatch uses to put one (radius, fold) per process -- this "
+        "arm's cost is per-fold code generation, which nothing shares",
+    )
     p_cv_run_hose.add_argument("--k", type=int, default=5)
     p_cv_run_hose.add_argument(
         "--normalization",

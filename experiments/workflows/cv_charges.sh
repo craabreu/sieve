@@ -463,7 +463,19 @@ SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-5}"
 HOSE_RADII="${HOSE_RADII:-1,2,3,4,5,6}"
 HOSE_STUDY_A=hose-cv-study-a
 HOSE_STUDY_B=hose-cv-study-b
-HOSE_SHARD_JOBS="${HOSE_SHARD_JOBS:-8}"
+HOSE_SHARD_JOBS="${HOSE_SHARD_JOBS:-16}"
+# One process per (radius, fold) for Study A and per (repeat, fold) for Study
+# B. Fold-level, not radius- or repeat-level: this arm's cost is code
+# generation over each fold's held-out set, and nothing shares it across folds
+# the way the other arms share one assembled model across depths. At
+# radius-level parallelism alone a single process would carry a whole radius's
+# 5 folds, which measured out at ~18 h for Study A.
+HOSE_CV_JOBS="${HOSE_CV_JOBS:-12}"
+# Pinned rather than read off Study A's curve, so Studies A and B can run at
+# the same time instead of one waiting on the other. 5 is the spec's deployed
+# setting and the radius its one-shard probe used; Study A's curve, drawn from
+# the same runs, is what checks it afterwards.
+HOSE_SELECTED_RADIUS="${HOSE_SELECTED_RADIUS:-5}"
 HOSE_SELECT_SCRIPT=experiments/workflows/hose_select_radius.py
 
 # Resolved from Study A's own curve when it exists, by the same rule that
@@ -726,13 +738,31 @@ step study-a-sieve \
 # Study A, and deliberately without --score-train: the train curve is a
 # diagnostic the other arms already carry, and here it would double the
 # generator cost, which is this arm's entire budget.
-step study-a-hose \
-  "method_runs_count_is $HOSE_STUDY_A hose $((K * $(n_items "$HOSE_RADII")))" -- \
+run_one_hose_cv() {
+  # "<radius> <fold>" on one line, from xargs
+  local radius=${1%% *} fold=${1##* }
   "$PYTHON" -m experiments cv-run-hose "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
-    --radii "$HOSE_RADII" --repeats "$STUDY_A_REPEATS" \
+    --radii "$radius" --folds "$fold" --repeats "$HOSE_CV_REPEATS" \
     --normalization equal_weighted --method hose \
-    --experiment "$HOSE_STUDY_A"
+    --experiment "$HOSE_CV_EXPERIMENT" $HOSE_CV_EXTRA
+}
+export -f run_one_hose_cv
+export HOSE_STUDY_A HOSE_STUDY_B STUDY_A_REPEATS STUDY_B_REPEATS K
+
+dispatch_study_a_hose() {
+  local r f
+  export HOSE_CV_REPEATS="$STUDY_A_REPEATS"
+  export HOSE_CV_EXPERIMENT="$HOSE_STUDY_A"
+  export HOSE_CV_EXTRA=""
+  for r in $(echo "$HOSE_RADII" | tr ',' ' '); do
+    for f in $(seq 0 $((K - 1))); do echo "$r $f"; done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'run_one_hose_cv "$1"' -- {}
+}
+
+step study-a-hose \
+  "method_runs_count_is $HOSE_STUDY_A hose $((K * $(n_items "$HOSE_RADII")))" -- \
+  dispatch_study_a_hose
 
 # --- Study A's figure -------------------------------------------------------
 #
@@ -897,13 +927,27 @@ step study-b-sieve \
 # Run through a function, not `bash -c`: a nested shell does not inherit
 # hose_radius, so $(hose_radius) would expand to nothing there and the arm
 # would be scored at whatever radius cv-run-hose defaulted to.
-run_study_b_hose() {
+# One process per (repeat, fold), at the one selected radius.
+run_one_hose_study_b() {
+  local repeat=${1%% *} fold=${1##* }
   "$PYTHON" -m experiments cv-run-hose "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
-    --radii "$(hose_radius)" --repeats "$STUDY_B_REPEATS" \
+    --radii "$HOSE_B_RADIUS" --folds "$fold" --repeats "$repeat" \
     --normalization equal_weighted --method hose \
-    --experiment "$HOSE_STUDY_B" \
-    $SAVE_PREDICTIONS_FLAG
+    --experiment "$HOSE_STUDY_B" $HOSE_B_EXTRA
+}
+export -f run_one_hose_study_b
+
+run_study_b_hose() {
+  local rep f
+  HOSE_B_RADIUS="$(hose_radius)"
+  export HOSE_B_RADIUS
+  export HOSE_B_EXTRA="$SAVE_PREDICTIONS_FLAG"
+  export HOSE_STUDY_B
+  echo "--- study B hose: radius $HOSE_B_RADIUS ---"
+  for rep in $(echo "$STUDY_B_REPEATS" | tr ',' ' '); do
+    for f in $(seq 0 $((K - 1))); do echo "$rep $f"; done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'run_one_hose_study_b "$1"' -- {}
 }
 
 step study-b-hose \

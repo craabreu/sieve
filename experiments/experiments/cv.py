@@ -988,6 +988,7 @@ def run_hose_cv(
     n_shards: int,
     radii: Sequence[int],
     repeats: Sequence[int],
+    folds: Sequence[int] | None = None,
     k: int = 5,
     normalization: str = "equal_weighted",
     method: str = "hose",
@@ -1010,6 +1011,13 @@ def run_hose_cv(
     therefore |radii| independent studies sharing only a fold assignment --
     which is exactly what keeps this arm's depth axis meaning the same thing
     as the other two arms' do.
+
+    ``folds`` restricts the run to those fold indices, which is the seam an
+    ``xargs -P`` dispatch uses to put one (radius, fold) or (repeat, fold) per
+    process. Necessary rather than merely convenient here: this arm's cost is
+    code generation over the held-out set, which no assembly is shared across,
+    so a single process would serialize the whole sweep. Each process pays its
+    own merge, which is cheap beside the generation it parallelizes.
 
     No model cache: the other drivers' caches are keyed on (repeat, fold)
     because one assembly serves every depth, which is the saving that does
@@ -1057,12 +1065,25 @@ def run_hose_cv(
 
         for repeat in repeats:
             plan = build_cv_plan(ids, k=k, repeat=repeat)
+            wanted = range(k) if folds is None else [f for f in folds if f < k]
+            if not any(
+                _cv_run_done(
+                    runs_root,
+                    experiment,
+                    cv_batch_id(repeat=repeat, fold=f, method=method, depth=radius),
+                )
+                is None
+                for f in wanted
+            ):
+                continue  # nothing left for this (radius, repeat)
             group_states = [
                 fold_hose_states(states[sid] for sid in g) for g in plan.groups
             ]
             train_states = leave_one_group_out(group_states, merge=merge_hose_states)
 
             for fold, group in enumerate(plan.groups):
+                if folds is not None and fold not in folds:
+                    continue
                 batch_id = cv_batch_id(
                     repeat=repeat, fold=fold, method=method, depth=radius
                 )
