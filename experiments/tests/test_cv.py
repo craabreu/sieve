@@ -1237,8 +1237,12 @@ def test_run_sieve_cv_scores_train_when_asked(tmp_path):
 
 
 def test_run_sieve_cv_does_not_score_train_by_default(tmp_path):
-    """The expensive half stays off unless asked: an unflagged run must
-    record exactly what it recorded before this flag existed."""
+    """The expensive half (--score-train's own predict pass over the
+    training molecules) stays off unless asked. The *analytic* train/
+    metrics are unaffected by this flag -- they come from the fitted
+    model's own stored statistics at no extra cost, so they are always
+    present (docs/superpowers/specs/2026-09-17-analytic-training-metrics-
+    design.md)."""
     import json
 
     from experiments.cv import run_sieve_cv, run_sieve_shard_fits
@@ -1284,4 +1288,11 @@ def test_run_sieve_cv_does_not_score_train_by_default(tmp_path):
 
     for result in results:
         metrics = json.loads((result.run_dir / "metrics.json").read_text())
-        assert not any(key.startswith("train/") for key in metrics)
+        # Analytic, present with no --score-train:
+        assert "train/rmse" in metrics
+        assert "train/eta2" in metrics
+        assert "train/matched_fraction" in metrics
+        # --score-train's own measured-only keys: absent without the flag.
+        assert "train/mae" not in metrics
+        assert "train/n_conformers" not in metrics
+        assert "train/n_atoms" not in metrics

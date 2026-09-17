@@ -912,6 +912,7 @@ def _write_cv_run(
     normalization: str,
     train_set: MoleculeSet | None = None,
     train_raw: RawPrediction | None = None,
+    analytic_stats: Any = None,
     repeat: int,
     fold: int,
     depth: int,
@@ -927,9 +928,37 @@ def _write_cv_run(
     ``run.batch_id``/``run.tags``, plus a ``cv`` block of this driver's own
     fields) purely so ``aggregate.read_runs_from_dirs``'s existing
     ``flatten_params`` -- and therefore ``summarize``/``sweep`` -- read a CV
-    run exactly like an ordinary one, with no changes to either."""
+    run exactly like an ordinary one, with no changes to either.
+
+    ``analytic_stats`` is an already-computed ``experiments.analytic.
+    TrainStats`` -- the caller picks ``sieve_train_stats`` or
+    ``hose_train_stats`` (DASH has neither; spec section 2), so this
+    function stays predictor-agnostic and needs no per-predictor dispatch or
+    import of its own.
+    """
     started = datetime.now(UTC)
     run_metrics = _score_raw_and_normalized(raw, held_out, normalization=normalization)
+
+    if analytic_stats is not None:
+        run_metrics.update(
+            {
+                "train/rmse": analytic_stats.rmse,
+                "train/r2": analytic_stats.r_squared,
+                "train/eta2": analytic_stats.eta_squared,
+                "train/matched_fraction": analytic_stats.matched_fraction,
+                **{
+                    f"train/frac_support_lt_{t}": v
+                    for t, v in analytic_stats.support_fractions.items()
+                },
+            }
+        )
+    # ``_score_train`` (measured, from --score-train) runs *after* the
+    # analytic block above and so overwrites its train/* keys on any key
+    # they share -- deliberately: it is the ground truth this analytic
+    # curve is an identity on, and if the two ever disagree, the measured
+    # value should be what a run reports, with the disagreement visible via
+    # each's own recorded numbers rather than the analytic one silently
+    # winning.
     if train_raw is not None and train_set is not None:
         run_metrics.update(_score_train(train_raw, train_set))
 
@@ -1176,6 +1205,17 @@ def run_hose_cv(
                     train_raw = predictor.predict_raw(train_set)
                     predict_s += time.perf_counter() - t0
 
+                # None, not a raised error, for a shard fitted before the
+                # sumsq column existed: this driver resumes against whatever
+                # shard fits are already on disk, and a mid-sweep artifact
+                # predating this column must keep working, just without the
+                # analytic columns, rather than crash the whole run.
+                analytic_stats = None
+                if train_states[fold].has_second_moment:
+                    from experiments.analytic import hose_train_stats
+
+                    analytic_stats = hose_train_stats(train_states[fold], radius)
+
                 results.append(
                     _write_cv_run(
                         experiment=experiment,
@@ -1188,6 +1228,7 @@ def run_hose_cv(
                         normalization=normalization,
                         train_set=train_set,
                         train_raw=train_raw,
+                        analytic_stats=analytic_stats,
                         repeat=repeat,
                         fold=fold,
                         depth=radius,
@@ -1589,11 +1630,12 @@ def run_sieve_cv(
                         continue
                     if truncated is None:
                         truncated = truncate_model(train_models[fold], depth)
-                    predictor.set_model(
+                    model_for_run = (
                         truncated
                         if variant is None
                         else respecify_model(truncated, variant)
                     )
+                    predictor.set_model(model_for_run)
                     t0 = time.perf_counter()
                     raw = predictor.predict_raw_from_batch(batch)
                     train_raw = (
@@ -1602,6 +1644,13 @@ def run_sieve_cv(
                         else None
                     )
                     predict_s = time.perf_counter() - t0
+                    # Read straight off model_for_run's own stored statistics
+                    # -- the exact model this run predicted with, variant
+                    # respecification included -- so no extra fit or walk is
+                    # needed for every depth/variant point of a curve.
+                    from experiments.analytic import sieve_train_stats
+
+                    analytic_stats = sieve_train_stats(model_for_run)
                     results.append(
                         _write_cv_run(
                             experiment=experiment,
@@ -1614,6 +1663,7 @@ def run_sieve_cv(
                             normalization=normalization,
                             train_set=train_set,
                             train_raw=train_raw,
+                            analytic_stats=analytic_stats,
                             repeat=repeat,
                             fold=fold,
                             depth=depth,
