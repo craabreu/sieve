@@ -230,6 +230,40 @@ def _cmd_merge_states(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_analytic_curve(args: argparse.Namespace) -> int:
+    """Training error, R^2, eta^2, support distribution and LOO for a saved
+    model state -- computed from its own stored statistics, no store, no
+    molecules, no walk (docs/superpowers/specs/2026-09-17-analytic-training-
+    metrics-design.md)."""
+    from experiments.analytic import sieve_curve
+
+    if args.predictor == "sieve":
+        import sieve
+
+        model = sieve.SieveModel.load(args.state)
+        depths = args.depths or list(range(1, model.config.max_wl_depth + 1))
+        rows = [s.as_row() for s in sieve_curve(model, depths, loo=args.loo)]
+    else:
+        from experiments.analytic import hose_curve
+        from experiments.hose_artifact import load_hose_state
+
+        state = load_hose_state(args.state)
+        radii = args.depths or list(range(1, state.max_radius + 1))
+        rows = [s.as_row() for s in hose_curve(state, radii, loo=args.loo)]
+
+    handle = open(args.out, "w", newline="") if args.out else sys.stdout
+    try:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    finally:
+        if args.out:
+            handle.close()
+    if args.out:
+        print(f"wrote {len(rows)} row(s) -> {args.out}")
+    return 0
+
+
 def _cmd_subsample_store(args: argparse.Namespace) -> int:
     from experiments.store_ops import subsample_store
 
@@ -957,6 +991,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_merge_states.add_argument("--out", required=True, type=Path)
     p_merge_states.set_defaults(func=_cmd_merge_states)
+
+    p_analytic = sub.add_parser(
+        "analytic-curve",
+        help="training error, R^2, eta^2, support distribution and LOO for "
+        "a saved model state, computed from its own stored statistics -- "
+        "no store, no molecules, no walk",
+    )
+    p_analytic.add_argument("state", type=Path)
+    p_analytic.add_argument("--predictor", required=True, choices=("sieve", "hose"))
+    p_analytic.add_argument(
+        "--depths",
+        type=lambda s: [int(x) for x in s.split(",")],
+        help="comma-separated; defaults to every depth/radius the state carries",
+    )
+    p_analytic.add_argument("--loo", action="store_true")
+    p_analytic.add_argument("--out", type=Path, help="CSV path; stdout if omitted")
+    p_analytic.set_defaults(func=_cmd_analytic_curve)
 
     p_cv_fit_dash = sub.add_parser(
         "cv-fit-dash-shards",

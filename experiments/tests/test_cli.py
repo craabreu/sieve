@@ -627,3 +627,34 @@ def test_build_parser_prepare_store_stop_before_split_defaults_off():
     assert args.stop_before_split is False
     args = parser.parse_args(["prepare-store", "--stop-before-split"])
     assert args.stop_before_split is True
+
+
+def test_analytic_curve_writes_a_csv(tmp_path):
+    import csv
+
+    import pytest
+
+    pytest.importorskip("rdkit")
+    from experiments import cli
+    from experiments.tests.test_analytic import _fit
+
+    model, _ = _fit(depth=3)
+    state = tmp_path / "model.npz"
+    model.save(state)
+    out = tmp_path / "curve.csv"
+    rc = cli.main(
+        [
+            "analytic-curve",
+            str(state),
+            "--predictor",
+            "sieve",
+            "--depths",
+            "1,2,3",
+            "--out",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    rows = list(csv.DictReader(out.open()))
+    assert [r["depth"] for r in rows] == ["1", "2", "3"]
+    assert float(rows[0]["rmse"]) > float(rows[-1]["rmse"])

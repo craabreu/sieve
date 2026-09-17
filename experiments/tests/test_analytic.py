@@ -290,3 +290,143 @@ def test_an_empty_model_is_refused_rather_than_dividing_by_zero():
     empty = sieve.SieveModel.empty(model.config)
     with pytest.raises(ValueError, match="no training atoms"):
         sieve_train_stats(empty)
+
+
+# --------------------------------------------------------------------------
+# HOSE
+# --------------------------------------------------------------------------
+
+
+def _hose_corpus(values):
+    """One methanol-shaped molecule per value in ``values``, the value set
+    only on the O atom (index 1) -- every other atom is a constant 0.0, so
+    only the O atom's key carries any spread to test against."""
+    from experiments.data import MoleculeSet
+    from rdkit import Chem
+
+    mols = []
+    for v in values:
+        mol = Chem.AddHs(Chem.MolFromSmiles("CO"))
+        for atom in mol.GetAtoms():
+            atom.SetDoubleProp("MBIScharge", 0.0)
+        mol.GetAtomWithIdx(1).SetDoubleProp("MBIScharge", float(v))
+        mols.append(mol)
+    return MoleculeSet(
+        mols=mols,
+        atom_property="MBIScharge",
+        ids={"dash_id": [None] * len(mols)},
+    )
+
+
+def _hose_fit(values, radius=1, n_min=1):
+    import numpy as np
+    from experiments.predictors.hose import HoseLookupPredictor
+
+    mset = _hose_corpus(values)
+    p = HoseLookupPredictor(max_radius=radius, n_min=n_min)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    return p, mset
+
+
+def test_hose_analytic_matches_predicting_its_own_training_set():
+    pytest.importorskip("hosegen")
+    p, mset = _hose_fit([0.1, -0.2, 0.3, -0.05, 0.02, 0.4])
+    brute = float(((mset.atom_target - p.predict(mset).atom_value) ** 2).sum())
+    from experiments.analytic import hose_train_stats
+
+    stats = hose_train_stats(p.model_state(), radius=1)
+    assert stats.sse == pytest.approx(brute, rel=1e-10)
+    assert stats.matched_fraction == 1.0  # n_min=1: nothing ever backs off
+
+
+def test_hose_analytic_loo_matches_a_real_leave_one_molecule_out_refit():
+    """No predict_loo exists for HOSE, so this builds its own oracle:
+    removing one molecule from the corpus entirely and refitting removes
+    exactly that molecule's own one contribution to the O key (each molecule
+    contributes exactly one O atom), which for a key of count N is the
+    textbook leave-one-out estimate.
+
+    The O key is found by its nonzero sumsq, not by its count: C and the
+    H-on-O key both also happen to have count 4 here, since every molecule
+    contributes exactly one atom to each.
+    """
+    pytest.importorskip("hosegen")
+    from experiments.analytic import hose_train_stats
+
+    values = [0.1, -0.2, 0.3, -0.05]
+    full, _mset = _hose_fit(values, radius=1)
+    full_state = full.model_state()
+
+    o_key = next(k for k, (_s, qq, _c) in full_state.tables[1].items() if qq > 0)
+
+    sse_o_manual = 0.0
+    for i, y_i in enumerate(values):
+        rest, _ = _hose_fit(values[:i] + values[i + 1 :], radius=1)
+        rest_mean = rest.model_state().tables[1][o_key][0] / (len(values) - 1)
+        sse_o_manual += (y_i - rest_mean) ** 2
+
+    # Every other key here (C, and the two H environments) is a constant
+    # 0.0, contributing exactly 0 to LOO SSE either way, so the whole-state
+    # LOO SSE at radius 1 is entirely the O key's own contribution.
+    stats = hose_train_stats(full_state, radius=1, loo=True)
+    assert stats.sse == pytest.approx(sse_o_manual, rel=1e-10)
+
+
+def test_hose_analytic_loo_uncorrected_for_a_singleton_key():
+    """A key with exactly one atom has nowhere to back off to (no prefix
+    backoff at n_min=1), so its LOO contribution must be the *unadjusted*
+    residual against the global mean, not a (N/(N-1))^2-scaled one (which
+    would divide by zero for N=1 in any case).
+
+    Verified against a hand computation over the state's own table, summing
+    each key's LOO contribution by the rule the docstring states -- an
+    independent arithmetic path, not a re-run of the implementation."""
+    pytest.importorskip("hosegen")
+    from experiments.analytic import hose_train_stats
+    from experiments.data import MoleculeSet
+    from experiments.predictors.hose import HoseLookupPredictor
+    from rdkit import Chem
+
+    distinct = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    for atom in distinct.GetAtoms():
+        atom.SetDoubleProp("MBIScharge", 0.0)
+    distinct.GetAtomWithIdx(2).SetDoubleProp("MBIScharge", 1.0)  # the O
+    companions = _hose_corpus([0.2, -0.3]).mols
+    mset = MoleculeSet(
+        mols=[distinct, *companions],
+        atom_property="MBIScharge",
+        ids={"dash_id": [None] * 3},
+    )
+    p = HoseLookupPredictor(max_radius=2, n_min=1)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    state = p.model_state()
+
+    global_mean = state.global_mean
+    expected = 0.0
+    for s, qq, c in state.tables[2].values():
+        if c >= 2:
+            var = qq / c - (s / c) ** 2
+            expected += (c**3) * var / (c - 1) ** 2
+        else:
+            expected += (s - global_mean) ** 2  # c == 1: y itself is s
+
+    stats = hose_train_stats(state, radius=2, loo=True)
+    assert stats.sse == pytest.approx(expected, rel=1e-10)
+
+
+def test_hose_analytic_refuses_a_state_without_the_second_moment():
+    from experiments.analytic import hose_train_stats
+    from experiments.hose_artifact import HoseState
+
+    legacy = HoseState(1, ({}, {"C": (3.0, float("nan"), 2)}), 3.0, 2)
+    with pytest.raises(ValueError, match="refit"):
+        hose_train_stats(legacy, radius=1)
+
+
+def test_hose_analytic_refuses_a_non_baseline_n_min():
+    from experiments.analytic import hose_train_stats
+    from experiments.hose_artifact import HoseState
+
+    state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
+    with pytest.raises(NotImplementedError, match="n_min"):
+        hose_train_stats(state, radius=1, n_min=3)

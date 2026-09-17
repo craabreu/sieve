@@ -321,3 +321,113 @@ def sieve_curve(
             )
         )
     return out
+
+
+def hose_train_stats(
+    state: Any,
+    radius: int,
+    *,
+    n_min: int = 1,
+    loo: bool = False,
+    thresholds: tuple[int, ...] = SUPPORT_THRESHOLDS,
+) -> TrainStats:
+    """Training statistics for one HOSE radius, from its own key table.
+
+    Restricted to the baseline ``n_min=1``, where the deepest key always
+    answers a training atom -- it contributed to that key -- so there is no
+    backoff and the walk collapses to a single level. Generalizing would mean
+    implementing prefix backoff over the key tables, i.e. analysing a method
+    nobody runs (spec section 2).
+
+    Under ``loo=True``, a key with fewer than 2 atoms has nowhere to back off
+    to (no prefix backoff here), so it is scored against the plain, un-
+    corrected global mean -- the same convention ``sieve_train_stats`` uses
+    for its own global-mean fallback (``_global_sse``), for the same reason:
+    there is nothing to leave one atom out *of*.
+    """
+    if n_min != 1:
+        raise NotImplementedError(
+            f"analytic HOSE statistics assume the baseline n_min=1, got "
+            f"{n_min}: at a higher threshold a training atom backs off to "
+            f"its own sphere prefix, which this does not implement"
+        )
+    if not state.has_second_moment:
+        raise ValueError(
+            "this HOSE state predates the sumsq column and carries no second "
+            "moment, so its training error is not recoverable -- refit to "
+            "use the analytic curve"
+        )
+    table = state.tables[radius]
+    if not table:
+        raise ValueError(f"state has no keys at radius {radius}")
+
+    n = np.array([c for _, _, c in table.values()], dtype=np.float64)
+    s = np.array([v for v, _, _ in table.values()], dtype=np.float64)[:, None]
+    q = np.array([qq for _, qq, _ in table.values()], dtype=np.float64)[:, None]
+    value = s / n[:, None]
+    n_total = float(n.sum())
+
+    if not loo:
+        sse = _sse_against(n, s, q, value)
+        n_matched = n_total  # n_min=1: every training atom answers here
+    else:
+        supported = n >= 2
+        sse = 0.0
+        n_matched = 0.0
+        if supported.any():
+            scale = _loo_scale(n[supported])
+            sse += _sse_against(
+                n[supported],
+                s[supported],
+                q[supported],
+                value[supported],
+                scale=scale,
+            )
+            n_matched += float(n[supported].sum())
+        singleton = ~supported
+        if singleton.any():
+            gvalue = np.broadcast_to(state.global_mean, s[singleton].shape)
+            sse += _sse_against(n[singleton], s[singleton], q[singleton], gvalue)
+            n_matched += float(n[singleton].sum())
+
+    # Always the plain (non-LOO) partition, matching sieve_train_stats' own
+    # eta^2: it describes the partition, not whichever estimator was asked
+    # for.
+    within = _sse_against(n, s, q, value)
+    tss = float(state.global_sumsq - state.global_sum**2 / state.global_count)
+    populated = n > 0
+
+    return TrainStats(
+        depth=radius,
+        n_classes=int(populated.sum()),
+        n_atoms=int(n_total),
+        sse=sse,
+        rmse=float(np.sqrt(sse / n_total)),
+        r_squared=float(1.0 - sse / tss) if tss > 0 else float("nan"),
+        eta_squared=float(1.0 - within / tss) if tss > 0 else float("nan"),
+        matched_fraction=float(n_matched / n_total),
+        support_fractions={
+            t: float(n[populated & (n < t)].sum() / n_total) for t in thresholds
+        },
+    )
+
+
+def hose_curve(
+    state: Any,
+    radii: list[int],
+    *,
+    n_min: int = 1,
+    loo: bool = False,
+    thresholds: tuple[int, ...] = SUPPORT_THRESHOLDS,
+) -> list[TrainStats]:
+    """``hose_train_stats`` at each radius.
+
+    Unlike ``sieve_curve`` there is no truncation: a HOSE state's tables at
+    different radii are independently generated linearizations
+    (``hose_artifact``'s own module docstring), not a prefix relationship, so
+    each radius is read from the state's own table for that radius directly.
+    """
+    return [
+        hose_train_stats(state, r, n_min=n_min, loo=loo, thresholds=thresholds)
+        for r in sorted(radii)
+    ]
