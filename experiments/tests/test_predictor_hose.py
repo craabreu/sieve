@@ -183,3 +183,20 @@ def test_matched_radius_before_predict_raises():
     p.fit(train, train, rng=np.random.default_rng(0))
     with pytest.raises(RuntimeError, match="predict must be called"):
         _ = p.matched_radius
+
+
+def test_fit_records_the_second_moment_and_leaves_predictions_alone():
+    """The new sumsq accumulator must change no prediction -- predict/n_min/
+    the backoff loop read only ``_tables``, untouched by this addition."""
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    p = _predictor(max_radius=2)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    before = p.predict(mset).atom_value
+    state = p.model_state()
+    assert state.has_second_moment
+    for _key, (s, qq, c) in state.tables[1].items():
+        # sum of squares >= n * mean^2 (Cauchy-Schwarz / population variance
+        # can't be negative), a sanity floor rather than an exact pin.
+        assert qq >= s * s / c - 1e-9
+    p.set_model_state(state)
+    np.testing.assert_allclose(p.predict(mset).atom_value, before)

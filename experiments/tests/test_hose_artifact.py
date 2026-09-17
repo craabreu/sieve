@@ -196,3 +196,61 @@ def test_merge_states_entry_point_folds_shards_and_refuses_mixed_radii(tmp_path)
 
     with pytest.raises(ValueError, match="at least one shard"):
         HoseLookupPredictor.merge_states([], tmp_path / "empty.npz")
+
+
+def test_state_carries_a_second_moment():
+    from experiments.hose_artifact import HoseState
+
+    state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
+    assert state.has_second_moment
+    assert state.tables[1]["C"] == (3.0, 5.0, 2)
+
+
+def test_merge_sums_all_three_columns():
+    from experiments.hose_artifact import HoseState, merge_hose_states
+
+    a = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
+    b = HoseState(
+        1, ({}, {"C": (1.0, 1.0, 1), "N": (2.0, 4.0, 1)}), 3.0, 2, global_sumsq=5.0
+    )
+    merged = merge_hose_states(a, b)
+    assert merged.tables[1]["C"] == (4.0, 6.0, 3)
+    assert merged.tables[1]["N"] == (2.0, 4.0, 1)
+    assert merged.has_second_moment
+    assert merged.global_sumsq == pytest.approx(10.0)
+
+
+def test_a_legacy_state_still_loads_and_merges(tmp_path):
+    """Pre-existing artifacts must keep working; only the analytic call may
+    refuse them."""
+    path = tmp_path / "legacy.npz"
+    np.savez_compressed(
+        path,
+        max_radius=np.asarray(1),
+        global_sum=np.asarray(3.0),
+        global_count=np.asarray(2),
+        r1_keys=np.asarray(["C"], dtype=np.str_),
+        r1_sum=np.asarray([3.0]),
+        r1_count=np.asarray([2]),
+    )
+    from experiments.hose_artifact import load_hose_state, merge_hose_states
+
+    state = load_hose_state(path)
+    assert not state.has_second_moment
+    assert state.tables[1]["C"][0] == 3.0
+    assert state.tables[1]["C"][2] == 2
+    merged = merge_hose_states(state, state)
+    assert not merged.has_second_moment
+    assert merged.tables[1]["C"][2] == 4
+
+
+def test_a_new_state_round_trips_its_second_moment(tmp_path):
+    from experiments.hose_artifact import HoseState, load_hose_state, save_hose_state
+
+    state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
+    path = tmp_path / "hose.npz"
+    save_hose_state(state, path)
+    back = load_hose_state(path)
+    assert back.has_second_moment
+    assert back.tables[1]["C"] == pytest.approx((3.0, 5.0, 2))
+    assert back.global_sumsq == pytest.approx(5.0)

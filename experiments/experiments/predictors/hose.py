@@ -45,8 +45,14 @@ class HoseLookupPredictor:
         self.max_radius = max_radius
         self.n_min = n_min
         self._tables: list[dict[str, tuple[float, int]]] | None = None
+        # Per-key sum of y^2, kept separate from ``_tables`` (mean, count):
+        # predict/n_min/the backoff loop read only ``_tables``, so this is
+        # pure addition that changes no prediction -- it exists solely to
+        # feed the analytic training curve (experiments.analytic).
+        self._sumsq: list[dict[str, float]] | None = None
         self._global_mean: float | None = None
         self._global_count: int = 0
+        self._global_sumsq: float | None = None
         self._matched_radius: NDArray[np.int64] | None = None
 
     def _codes(self, mols: list[Any]) -> Iterator[str]:
@@ -74,20 +80,27 @@ class HoseLookupPredictor:
         sums: list[defaultdict[str, float]] = [
             defaultdict(float) for _ in range(self.max_radius + 1)
         ]
+        sumsqs: list[defaultdict[str, float]] = [
+            defaultdict(float) for _ in range(self.max_radius + 1)
+        ]
         counts: list[defaultdict[str, int]] = [
             defaultdict(int) for _ in range(self.max_radius + 1)
         ]
         for value, code in zip(target, self._codes(train.mols), strict=True):
+            v = float(value)
             for k in range(1, self.max_radius + 1):
                 key = sphere_prefix(code, k)
-                sums[k][key] += float(value)
+                sums[k][key] += v
+                sumsqs[k][key] += v * v
                 counts[k][key] += 1
         self._tables = [
             {key: (sums[k][key] / counts[k][key], counts[k][key]) for key in counts[k]}
             for k in range(self.max_radius + 1)
         ]
+        self._sumsq = [dict(sumsqs[k]) for k in range(self.max_radius + 1)]
         self._global_mean = float(np.mean(target))
         self._global_count = int(np.size(target))
+        self._global_sumsq = float(np.sum(np.square(target)))
 
     def predict(self, test: MoleculeSet) -> Prediction:
         if self._tables is None or self._global_mean is None:
@@ -116,18 +129,19 @@ class HoseLookupPredictor:
         return self._matched_radius
 
     def model_state(self) -> Any:
-        """This fit's sufficient statistics, as sums and counts.
+        """This fit's sufficient statistics, as sums, sums of squares and
+        counts.
 
         Sums rather than the means ``_tables`` holds, because sums are what
         add: see ``hose_artifact`` for why a 40-shard merge needs them.
         """
         from experiments.hose_artifact import HoseState
 
-        if self._tables is None or self._global_mean is None:
+        if self._tables is None or self._global_mean is None or self._sumsq is None:
             raise RuntimeError("fit must be called before model_state")
         tables = [{}] + [
             {
-                key: (mean * count, count)
+                key: (mean * count, self._sumsq[k][key], count)
                 for key, (mean, count) in self._tables[k].items()
             }
             for k in range(1, self.max_radius + 1)
@@ -137,6 +151,7 @@ class HoseLookupPredictor:
             tables=tuple(tables),
             global_sum=self._global_mean * self._global_count,
             global_count=self._global_count,
+            global_sumsq=self._global_sumsq,
         )
 
     def set_model_state(self, state: Any) -> None:
@@ -146,11 +161,16 @@ class HoseLookupPredictor:
         model nobody fitted."""
         self.max_radius = state.max_radius
         self._tables = [{}] + [
-            {key: (s / c, c) for key, (s, c) in state.tables[k].items()}
+            {key: (s / c, c) for key, (s, _qq, c) in state.tables[k].items()}
+            for k in range(1, state.max_radius + 1)
+        ]
+        self._sumsq = [{}] + [
+            {key: qq for key, (_s, qq, _c) in state.tables[k].items()}
             for k in range(1, state.max_radius + 1)
         ]
         self._global_mean = state.global_mean
         self._global_count = state.global_count
+        self._global_sumsq = state.global_sumsq
 
     def save_model_state(self, path: str | Any) -> None:
         from experiments.hose_artifact import save_hose_state

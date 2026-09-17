@@ -191,6 +191,33 @@ Gather every run's `metrics.json` under `runs/` into one CSV:
 
     uv run python -m experiments summarize
 
+### Analytic training metrics
+
+A fitted Sieve or HOSE model already stores, per class, the count, mean and
+mean-squared deviation of the training atoms it holds -- enough to reproduce
+the training error, R², η², the support distribution and the leave-one-out
+error exactly, with no molecules loaded and no walk run. Every `cv-run-sieve`
+and `cv-run-hose` run records these as `train/rmse`, `train/r2`, `train/eta2`,
+`train/matched_fraction` and `train/frac_support_lt_*` automatically, at no
+extra cost -- `--score-train`'s own predict-based pass is no longer needed for
+either arm.
+
+To read the same curve from an already-saved state directly, at every depth
+or radius it carries:
+
+    uv run python -m experiments analytic-curve --predictor sieve tree_stats.npz
+    uv run python -m experiments analytic-curve --predictor hose --loo hose.npz --out curve.csv
+
+**DASH has no analytic curve.** Its per-node statistics describe the atoms
+passing *through* a node, not the ones that stop there at a shallower depth,
+and reconstructing that split would need a refit; DASH keeps `--score-train`
+as its only route to a training curve. HOSE's curve is exact only at the
+baseline `n_min=1`, and only for a state saved after this feature landed --
+an older state predating the `sumsq` column still loads and predicts exactly
+as before, but its analytic entry point raises rather than fabricate a
+number. See `docs/superpowers/specs/2026-09-17-analytic-training-metrics-
+design.md` for the full argument and both measurements.
+
 ### Cross-validation (model comparison)
 
 `cv.py` supersedes the fold-sweep workflow above for the charges series --
