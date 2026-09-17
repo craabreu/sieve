@@ -236,6 +236,52 @@ support -- the same arbitrary weighting that collapsing conformers removes,
 and an argument for keying any leave-one-molecule-out on the canonical SMILES
 rather than on `dash_id`.
 
+### A `dash_id` is not a structure: 2.14% hold more than one
+
+Found while annotating the real store for the first time. Keying every row
+rather than one row per `dash_id` gives *more* keys than there are `dash_id`s,
+which can only happen if a molecule's own conformers key differently:
+
+| | |
+|---|---:|
+| distinct `dash_id` | 348,849 |
+| collapse keys, one conformer per `dash_id` | 332,618 |
+| collapse keys, **every** conformer | 339,521 |
+| `dash_id`s whose conformers disagree | **7,452 (2.14%)** |
+| conformers involved | 22,140 |
+
+Classified by InChI layer, which is the authoritative tool here -- comparing
+stereo-stripped SMILES strings is not, because changing E/Z geometry also
+reorders RDKit's canonical traversal, so stripping `/` and `\` leaves two
+strings that differ for a reason that has nothing to do with connectivity:
+
+| | | |
+|---|---:|---:|
+| stereocentre configuration (diastereomers) | 5,676 | 76.2% |
+| E/Z double-bond stereo | 1,038 | 13.9% |
+| identical InChI (mobile-H / tautomer normalization) | 707 | 9.5% |
+| both E/Z and stereocentre | 31 | 0.4% |
+| **different connectivity** | **0** | **0.0%** |
+
+No record has a different molecular graph under one `dash_id`, which is the
+reassuring half. The other half is that one `dash_id` routinely covers
+chemically distinct species -- 5,676 of them cover diastereomers, which have
+different energies and different charges.
+
+`collapse_key` handles this correctly without special-casing: it groups by
+structure, so such a molecule's three conformers become two or three units
+rather than one. That is the whole of the 332,618 -> 339,521 difference.
+
+**Two consequences for what is written above.** Section 5's proposal to
+average conformers keyed on `dash_id` would, for these 5,676, average across
+diastereomers -- exactly the "mean over different chemistry" the collapse
+design exists to prevent. And section 8's open question of whether
+leave-one-molecule-out should key on `dash_id` or on canonical SMILES is
+answered: `dash_id` is not a structure key, and `collapse_key` is.
+
+These counts are properties of the molecules alone, not of any partition, so
+they are unchanged by a re-clustering of the corpus.
+
 ### Stereochemistry: only enantiomers are interchangeable
 
 Stripping stereochemistry collapses 345,865 molecules onto 319,477 flat
