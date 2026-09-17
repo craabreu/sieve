@@ -1206,7 +1206,11 @@ def test_run_sieve_cv_scores_train_when_asked(tmp_path):
     save_codes(config.attribute_codes, config.edge_codes, codes_path)
     params = {"attributes": ("element",), "edge_attributes": ()}
 
-    common = {
+    # dict[str, Any] for the same reason the annotation above gives: `**common`
+    # would otherwise check every keyword of run_sieve_shard_fits/run_sieve_cv
+    # against this dict's own inferred value union, so the `int` entries are
+    # reported against the `str` parameters (method/experiment/normalization).
+    common: dict[str, Any] = {
         "store": store,
         "n_shards": n_shards,
         "codes_path": codes_path,
@@ -1261,7 +1265,11 @@ def test_run_sieve_cv_does_not_score_train_by_default(tmp_path):
     save_codes(config.attribute_codes, config.edge_codes, codes_path)
     params = {"attributes": ("element",), "edge_attributes": ()}
 
-    common = {
+    # dict[str, Any] for the same reason the annotation above gives: `**common`
+    # would otherwise check every keyword of run_sieve_shard_fits/run_sieve_cv
+    # against this dict's own inferred value union, so the `int` entries are
+    # reported against the `str` parameters (method/experiment/normalization).
+    common: dict[str, Any] = {
         "store": store,
         "n_shards": n_shards,
         "codes_path": codes_path,
