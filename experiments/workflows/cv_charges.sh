@@ -314,10 +314,13 @@ SIEVE_METHOD="sieve-element-continuation-eb"
 #
 # The cutoff arm is the hard-threshold counterpart to shrinkage: a class is
 # used only once it has minimum_support observations, otherwise the search
-# backs off. 12 is a multiple of 3, the typical conformer count per molecule,
-# so the threshold is "at least four molecules" rather than an arbitrary count
-# of correlated conformers. It is given shrinkage_weight null so that it
-# differs from sieve-element-continuation in the cutoff alone.
+# backs off. The intent has always been "at least four molecules": under the
+# old per-conformer fitting that meant 12, three conformers apiece, chosen so
+# the threshold was not an arbitrary count of correlated conformers. Under
+# --collapse a row IS a distinct structure, so the same intent is 4 -- the
+# number changed because the unit did, not because the threshold moved. It is
+# given shrinkage_weight null so that it differs from
+# sieve-element-continuation in the cutoff alone.
 #
 # These PATCH the fitted config (SIEVE_PREDICTOR_PARAMS above), so the
 # non-shrinking variants must say "shrinkage_weight": null explicitly --
@@ -336,7 +339,7 @@ SIEVE_VARIANTS='[
   {"method": "sieve-element-continuation-eb", "class_estimator": "continuation",           "shrinkage_weight": "empirical_bayes"},
   {"method": "sieve-element-recursive",       "class_estimator": "continuation_recursive", "shrinkage_weight": null},
   {"method": "sieve-element-recursive-eb",    "class_estimator": "continuation_recursive", "shrinkage_weight": "empirical_bayes"},
-  {"method": "sieve-element-continuation-cutoff", "class_estimator": "continuation",        "shrinkage_weight": null, "minimum_support": 12}
+  {"method": "sieve-element-continuation-cutoff", "class_estimator": "continuation",        "shrinkage_weight": null, "minimum_support": 4}
 ]'
 # Every variant is scored at SIEVE_SELECTED_DEPTH; the variants are a
 # comparison of estimators at a fixed depth, not seven more depth studies.
@@ -435,6 +438,27 @@ fi
 SCORE_TRAIN_FLAG=""
 if [ "${CV_SCORE_TRAIN:-1}" != "0" ]; then
   SCORE_TRAIN_FLAG="--score-train"
+fi
+
+# Fit one row per collapse_key rather than one per conformer: a molecule's
+# conformers, an exact duplicate and an enantiomer are indistinguishable to
+# every arm here, so counting them separately reweights class means for no
+# informational reason (docs/superpowers/specs/2026-09-17-fit-time-collapse-
+# design.md). The held-out side is never collapsed, so the metric still
+# measures per-conformer error and can still detect the premise failing.
+#
+# Applies to the TRAINING side of every shard fit, which is why it must reach
+# all four fit_one_* functions below -- and be exported, since xargs runs them
+# in a nested shell that inherits nothing unexported.
+#
+# --weight-by-collapse is deliberately NOT set here. It replaces a group by k
+# copies of its mean, which fabricates a class variance that never existed;
+# it exists only for the one-off identity check that the grouping and
+# representative selection are right (see experiments/README.md), never for
+# the science.
+COLLAPSE_FLAG=""
+if [ "${CV_COLLAPSE:-1}" != "0" ]; then
+  COLLAPSE_FLAG="--collapse"
 fi
 
 DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
@@ -561,6 +585,22 @@ step split-store \
   "store_has_columns $STORE split cluster shard" -- \
   "$PYTHON" -m experiments prepare-store "$STORE" --n-shards "$N_SHARDS"
 
+# --- collapse annotation ----------------------------------------------------
+#
+# Adds collapse_key plus its three counts, in place. Must run AFTER the split:
+# it refuses a key group that straddles a split, cluster or shard, which is a
+# check on the partition as much as on the key. Measured on the real corpus:
+# 0 groups straddle any of the three, because identical molecules share a
+# fingerprint so Butina cannot separate them, and both the split and the
+# sharding are by whole cluster.
+#
+# Note that a dash_id is NOT a structure key -- 2.14% of them hold conformers
+# that are diastereomers or E/Z isomers of one another, which collapse_key
+# correctly keeps apart. The unit here is the structure, not the dash_id.
+step annotate-collapse \
+  "store_has_columns $STORE collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
+  "$PYTHON" -m experiments annotate-collapse "$STORE"
+
 # --- freeze the Sieve vocabulary -------------------------------------------
 #
 # Blocking for Sieve, not optional: a shard that discovers its own
@@ -626,18 +666,20 @@ SIEVE_MAX_DEPTH="${SIEVE_MAX_DEPTH:-10}"  # the deepest SIEVE_DEPTHS asks for
 
 fit_one_dash_shard() {
   "$PYTHON" -m experiments cv-fit-dash-shards "$STORE" \
-    --n-shards "$N_SHARDS" --max-depth "$DASH_MAX_DEPTH" --shard "$1"
+    --n-shards "$N_SHARDS" --max-depth "$DASH_MAX_DEPTH" --shard "$1" \
+    $COLLAPSE_FLAG
 }
 
 fit_one_sieve_shard() {
   "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
     --n-shards "$N_SHARDS" --max-depth "$SIEVE_MAX_DEPTH" --shard "$1" \
     --codes-path "$CODES_PATH" --config-label "$SIEVE_CONFIG_LABEL" \
-    --predictor-params "$SIEVE_PREDICTOR_PARAMS"
+    --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
+    $COLLAPSE_FLAG
 }
 export -f fit_one_dash_shard fit_one_sieve_shard
 export PYTHON STORE N_SHARDS DASH_MAX_DEPTH SIEVE_MAX_DEPTH
-export CODES_PATH SIEVE_CONFIG_LABEL SIEVE_PREDICTOR_PARAMS
+export CODES_PATH SIEVE_CONFIG_LABEL SIEVE_PREDICTOR_PARAMS COLLAPSE_FLAG
 
 # Each shard's own fit is idempotent, and xargs hands a given shard to
 # exactly one process, so an interrupted dispatch resumes cleanly -- and
@@ -677,7 +719,8 @@ each_hose_radius() {
 
 fit_one_hose_shard() {
   "$PYTHON" -m experiments cv-fit-hose-shards "$STORE" \
-    --n-shards "$N_SHARDS" --radius "$HOSE_RADIUS" --shard "$1"
+    --n-shards "$N_SHARDS" --radius "$HOSE_RADIUS" --shard "$1" \
+    $COLLAPSE_FLAG
 }
 export -f fit_one_hose_shard
 
@@ -1337,7 +1380,8 @@ fit_one_study_c_shard() {
   "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
     --n-shards "$N_SHARDS" --max-depth "$SIEVE_MAX_DEPTH" --shard "$1" \
     --codes-path "$FEAT_CODES" --config-label "$FEAT_CONFIG_LABEL" \
-    --predictor-params "$FEAT_PARAMS"
+    --predictor-params "$FEAT_PARAMS" \
+    $COLLAPSE_FLAG
 }
 export -f fit_one_study_c_shard
 
