@@ -442,6 +442,43 @@ DASH_SELECTED_DEPTH="${DASH_SELECTED_DEPTH:-16}"
 # is made against the incumbent as its authors deployed it.
 SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-5}"
 
+# --- the HOSE arm ----------------------------------------------------------
+#
+# The published lookup tradition (Bremser's register, NMRShiftDB), scored on
+# this corpus as a third method beside DASH and Sieve. See
+# docs/superpowers/specs/2026-09-16-hose-baseline-design.md.
+#
+# ONE FIT PER RADIUS, unlike the other two arms. DASH truncates walked paths
+# and Sieve truncates merged levels, so each fits once at its deepest setting
+# and reads every shallower one out of that. A HOSE code is a linearization
+# whose sphere ordering consults what lies beyond it, so generating deeper
+# re-renders shallower spheres -- 8.5% of k-sphere prefixes differ by which
+# radius they were cut from (spec section 7). The radius-k point must be
+# generated at k, so the sweep is one shard set per radius. That is what keeps
+# this arm's x axis meaning the same thing as the other two arms' do.
+#
+# Radii 1-6, not 1-8: code generation cost grows steeply with radius (measured
+# on this box, 88 us/atom at r=1 against 1223 at r=8 -- radius 8 alone costs
+# more than 1 through 5 together), and the spec's own deployed setting is 5.
+HOSE_RADII="${HOSE_RADII:-1,2,3,4,5,6}"
+HOSE_STUDY_A=hose-cv-study-a
+HOSE_STUDY_B=hose-cv-study-b
+HOSE_SHARD_JOBS="${HOSE_SHARD_JOBS:-8}"
+HOSE_SELECT_SCRIPT=experiments/workflows/hose_select_radius.py
+
+# Resolved from Study A's own curve when it exists, by the same rule that
+# chose Sieve's depth 5: the shallowest radius whose mean RMSE lies inside the
+# minimum\'s own Nadeau-Bengio interval, so a plateau is not read as a peak.
+# Falls back to 5 -- the spec's deployed setting and the radius its one-shard
+# probe used -- when Study A has not run yet. Override to pin it.
+hose_radius() {
+  if [ -n "${HOSE_SELECTED_RADIUS:-}" ]; then
+    echo "$HOSE_SELECTED_RADIUS"
+    return
+  fi
+  "$PYTHON" "$HOSE_SELECT_SCRIPT" "$HOSE_STUDY_A" 2>/dev/null || echo 5
+}
+
 DASH_STUDY_A=dash-cv-study-a
 DASH_STUDY_B=dash-cv-study-b
 SIEVE_STUDY_A=sieve-cv-study-a
@@ -605,6 +642,44 @@ step sieve-shard-fits \
   "shard_fits_count_is fit-sieve-$SIEVE_CONFIG_LABEL-w$SIEVE_MAX_DEPTH-s $N_SHARDS" -- \
   dispatch_sieve_shards
 
+# --- HOSE shard fits, one set per radius ------------------------------------
+#
+# The loop over radii is the whole difference from the two dispatches above:
+# they fit once at their deepest setting and truncate, this one cannot (spec
+# section 7), so every radius the studies score needs its own 50 fits.
+#
+# Cheap per fit relative to the other arms -- no tree to load and no WL
+# refinement, just code generation and a dict -- so the dispatch is 8 wide
+# like the others and bounded by the generator, not by memory.
+each_hose_radius() {
+  { echo "$HOSE_RADII" | tr ',' '\n'; hose_radius; } | grep -v '^$' | sort -n -u
+}
+
+fit_one_hose_shard() {
+  "$PYTHON" -m experiments cv-fit-hose-shards "$STORE" \
+    --n-shards "$N_SHARDS" --radius "$HOSE_RADIUS" --shard "$1"
+}
+export -f fit_one_hose_shard
+
+hose_shard_fits_done() {
+  local r
+  for r in $(each_hose_radius); do
+    shard_fits_count_is "fit-hose-r$r-s" "$N_SHARDS" || return 1
+  done
+}
+
+dispatch_hose_shards() {
+  local r
+  for r in $(each_hose_radius); do
+    echo "--- hose shard fits: radius $r ---"
+    export HOSE_RADIUS="$r"
+    all_shard_ids | xargs -P "$HOSE_SHARD_JOBS" -n 1 \
+      bash -c 'fit_one_hose_shard "$1"' --
+  done
+}
+
+step hose-shard-fits "hose_shard_fits_done" -- dispatch_hose_shards
+
 # --- Study A: depth selection ----------------------------------------------
 #
 # One repeat, K folds, no ANOVA and no Tukey -- just a depth curve per
@@ -645,6 +720,20 @@ step study-a-sieve \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
 
+# --- Study A: the HOSE arm --------------------------------------------------
+#
+# One repeat, K folds, every radius -- the same shape as the other two arms'
+# Study A, and deliberately without --score-train: the train curve is a
+# diagnostic the other arms already carry, and here it would double the
+# generator cost, which is this arm's entire budget.
+step study-a-hose \
+  "method_runs_count_is $HOSE_STUDY_A hose $((K * $(n_items "$HOSE_RADII")))" -- \
+  "$PYTHON" -m experiments cv-run-hose "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --radii "$HOSE_RADII" --repeats "$STUDY_A_REPEATS" \
+    --normalization equal_weighted --method hose \
+    --experiment "$HOSE_STUDY_A"
+
 # --- Study A's figure -------------------------------------------------------
 #
 # The depth curve as a manuscript figure rather than as sweep's diagnostic
@@ -672,7 +761,7 @@ step study-a-sieve \
 DEPTH_CURVE_METRIC="${DEPTH_CURVE_METRIC:-rmse,r2}"
 DEPTH_CURVE_STEM="$FIGURES_DIR/depth-curve-study-a"
 DEPTH_CURVE_STAMP="$FIGURES_DIR/.depth-curve-inputs"
-STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A"
+STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A experiments/runs/$HOSE_STUDY_A"
 
 # Sieve's WL depth 0 is kept off the figure: with no refinement at all the
 # model is element-wise pooled means, whose R^2 of 0.46 compresses the 0.99
@@ -699,6 +788,11 @@ DEPTH_CURVE_ARMS=$(
     printf ' "min_depth": 1}'
     sep=","
   done
+  # HOSE gets its own panel for the same reason DASH does: a sphere count is
+  # not a WL depth, so they cannot share an x axis.
+  printf ', {"experiment": "%s", "method": "hose", "label": "HOSE lookup",' \
+    "$HOSE_STUDY_A"
+  printf ' "panel": "HOSE", "x_label": "Number of Spheres"}'
   printf ']' 
 )
 
@@ -794,6 +888,29 @@ step study-b-sieve \
      $((K * $(n_items "$STUDY_B_REPEATS") * $(n_variants)))" -- \
   dispatch_sieve_repeats
 
+# --- Study B: the HOSE arm --------------------------------------------------
+#
+# Five repeats x K folds at the radius Study A selected, with per-atom
+# predictions, so the arm enters `compare` as 25 samples paired with the other
+# two methods' -- same (repeat, fold), same held-out molecules, since
+# permute_into_folds is deterministic in (n, k, seed=repeat).
+# Run through a function, not `bash -c`: a nested shell does not inherit
+# hose_radius, so $(hose_radius) would expand to nothing there and the arm
+# would be scored at whatever radius cv-run-hose defaulted to.
+run_study_b_hose() {
+  "$PYTHON" -m experiments cv-run-hose "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --radii "$(hose_radius)" --repeats "$STUDY_B_REPEATS" \
+    --normalization equal_weighted --method hose \
+    --experiment "$HOSE_STUDY_B" \
+    $SAVE_PREDICTIONS_FLAG
+}
+
+step study-b-hose \
+  "method_depth_runs_count_is $HOSE_STUDY_B hose \$(hose_radius) \
+     $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  run_study_b_hose
+
 # --- compare ---------------------------------------------------------------
 #
 # Repeated-measures ANOVA + Tukey HSD over Study B's 25 paired samples per
@@ -834,23 +951,24 @@ COMPARE_EXCLUDE="${COMPARE_EXCLUDE-sieve-element-recursive,sieve-element-recursi
 DEPTH_BY_METHOD=$(
   echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
 import json, sys
-drop = {m for m in sys.argv[3].split(",") if m}
+drop = {m for m in sys.argv[4].split(",") if m}
 variants = json.load(sys.stdin)
-known = {v["method"] for v in variants} | {"dash"}
+known = {v["method"] for v in variants} | {"dash", "hose"}
 unknown = drop - known
 if unknown:
     raise SystemExit(f"COMPARE_EXCLUDE names no such arm: {sorted(unknown)}")
-out = {"dash": int(sys.argv[1])}
+out = {"dash": int(sys.argv[1]), "hose": int(sys.argv[3])}
+out = {m: d for m, d in out.items() if m not in drop}
 out.update({v["method"]: int(sys.argv[2]) for v in variants if v["method"] not in drop})
 print(json.dumps(out))
-' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH" "$COMPARE_EXCLUDE"
+' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH" "$(hose_radius)" "$COMPARE_EXCLUDE"
 )
 
 # A stamp of what the figures were drawn FROM, beside them. mtimes catch new
 # runs; they cannot catch a changed metric list or a changed set of arms,
 # which change the figures just as much. Guard on both.
 COMPARE_STAMP="$FIGURES_DIR/.compare-inputs"
-STUDY_B_RUNS="experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B"
+STUDY_B_RUNS="experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B experiments/runs/$HOSE_STUDY_B"
 
 compare_is_up_to_date() {
   [ -f "$COMPARE_STAMP" ] || return 1
@@ -871,6 +989,7 @@ run_compare() {
     echo "--- $m ---"
     "$PYTHON" -m experiments compare \
       --experiment "$DASH_STUDY_B" --experiment "$SIEVE_STUDY_B" \
+      --experiment "$HOSE_STUDY_B" \
       --metric "$m" \
       --depth-by-method "$DEPTH_BY_METHOD" \
       --out "$(tukey_plot "$m")" \

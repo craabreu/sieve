@@ -25,7 +25,7 @@ from numpy.typing import NDArray
 
 from experiments.data import MoleculeSet
 from experiments.predictors import register
-from experiments.predictors.base import Prediction
+from experiments.predictors.base import Prediction, RawPrediction
 from experiments.predictors.hose_keys import MAX_SPHERES, sphere_prefix
 
 
@@ -46,6 +46,7 @@ class HoseLookupPredictor:
         self.n_min = n_min
         self._tables: list[dict[str, tuple[float, int]]] | None = None
         self._global_mean: float | None = None
+        self._global_count: int = 0
         self._matched_radius: NDArray[np.int64] | None = None
 
     def _codes(self, mols: list[Any]) -> Iterator[str]:
@@ -86,6 +87,7 @@ class HoseLookupPredictor:
             for k in range(self.max_radius + 1)
         ]
         self._global_mean = float(np.mean(target))
+        self._global_count = int(np.size(target))
 
     def predict(self, test: MoleculeSet) -> Prediction:
         if self._tables is None or self._global_mean is None:
@@ -112,6 +114,64 @@ class HoseLookupPredictor:
         if self._matched_radius is None:
             raise RuntimeError("predict must be called before matched_radius")
         return self._matched_radius
+
+    def model_state(self) -> Any:
+        """This fit's sufficient statistics, as sums and counts.
+
+        Sums rather than the means ``_tables`` holds, because sums are what
+        add: see ``hose_artifact`` for why a 40-shard merge needs them.
+        """
+        from experiments.hose_artifact import HoseState
+
+        if self._tables is None or self._global_mean is None:
+            raise RuntimeError("fit must be called before model_state")
+        tables = [{}] + [
+            {
+                key: (mean * count, count)
+                for key, (mean, count) in self._tables[k].items()
+            }
+            for k in range(1, self.max_radius + 1)
+        ]
+        return HoseState(
+            max_radius=self.max_radius,
+            tables=tuple(tables),
+            global_sum=self._global_mean * self._global_count,
+            global_count=self._global_count,
+        )
+
+    def set_model_state(self, state: Any) -> None:
+        """Adopt an already-merged state, skipping ``fit``. The state's own
+        radius wins: a state is only valid at the radius it was generated
+        at (spec section 7), so silently reading it at another would score a
+        model nobody fitted."""
+        self.max_radius = state.max_radius
+        self._tables = [{}] + [
+            {key: (s / c, c) for key, (s, c) in state.tables[k].items()}
+            for k in range(1, state.max_radius + 1)
+        ]
+        self._global_mean = state.global_mean
+        self._global_count = state.global_count
+
+    def save_model_state(self, path: str | Any) -> None:
+        from experiments.hose_artifact import save_hose_state
+
+        save_hose_state(self.model_state(), path)
+
+    def predict_raw(self, test: MoleculeSet) -> RawPrediction:
+        """The lookup output plus a unit std.
+
+        This arm has no per-atom variance: it is a plain mean lookup with no
+        continuation estimate and no shrinkage (spec section 1), so there is
+        no spread to report. The std exists only for signature parity with
+        the other predictors, and the CV driver pairs this arm with
+        ``equal_weighted`` normalization, which discards ``raw_std``
+        outright. It is never used as a variance.
+        """
+        pred = self.predict(test)
+        return RawPrediction(
+            atom_value=pred.atom_value,
+            atom_std=np.ones_like(pred.atom_value),
+        )
 
 
 def _build(params: Mapping[str, Any]) -> HoseLookupPredictor:

@@ -249,6 +249,13 @@ def sieve_shard_batch_id(config_label: str, depth: int, shard: str) -> str:
     return f"fit-sieve-{config_label}-w{depth}-{shard}"
 
 
+def hose_shard_batch_id(radius: int, shard: str) -> str:
+    """Carries the radius, unlike Sieve's and DASH's: a HOSE fit is valid at
+    exactly the radius it was generated at, so radius-3 and radius-5 shards
+    are different artifacts and must not share a directory name."""
+    return f"fit-hose-r{radius}-{shard}"
+
+
 def cv_batch_id(*, repeat: int, fold: int, method: str, depth: int) -> str:
     return f"r{repeat}-f{fold}-{method}-w{depth}"
 
@@ -500,6 +507,110 @@ def fit_sieve_shard(
         )
     )
     return out_path
+
+
+def fit_hose_shard(
+    *,
+    store: str,
+    shard: str,
+    radius: int,
+    atom_property: str = "MBIScharge",
+    seed: int = 0,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    stores_root: Path | None = None,
+    allow_dirty: bool = False,
+) -> Path:
+    """Fit the HOSE lookup on one shard's rows at ``max_radius=radius``.
+
+    **One fit per radius, unlike the other two arms.** DASH truncates walked
+    paths and Sieve truncates merged levels, so each fits once at its deepest
+    setting; a HOSE code is a linearization whose sphere ordering consults
+    what lies beyond it, so generating deeper re-renders shallower spheres
+    (8.5% of prefixes differ -- spec section 7). A radius-*k* point must
+    therefore be generated at *k*, and the sweep is one shard set per radius.
+    """
+    from experiments.config import TargetCfg
+    from experiments.predictors.hose import HoseLookupPredictor
+
+    batch_id = hose_shard_batch_id(radius, shard)
+    existing = _shard_fit_done(runs_root, batch_id)
+    if existing is not None:
+        logger.info("hose shard %r (r%d) already fit; skipping", shard, radius)
+        return existing
+
+    git_info = _check_clean(allow_dirty)
+
+    mset, masks = load_molecule_set(
+        store,
+        target=TargetCfg(atom_property=atom_property),
+        split_column="shard",
+        splits=(shard,),
+        stores_root=stores_root,
+    )
+    train = mset.select(masks[shard])
+
+    predictor = HoseLookupPredictor(max_radius=radius)
+    t0 = time.perf_counter()
+    predictor.fit(train, train, rng=np.random.default_rng(seed))
+    fit_s = time.perf_counter() - t0
+
+    run_dir, _name, started = _new_run_dir(
+        runs_root,
+        SHARD_FIT_EXPERIMENT,
+        batch_id,
+        predictor="hose",
+        store=store,
+        seed=seed,
+    )
+    out_path = run_dir / "tree_stats.npz"
+    predictor.save_model_state(out_path)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "started_utc": started.isoformat(),
+                "finished_utc": datetime.now(UTC).isoformat(),
+                "git": git_info,
+                "seed": seed,
+                "packages": _package_versions(),
+                "shard": shard,
+                "radius": radius,
+                "n_train_conformers": train.n_conformers,
+                "elapsed_s": {"fit": fit_s},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return out_path
+
+
+def run_hose_shard_fits(
+    *,
+    store: str,
+    n_shards: int,
+    radius: int,
+    shard: str | None = None,
+    seed: int = 0,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    stores_root: Path | None = None,
+    allow_dirty: bool = False,
+) -> list[Path]:
+    """One fit per shard at ``radius``. ``shard`` fits just that one, the
+    seam an ``xargs -P`` dispatch uses to put one shard per process."""
+    targets = [shard] if shard is not None else shard_ids(n_shards)
+    return [
+        fit_hose_shard(
+            store=store,
+            shard=s,
+            radius=radius,
+            seed=seed,
+            runs_root=runs_root,
+            stores_root=stores_root,
+            allow_dirty=allow_dirty,
+        )
+        for s in targets
+    ]
 
 
 def run_dash_shard_fits(
@@ -869,6 +980,140 @@ class CVPlan:
 
 def build_cv_plan(ids: Sequence[str], *, k: int, repeat: int) -> CVPlan:
     return CVPlan(repeat=repeat, groups=permute_into_folds(ids, k=k, seed=repeat))
+
+
+def run_hose_cv(
+    *,
+    store: str,
+    n_shards: int,
+    radii: Sequence[int],
+    repeats: Sequence[int],
+    k: int = 5,
+    normalization: str = "equal_weighted",
+    method: str = "hose",
+    save_predictions: bool = False,
+    score_train: bool = False,
+    experiment: str = "hose-cv",
+    seed: int = 0,
+    runs_root: Path = DEFAULT_RUNS_ROOT,
+    stores_root: Path | None = None,
+    allow_dirty: bool = False,
+) -> list[RunResult]:
+    """The HOSE arm's CV sweep, the counterpart of ``run_dash_cv`` and
+    ``run_sieve_cv``.
+
+    **The radius loop is outermost, and that is forced.** The other two
+    drivers assemble one training model per (repeat, fold) and read every
+    depth out of it; here each radius has its own shard set, its own merge
+    and its own generated codes, because a HOSE code cut at radius *k* from a
+    deeper generation is not the radius-*k* code (spec section 7). A sweep is
+    therefore |radii| independent studies sharing only a fold assignment --
+    which is exactly what keeps this arm's depth axis meaning the same thing
+    as the other two arms' do.
+
+    No model cache: the other drivers' caches are keyed on (repeat, fold)
+    because one assembly serves every depth, which is the saving that does
+    not exist here.
+
+    Requires ``run_hose_shard_fits`` at each requested radius; raises naming
+    the radius and shards that are missing.
+
+    Paired with ``equal_weighted`` normalization by default. This arm has no
+    per-atom variance to weight by -- it is a plain mean lookup, no
+    continuation estimate and no shrinkage (spec section 1) -- and
+    ``equal_weighted`` discards ``raw_std`` outright, so the pairing is the
+    honest one. ``std_weighted`` would silently weight by the unit std
+    ``predict_raw`` reports for signature parity, i.e. equally, while
+    claiming to do otherwise.
+    """
+    from experiments.hose_artifact import (
+        fold_hose_states,
+        load_hose_state,
+        merge_hose_states,
+    )
+    from experiments.predictors.hose import HoseLookupPredictor
+
+    ids = shard_ids(n_shards)
+    mset_by_shard = load_shards(store, ids, stores_root=stores_root)
+    git_info = _check_clean(allow_dirty)
+
+    results: list[RunResult] = []
+    for radius in radii:
+        paths_or_none = {
+            sid: _shard_fit_done(runs_root, hose_shard_batch_id(radius, sid))
+            for sid in ids
+        }
+        missing = [sid for sid, path in paths_or_none.items() if path is None]
+        if missing:
+            raise FileNotFoundError(
+                f"no hose shard fit at radius {radius} for {missing}; run "
+                f"run_hose_shard_fits --radius {radius} first"
+            )
+        states = {
+            sid: load_hose_state(path)
+            for sid, path in paths_or_none.items()
+            if path is not None
+        }
+
+        for repeat in repeats:
+            plan = build_cv_plan(ids, k=k, repeat=repeat)
+            group_states = [
+                fold_hose_states(states[sid] for sid in g) for g in plan.groups
+            ]
+            train_states = leave_one_group_out(group_states, merge=merge_hose_states)
+
+            for fold, group in enumerate(plan.groups):
+                batch_id = cv_batch_id(
+                    repeat=repeat, fold=fold, method=method, depth=radius
+                )
+                if _cv_run_done(runs_root, experiment, batch_id) is not None:
+                    logger.info("%s already done; skipping", batch_id)
+                    continue
+
+                held_out = concat_molecule_sets([mset_by_shard[sid] for sid in group])
+                predictor = HoseLookupPredictor(max_radius=radius)
+                predictor.set_model_state(train_states[fold])
+
+                t0 = time.perf_counter()
+                raw = predictor.predict_raw(held_out)
+                predict_s = time.perf_counter() - t0
+
+                train_set = train_raw = None
+                if score_train:
+                    train_set = concat_molecule_sets(
+                        [
+                            mset_by_shard[sid]
+                            for g in _other_groups(plan, fold)
+                            for sid in g
+                        ]
+                    )
+                    t0 = time.perf_counter()
+                    train_raw = predictor.predict_raw(train_set)
+                    predict_s += time.perf_counter() - t0
+
+                results.append(
+                    _write_cv_run(
+                        experiment=experiment,
+                        batch_id=batch_id,
+                        method=method,
+                        store=store,
+                        seed=seed,
+                        held_out=held_out,
+                        raw=raw,
+                        normalization=normalization,
+                        train_set=train_set,
+                        train_raw=train_raw,
+                        repeat=repeat,
+                        fold=fold,
+                        depth=radius,
+                        held_out_shards=group,
+                        elapsed_s={"predict": predict_s},
+                        git_info=git_info,
+                        runs_root=runs_root,
+                        save_predictions=save_predictions,
+                    )
+                )
+    return results
 
 
 def run_dash_cv(
