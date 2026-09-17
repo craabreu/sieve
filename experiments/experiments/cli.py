@@ -385,6 +385,50 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cv_fit_hose_shards(args: argparse.Namespace) -> int:
+    from experiments.cv import run_hose_shard_fits
+
+    result = run_hose_shard_fits(
+        store=args.store,
+        n_shards=args.n_shards,
+        radius=args.radius,
+        shard=args.shard,
+        seed=args.seed,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+    )
+    for path in result:
+        print(path)
+    return 0
+
+
+def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
+    from experiments.cv import run_hose_cv
+
+    results = run_hose_cv(
+        store=args.store,
+        n_shards=args.n_shards,
+        radii=[int(r) for r in args.radii.split(",")],
+        repeats=[int(r) for r in args.repeats.split(",")],
+        folds=[int(f) for f in args.folds.split(",")] if args.folds else None,
+        k=args.k,
+        normalization=args.normalization,
+        method=args.method,
+        experiment=args.experiment,
+        seed=args.seed,
+        save_predictions=args.save_predictions,
+        score_train=args.score_train,
+        runs_root=DEFAULT_RUNS_ROOT,
+        allow_dirty=args.allow_dirty,
+    )
+    if not results:
+        print("nothing to do -- every (repeat, fold, radius) already done")
+        return 0
+    for r in results:
+        print(f"{r.run_dir}: mae={r.metrics.get('mae')}")
+    return 0
+
+
 def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
     import json as _json
 
@@ -884,7 +928,11 @@ def build_parser() -> argparse.ArgumentParser:
         "predictor via its own merge_states",
     )
     p_merge_states.add_argument(
-        "--predictor", required=True, choices=("dash", "sieve"), help="which predictor"
+        "--predictor",
+        required=True,
+        choices=("dash", "sieve", "hose"),
+        help="which predictor. `hose` shards must all share one radius -- "
+        "its states are radius-specific, unlike the other two",
     )
     p_merge_states.add_argument(
         "shard", nargs="+", type=Path, help="shard tree_stats.npz path(s) to merge"
@@ -954,6 +1002,64 @@ def build_parser() -> argparse.ArgumentParser:
     p_cv_fit_sieve.add_argument("--seed", type=int, default=0)
     p_cv_fit_sieve.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_sieve.set_defaults(func=_cmd_cv_fit_sieve_shards)
+
+    p_cv_fit_hose = sub.add_parser(
+        "cv-fit-hose-shards",
+        help="fit the HOSE lookup once per shard AT ONE RADIUS -- unlike the "
+        "other two arms, a radius is its own fit (spec section 7), so a sweep "
+        "runs this once per radius",
+    )
+    p_cv_fit_hose.add_argument("store", nargs="?", default="dash-molecules")
+    p_cv_fit_hose.add_argument("--n-shards", type=int, required=True)
+    p_cv_fit_hose.add_argument(
+        "--radius",
+        type=int,
+        required=True,
+        help="max_radius for this shard set; codes are generated at exactly "
+        "this radius and shallower keys cut from them",
+    )
+    p_cv_fit_hose.add_argument(
+        "--shard",
+        default=None,
+        help="fit only this one shard (e.g. s07) -- the seam an xargs -P "
+        "dispatch uses to put one shard per process",
+    )
+    p_cv_fit_hose.add_argument("--seed", type=int, default=0)
+    p_cv_fit_hose.add_argument("--allow-dirty", action="store_true")
+    p_cv_fit_hose.set_defaults(func=_cmd_cv_fit_hose_shards)
+
+    p_cv_run_hose = sub.add_parser(
+        "cv-run-hose",
+        help="assemble each CV sample's training model by merging HOSE's own "
+        "shards (per radius) and score it",
+    )
+    p_cv_run_hose.add_argument("store", nargs="?", default="dash-molecules")
+    p_cv_run_hose.add_argument("--n-shards", type=int, required=True)
+    p_cv_run_hose.add_argument(
+        "--radii", required=True, help="comma-separated; each needs its own shard fits"
+    )
+    p_cv_run_hose.add_argument("--repeats", default="0")
+    p_cv_run_hose.add_argument(
+        "--folds",
+        default=None,
+        help="comma-separated fold indices; default every fold. The seam an "
+        "xargs -P dispatch uses to put one (radius, fold) per process -- this "
+        "arm's cost is per-fold code generation, which nothing shares",
+    )
+    p_cv_run_hose.add_argument("--k", type=int, default=5)
+    p_cv_run_hose.add_argument(
+        "--normalization",
+        default="equal_weighted",
+        help="equal_weighted by default: this arm reports no per-atom "
+        "variance, and equal_weighted is the scheme that does not use one",
+    )
+    p_cv_run_hose.add_argument("--method", default="hose")
+    p_cv_run_hose.add_argument("--experiment", default="hose-cv")
+    p_cv_run_hose.add_argument("--save-predictions", action="store_true")
+    p_cv_run_hose.add_argument("--score-train", action="store_true")
+    p_cv_run_hose.add_argument("--seed", type=int, default=0)
+    p_cv_run_hose.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_hose.set_defaults(func=_cmd_cv_run_hose)
 
     p_cv_run_dash = sub.add_parser(
         "cv-run-dash",
