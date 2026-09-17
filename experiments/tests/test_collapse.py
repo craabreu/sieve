@@ -288,3 +288,58 @@ def test_weight_by_collapse_repeats_each_representative():
         sorted(plain.atom_target[: rows[0].GetNumAtoms()]),
         sorted(weighted.atom_target[: rows[0].GetNumAtoms()]),
     )
+
+
+def test_fit_sieve_shard_collapses_only_the_training_side(tmp_path):
+    """The fit sees one row per key; the store and every held-out path still
+    hold one row per conformer."""
+    import json
+
+    import pandas as pd
+    from experiments.cv import fit_sieve_shard
+    from experiments.predictors.sieve_predictor import _build_config, save_codes
+    from experiments.store_ops import annotate_collapse
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    store, root = _write_store(
+        tmp_path,
+        [
+            ("CCO", "d1", "train", 0, "s00"),
+            ("CCO", "d1", "train", 0, "s00"),
+            ("CCC", "d2", "train", 0, "s00"),
+        ],
+    )
+    annotate_collapse(store, stores_root=root)
+
+    whole = synthetic_molecule_set(n_mol=4, seed=0)
+    config = _build_config(
+        whole.mols,
+        attributes=("element",),
+        edge_attributes=(),
+        target_dim=1,
+        max_wl_depth=1,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    codes_path = tmp_path / "codes.json"
+    save_codes(config.attribute_codes, config.edge_codes, codes_path)
+
+    out = fit_sieve_shard(
+        store=store,
+        shard="s00",
+        depth=1,
+        codes_path=codes_path,
+        config_label="cfg",
+        predictor_params={"attributes": ("element",), "edge_attributes": ()},
+        runs_root=tmp_path / "runs",
+        stores_root=root,
+        allow_dirty=True,
+        collapse=True,
+    )
+    manifest = json.loads((out.parent / "manifest.json").read_text())
+    assert manifest["n_train_conformers"] == 2  # 3 rows -> 2 keys
+    assert manifest["collapse"] is True
+
+    # the store itself is untouched
+    assert len(pd.read_parquet(root / store / "molecules.parquet")) == 3
