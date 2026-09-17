@@ -52,3 +52,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 tmp/
+
+# Pre-collapse artifacts, moved aside for the corpus rebuild (2026-09-17).
+# Superseded by the collapsed-corpus run; kept only until that validates.
+experiments/backup-precollapse
