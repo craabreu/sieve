@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from rdkit import Chem
 
 
@@ -343,3 +344,53 @@ def test_fit_sieve_shard_collapses_only_the_training_side(tmp_path):
 
     # the store itself is untouched
     assert len(pd.read_parquet(root / store / "molecules.parquet")) == 3
+
+
+def test_held_out_floor_is_the_within_key_scatter():
+    import numpy as np
+    from experiments.collapse import collapse_key, held_out_floor
+    from experiments.data import MoleculeSet
+
+    a = _charged("CCO", {0: 1.0, 1: 1.0, 2: 1.0})
+    b = _charged("CCO", {0: 3.0, 1: 3.0, 2: 3.0})
+    c = _charged("CCC", {0: 5.0})
+    key_ab, key_c = collapse_key(a), collapse_key(c)
+    mset = MoleculeSet(
+        mols=[a, b, c],
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [key_ab, key_ab, key_c],
+            "dash_id": ["d1", "d2", "d3"],
+            "conf_id": ["c0", "c0", "c0"],
+        },
+    )
+    # _charged only sets the 3 heavy-atom indices (0, 1, 2); CCO's 6 hydrogens
+    # (indices 3-8) default to 0.0 in BOTH a and b, so only the 3 heavy atoms
+    # actually differ -- by 2.0 each, so each deviates by 1.0 from their mean.
+    # The denominator is every atom in the whole held-out set (matching how
+    # RMSE is computed for the fold elsewhere), not just the differing ones;
+    # CCC is alone in its group and contributes nothing to the numerator, but
+    # its atoms still count in the denominator.
+    floor = held_out_floor(mset)
+    n_heavy_differing = 3 * 2  # 3 heavy atoms, x2 molecules (a and b)
+    total_atoms = a.GetNumAtoms() + b.GetNumAtoms() + c.GetNumAtoms()
+    expected = np.sqrt(n_heavy_differing * 1.0**2 / total_atoms)
+    assert floor == pytest.approx(expected)
+
+
+def test_held_out_floor_is_zero_without_duplicates():
+    from experiments.collapse import collapse_key, held_out_floor
+    from experiments.data import MoleculeSet
+
+    a = _charged("CCO", {0: 1.0})
+    b = _charged("CCC", {0: 2.0})
+    mset = MoleculeSet(
+        mols=[a, b],
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [collapse_key(a), collapse_key(b)],
+            "dash_id": ["d1", "d2"],
+            "conf_id": ["c0", "c0"],
+        },
+    )
+    assert held_out_floor(mset) == pytest.approx(0.0)

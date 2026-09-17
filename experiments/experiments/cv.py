@@ -932,6 +932,13 @@ def _write_cv_run(
     run_metrics = _score_raw_and_normalized(raw, held_out, normalization=normalization)
     if train_raw is not None and train_set is not None:
         run_metrics.update(_score_train(train_raw, train_set))
+
+    from experiments.collapse import held_out_floor
+
+    floor = held_out_floor(held_out)
+    if floor:
+        run_metrics["floor/rmse"] = floor
+
     for k, v in elapsed_s.items():
         run_metrics[f"time/{k}_s"] = v
 

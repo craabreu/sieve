@@ -130,3 +130,41 @@ def collapse_molecule_set(
         ids=ids,
         split=None,
     )
+
+
+def held_out_floor(mset: MoleculeSet) -> float:
+    """RMS of the within-key deviations across a held-out set.
+
+    Rows sharing a collapse key are identical to every arm in this series, so
+    any spread among their targets is error no graph-based model can avoid.
+    Returns 0.0 when no key repeats, and 0.0 when the set carries no
+    ``collapse_key`` at all.
+    """
+    keys = mset.ids.get("collapse_key")
+    if keys is None or mset.n_atoms == 0:
+        return 0.0
+    groups: dict[str, list[int]] = {}
+    for i, k in enumerate(keys):
+        groups.setdefault(str(k), []).append(i)
+
+    sse = 0.0
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        key = str(keys[members[0]])
+        orders = [_canonical_order(mset.mols[i], key) for i in members]
+        stacked = np.stack(
+            [
+                np.array(
+                    [
+                        mset.mols[i]
+                        .GetAtomWithIdx(int(a))
+                        .GetDoubleProp(mset.atom_property)
+                        for a in order
+                    ]
+                )
+                for i, order in zip(members, orders, strict=True)
+            ]
+        )
+        sse += float(((stacked - stacked.mean(axis=0)) ** 2).sum())
+    return float(np.sqrt(sse / mset.n_atoms))
