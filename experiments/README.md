@@ -158,6 +158,33 @@ visibly distinct from today's:
         --set data.store=dash-molecules-10fold-$i --set run.batch_id=dash-10fold-2026-09-03
     done
 
+### Collapsing equivalent molecules
+
+A molecule's conformers, an exactly duplicated structure and an enantiomer are
+indistinguishable to every predictor here, so counting them separately
+reweights class means for no informational reason. Annotate the store once:
+
+    uv run python -m experiments annotate-collapse dash-molecules
+
+then pass `--collapse` to any `cv-fit-*-shards` command. The collapse applies
+to the **training** side only; held-out rows stay one per conformer, so the
+metric still measures per-conformer error and still detects the equivalence
+premise failing. Every CV run whose store carries the key also records
+`floor/rmse`, the within-key scatter on its own held-out set -- the error no
+graph-based model can avoid.
+
+Diastereomers and E/Z isomers are deliberately NOT merged: they are
+measurably different molecules.
+
+**Before re-running any published result**, check the migration: fit one arm
+with `--collapse --weight-by-collapse` and confirm it reproduces that arm's
+existing number exactly. That validates the annotation, the grouping and the
+representative selection at once. `--collapse` alone changes the fit, which is
+the point; `minimum_support` then counts distinct structures, so the present
+value of 12 (chosen as "at least four molecules") becomes 4.
+
+See `docs/superpowers/specs/2026-09-17-fit-time-collapse-design.md`.
+
 ### Collecting results
 
 Gather every run's `metrics.json` under `runs/` into one CSV:

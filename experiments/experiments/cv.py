@@ -335,6 +335,8 @@ def fit_dash_shard(
     shard: str,
     max_depth: int,
     atom_property: str = "MBIScharge",
+    collapse: bool = False,
+    weight_by_collapse: bool = False,
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
@@ -371,6 +373,11 @@ def fit_dash_shard(
     )
     train = mset.select(masks[shard])
 
+    if collapse:
+        from experiments.collapse import collapse_molecule_set
+
+        train = collapse_molecule_set(train, weight_by_collapse=weight_by_collapse)
+
     predictor = DASHChargePredictor(max_depth=max_depth)
     t0 = time.perf_counter()
     predictor.fit(train, train, rng=np.random.default_rng(seed))
@@ -396,6 +403,8 @@ def fit_dash_shard(
                 "seed": seed,
                 "packages": _package_versions(),
                 "shard": shard,
+                "collapse": collapse,
+                "weight_by_collapse": weight_by_collapse,
                 "max_depth": max_depth,
                 "n_train_conformers": train.n_conformers,
                 "elapsed_s": {"fit": fit_s},
@@ -416,6 +425,8 @@ def fit_sieve_shard(
     config_label: str,
     predictor_params: dict[str, Any] | None = None,
     atom_property: str = "MBIScharge",
+    collapse: bool = False,
+    weight_by_collapse: bool = False,
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
@@ -468,6 +479,11 @@ def fit_sieve_shard(
     )
     train = mset.select(masks[shard])
 
+    if collapse:
+        from experiments.collapse import collapse_molecule_set
+
+        train = collapse_molecule_set(train, weight_by_collapse=weight_by_collapse)
+
     params = dict(predictor_params or {})
     params["max_wl_depth"] = depth
     params["codes_path"] = str(codes_path)
@@ -496,6 +512,8 @@ def fit_sieve_shard(
                 "seed": seed,
                 "packages": _package_versions(),
                 "shard": shard,
+                "collapse": collapse,
+                "weight_by_collapse": weight_by_collapse,
                 "config_label": config_label,
                 "depth": depth,
                 "predictor_params": params,
@@ -515,6 +533,8 @@ def fit_hose_shard(
     shard: str,
     radius: int,
     atom_property: str = "MBIScharge",
+    collapse: bool = False,
+    weight_by_collapse: bool = False,
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
@@ -549,6 +569,11 @@ def fit_hose_shard(
     )
     train = mset.select(masks[shard])
 
+    if collapse:
+        from experiments.collapse import collapse_molecule_set
+
+        train = collapse_molecule_set(train, weight_by_collapse=weight_by_collapse)
+
     predictor = HoseLookupPredictor(max_radius=radius)
     t0 = time.perf_counter()
     predictor.fit(train, train, rng=np.random.default_rng(seed))
@@ -574,6 +599,8 @@ def fit_hose_shard(
                 "seed": seed,
                 "packages": _package_versions(),
                 "shard": shard,
+                "collapse": collapse,
+                "weight_by_collapse": weight_by_collapse,
                 "radius": radius,
                 "n_train_conformers": train.n_conformers,
                 "elapsed_s": {"fit": fit_s},
@@ -591,6 +618,8 @@ def run_hose_shard_fits(
     n_shards: int,
     radius: int,
     shard: str | None = None,
+    collapse: bool = False,
+    weight_by_collapse: bool = False,
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
@@ -604,6 +633,8 @@ def run_hose_shard_fits(
             store=store,
             shard=s,
             radius=radius,
+            collapse=collapse,
+            weight_by_collapse=weight_by_collapse,
             seed=seed,
             runs_root=runs_root,
             stores_root=stores_root,
@@ -618,6 +649,8 @@ def run_dash_shard_fits(
     store: str,
     n_shards: int,
     max_depth: int,
+    collapse: bool = False,
+    weight_by_collapse: bool = False,
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
@@ -628,6 +661,8 @@ def run_dash_shard_fits(
             store=store,
             shard=s,
             max_depth=max_depth,
+            collapse=collapse,
+            weight_by_collapse=weight_by_collapse,
             seed=seed,
             runs_root=runs_root,
             stores_root=stores_root,
@@ -645,6 +680,8 @@ def run_sieve_shard_fits(
     codes_path: str | Path,
     config_label: str,
     predictor_params: dict[str, Any] | None = None,
+    collapse: bool = False,
+    weight_by_collapse: bool = False,
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
     stores_root: Path | None = None,
@@ -662,6 +699,8 @@ def run_sieve_shard_fits(
             codes_path=codes_path,
             config_label=config_label,
             predictor_params=predictor_params,
+            collapse=collapse,
+            weight_by_collapse=weight_by_collapse,
             seed=seed,
             runs_root=runs_root,
             stores_root=stores_root,
@@ -893,6 +932,13 @@ def _write_cv_run(
     run_metrics = _score_raw_and_normalized(raw, held_out, normalization=normalization)
     if train_raw is not None and train_set is not None:
         run_metrics.update(_score_train(train_raw, train_set))
+
+    from experiments.collapse import held_out_floor
+
+    floor = held_out_floor(held_out)
+    if floor:
+        run_metrics["floor/rmse"] = floor
+
     for k, v in elapsed_s.items():
         run_metrics[f"time/{k}_s"] = v
 

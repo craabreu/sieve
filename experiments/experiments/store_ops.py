@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from rdkit import Chem
 
 logger = logging.getLogger("experiments")
 
@@ -508,3 +509,49 @@ def to_united_atom_store(
         n_h_removed,
         n_h_kept,
     )
+
+
+def annotate_collapse(store: str, *, stores_root: Path) -> dict[str, int]:
+    """Add ``collapse_key`` and its three counts to an existing store.
+
+    In place, like ``prepare-store --n-shards`` adding ``cluster``/``shard``.
+    Idempotent: a store already carrying the columns is recounted, not
+    rewritten differently.
+
+    Refuses a key group that straddles a ``split``, ``cluster`` or ``shard``.
+    On the real corpus none does -- identical molecules share a fingerprint,
+    so Butina cannot separate them, and both the split and the sharding are by
+    whole cluster -- and asserting it means a future corpus that breaks the
+    property stops rather than silently averaging across a fold boundary.
+    """
+    import pandas as pd
+
+    from experiments.collapse import collapse_key
+    from experiments.data import blob_to_mol
+
+    path = Path(stores_root) / store / "molecules.parquet"
+    df = pd.read_parquet(path)
+    df["collapse_key"] = [collapse_key(blob_to_mol(b)) for b in df["mol"]]
+
+    for column in ("split", "cluster", "shard"):
+        if column not in df.columns:
+            continue
+        spread = df.groupby("collapse_key")[column].nunique()
+        bad = spread[spread > 1]
+        if len(bad):
+            raise ValueError(
+                f"collapse group straddles {column!r}: "
+                f"{list(bad.index[:3])} (and {max(len(bad) - 3, 0)} more)"
+            )
+
+    grouped = df.groupby("collapse_key")
+    df["n_collapsed"] = grouped["collapse_key"].transform("size").astype("int32")
+    df["n_molecules"] = grouped["dash_id"].transform("nunique").astype("int32")
+    df["n_enantiomer_forms"] = (
+        df.assign(_canon=[Chem.MolToSmiles(blob_to_mol(b)) for b in df["mol"]])
+        .groupby("collapse_key")["_canon"]
+        .transform("nunique")
+        .astype("int32")
+    )
+    df.to_parquet(path)
+    return {"rows": len(df), "keys": int(df["collapse_key"].nunique())}

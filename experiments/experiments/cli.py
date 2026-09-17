@@ -286,6 +286,14 @@ def _cmd_to_united_atom(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_annotate_collapse(args: argparse.Namespace) -> int:
+    from experiments.store_ops import annotate_collapse
+
+    out = annotate_collapse(args.store, stores_root=DEFAULT_STORES_ROOT)
+    print(f"{out['rows']} rows -> {out['keys']} collapse keys")
+    return 0
+
+
 def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
     from experiments.cv import fit_dash_shard, run_dash_shard_fits
 
@@ -295,6 +303,8 @@ def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
                 store=args.store,
                 shard=args.shard,
                 max_depth=args.max_depth,
+                collapse=args.collapse,
+                weight_by_collapse=args.weight_by_collapse,
                 seed=args.seed,
                 runs_root=DEFAULT_RUNS_ROOT,
                 allow_dirty=args.allow_dirty,
@@ -306,6 +316,8 @@ def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
         store=args.store,
         n_shards=args.n_shards,
         max_depth=args.max_depth,
+        collapse=args.collapse,
+        weight_by_collapse=args.weight_by_collapse,
         seed=args.seed,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
@@ -332,6 +344,8 @@ def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
                 codes_path=args.codes_path,
                 config_label=args.config_label,
                 predictor_params=predictor_params,
+                collapse=args.collapse,
+                weight_by_collapse=args.weight_by_collapse,
                 seed=args.seed,
                 runs_root=DEFAULT_RUNS_ROOT,
                 allow_dirty=args.allow_dirty,
@@ -346,6 +360,8 @@ def _cmd_cv_fit_sieve_shards(args: argparse.Namespace) -> int:
         codes_path=args.codes_path,
         config_label=args.config_label,
         predictor_params=predictor_params,
+        collapse=args.collapse,
+        weight_by_collapse=args.weight_by_collapse,
         seed=args.seed,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
@@ -393,6 +409,8 @@ def _cmd_cv_fit_hose_shards(args: argparse.Namespace) -> int:
         n_shards=args.n_shards,
         radius=args.radius,
         shard=args.shard,
+        collapse=args.collapse,
+        weight_by_collapse=args.weight_by_collapse,
         seed=args.seed,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
@@ -961,6 +979,19 @@ def build_parser() -> argparse.ArgumentParser:
         "-- the seam an xargs -P dispatch uses to put one shard per process",
     )
     p_cv_fit_dash.add_argument("--seed", type=int, default=0)
+    p_cv_fit_dash.add_argument(
+        "--collapse",
+        action="store_true",
+        help="fit on one row per collapse_key (conformers, exact duplicates "
+        "and enantiomers merged). Requires `annotate-collapse` first. The "
+        "held-out side is never collapsed",
+    )
+    p_cv_fit_dash.add_argument(
+        "--weight-by-collapse",
+        action="store_true",
+        help="with --collapse, weight each key by n_collapsed, reproducing "
+        "the uncollapsed atom-weighted fit. For the migration check only",
+    )
     p_cv_fit_dash.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_dash.set_defaults(func=_cmd_cv_fit_dash_shards)
 
@@ -1000,6 +1031,19 @@ def build_parser() -> argparse.ArgumentParser:
         "-- the seam an xargs -P dispatch uses to put one shard per process",
     )
     p_cv_fit_sieve.add_argument("--seed", type=int, default=0)
+    p_cv_fit_sieve.add_argument(
+        "--collapse",
+        action="store_true",
+        help="fit on one row per collapse_key (conformers, exact duplicates "
+        "and enantiomers merged). Requires `annotate-collapse` first. The "
+        "held-out side is never collapsed",
+    )
+    p_cv_fit_sieve.add_argument(
+        "--weight-by-collapse",
+        action="store_true",
+        help="with --collapse, weight each key by n_collapsed, reproducing "
+        "the uncollapsed atom-weighted fit. For the migration check only",
+    )
     p_cv_fit_sieve.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_sieve.set_defaults(func=_cmd_cv_fit_sieve_shards)
 
@@ -1025,6 +1069,19 @@ def build_parser() -> argparse.ArgumentParser:
         "dispatch uses to put one shard per process",
     )
     p_cv_fit_hose.add_argument("--seed", type=int, default=0)
+    p_cv_fit_hose.add_argument(
+        "--collapse",
+        action="store_true",
+        help="fit on one row per collapse_key (conformers, exact duplicates "
+        "and enantiomers merged). Requires `annotate-collapse` first. The "
+        "held-out side is never collapsed",
+    )
+    p_cv_fit_hose.add_argument(
+        "--weight-by-collapse",
+        action="store_true",
+        help="with --collapse, weight each key by n_collapsed, reproducing "
+        "the uncollapsed atom-weighted fit. For the migration check only",
+    )
     p_cv_fit_hose.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_hose.set_defaults(func=_cmd_cv_fit_hose_shards)
 
@@ -1350,6 +1407,16 @@ def build_parser() -> argparse.ArgumentParser:
         "neighbor (default: MBIScharge)",
     )
     p_ua.set_defaults(func=_cmd_to_united_atom)
+
+    p_annotate = sub.add_parser(
+        "annotate-collapse",
+        help="add collapse_key and its counts to a store, in place -- the "
+        "equivalence a fit collapses over (conformers, exact duplicates, "
+        "enantiomers). Idempotent; refuses a group straddling a split, "
+        "cluster or shard",
+    )
+    p_annotate.add_argument("store", nargs="?", default="dash-molecules")
+    p_annotate.set_defaults(func=_cmd_annotate_collapse)
 
     p_summary = sub.add_parser(
         "summarize", help="collect runs/**/metrics.json into a CSV"
