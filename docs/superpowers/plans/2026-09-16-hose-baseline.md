@@ -28,7 +28,7 @@
 | `experiments/experiments/predictors/hose_keys.py` | **Create.** The prefix-key construction, pure string handling, no optional imports so it is testable in the fast suite. |
 | `experiments/experiments/predictors/hose.py` | **Create.** The predictor: `fit`, `predict`, the matched-radius diagnostic, and registration. |
 | `experiments/experiments/predictors/__init__.py` | **Modify.** One lazy-import branch, following the existing `dash`/`sieve` pattern. |
-| `experiments/pyproject.toml` | **Modify.** A `hose` extra carrying `hosegen`. |
+| `pyproject.toml` (repo root) | **Modify.** A `hose` extra. The root pyproject finds packages in both `src` and `experiments`; there is no `experiments/pyproject.toml`. |
 | `experiments/configs/hose-charge-example.yaml` | **Create.** A runnable config mirroring `dash-charge-example.yaml`. |
 | `experiments/tests/test_hose_keys.py` | **Create.** Fast, no optional dependency. |
 | `experiments/tests/test_predictor_hose.py` | **Create.** Synthetic `MoleculeSet`, skipped without `hosegen`. |
@@ -113,7 +113,7 @@ def test_a_child_key_never_has_two_parents():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd experiments && python -m pytest tests/test_hose_keys.py -v`
+Run: `python -m pytest experiments/tests/test_hose_keys.py -v`
 Expected: FAIL, `ModuleNotFoundError: No module named 'experiments.predictors.hose_keys'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -163,13 +163,13 @@ def sphere_prefix(code: str, k: int) -> str:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd experiments && python -m pytest tests/test_hose_keys.py -v`
+Run: `python -m pytest experiments/tests/test_hose_keys.py -v`
 Expected: 6 passed
 
 - [ ] **Step 5: Lint and commit**
 
 ```bash
-cd experiments && python -m ruff check experiments/predictors/hose_keys.py tests/test_hose_keys.py
+python -m ruff check experiments/experiments/predictors/hose_keys.py experiments/tests/test_hose_keys.py
 git add experiments/experiments/predictors/hose_keys.py experiments/tests/test_hose_keys.py
 git commit -m "feat(experiments): per-radius HOSE keys cut as prefixes of one code"
 ```
@@ -181,7 +181,7 @@ git commit -m "feat(experiments): per-radius HOSE keys cut as prefixes of one co
 **Files:**
 - Create: `experiments/experiments/predictors/hose.py`
 - Modify: `experiments/experiments/predictors/__init__.py`
-- Modify: `experiments/pyproject.toml`
+- Modify: `pyproject.toml` (repo root)
 - Test: `experiments/tests/test_predictor_hose.py`
 
 **Interfaces:**
@@ -347,24 +347,31 @@ def test_two_conformers_of_one_molecule_get_the_same_prediction():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd experiments && python -m pytest tests/test_predictor_hose.py -v`
+Run: `python -m pytest experiments/tests/test_predictor_hose.py -v`
 Expected: FAIL, `ModuleNotFoundError: No module named 'experiments.predictors.hose'` (or the whole file skipped if `hosegen` is not installed — install it first, see Step 3)
 
 - [ ] **Step 3: Declare the optional dependency**
 
-In `experiments/pyproject.toml`, add to `[project.optional-dependencies]`, after the `sklearn` entry:
+In the repo-root `pyproject.toml`, add to `[project.optional-dependencies]`, after the `sklearn` entry:
 
 ```toml
-# The HOSE-code baseline arm (predictors/hose.py). Stefan Kuhn's generator,
-# a Python port of the Java CDK HOSECodeGenerator; not on PyPI, so this is a
-# direct reference and the arm stays out of `dev`/`chem`.
-hose = ["hosegen @ git+https://github.com/Ratsemaat/HOSE-code-generator"]
+# The HOSE-code baseline arm (experiments/predictors/hose.py). Stefan Kuhn's
+# generator, a Python port of the Java CDK HOSECodeGenerator, not on PyPI.
+# Two traps: the distribution is named hose-code-generator while the import is
+# hosegen, and its install_requires names xmlrunner, which drags in unittest2
+# and fails to build on modern Python. hosegen never imports xmlrunner, so
+# install it with --no-deps; rdkit and numpy, all it actually needs, are
+# already here:
+#   pip install --no-deps "hose-code-generator @ git+https://github.com/Ratsemaat/HOSE-code-generator"
+hose = ["hose-code-generator"]
 ```
 
-Then install it into the working environment:
+Then install it into the working environment. Both flags matter: the
+distribution name is not the import name, and `--no-deps` is what avoids the
+`xmlrunner` -> `unittest2` build failure.
 
 ```bash
-pip install "hosegen @ git+https://github.com/Ratsemaat/HOSE-code-generator"
+pip install --no-deps "hose-code-generator @ git+https://github.com/Ratsemaat/HOSE-code-generator"
 ```
 
 - [ ] **Step 4: Write minimal implementation**
@@ -487,14 +494,14 @@ In `experiments/experiments/predictors/__init__.py`, inside `build`, add after t
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `cd experiments && python -m pytest tests/test_predictor_hose.py tests/test_hose_keys.py -v`
+Run: `python -m pytest experiments/tests/test_predictor_hose.py tests/test_hose_keys.py -v`
 Expected: all passed, none skipped
 
 - [ ] **Step 7: Lint and commit**
 
 ```bash
-cd experiments && python -m ruff check experiments/predictors/hose.py experiments/predictors/__init__.py tests/test_predictor_hose.py
-git add experiments/experiments/predictors/hose.py experiments/experiments/predictors/__init__.py experiments/pyproject.toml experiments/tests/test_predictor_hose.py
+python -m ruff check experiments/experiments/predictors/hose.py experiments/experiments/predictors/__init__.py experiments/tests/test_predictor_hose.py
+git add experiments/experiments/predictors/hose.py experiments/experiments/predictors/__init__.py pyproject.toml experiments/tests/test_predictor_hose.py
 git commit -m "feat(experiments): a HOSE-code lookup baseline arm"
 ```
 
@@ -548,7 +555,7 @@ def test_matched_radius_before_predict_raises():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd experiments && python -m pytest tests/test_predictor_hose.py -k matched_radius -v`
+Run: `python -m pytest experiments/tests/test_predictor_hose.py -k matched_radius -v`
 Expected: FAIL, `AttributeError: 'HoseLookupPredictor' object has no attribute 'matched_radius'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -595,13 +602,13 @@ and add the accessor after `predict`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd experiments && python -m pytest tests/test_predictor_hose.py -v`
+Run: `python -m pytest experiments/tests/test_predictor_hose.py -v`
 Expected: all passed
 
 - [ ] **Step 5: Lint and commit**
 
 ```bash
-cd experiments && python -m ruff check experiments/predictors/hose.py tests/test_predictor_hose.py
+python -m ruff check experiments/experiments/predictors/hose.py experiments/tests/test_predictor_hose.py
 git add experiments/experiments/predictors/hose.py experiments/tests/test_predictor_hose.py
 git commit -m "feat(experiments): record which radius answered each atom"
 ```
@@ -662,7 +669,7 @@ def test_hose_charge_predictor_runs_end_to_end_via_run(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails or skips for the right reason**
 
-Run: `cd experiments && python -m pytest tests/test_predictor_hose_optional.py -v -rs`
+Run: `python -m pytest experiments/tests/test_predictor_hose_optional.py -v -rs`
 Expected: either FAIL (store present, predictor not wired into `run`) or SKIP with the reason "real dash-molecules store not prepared and split locally". A skip for any other reason means the gate is wrong.
 
 - [ ] **Step 3: Write the config**
@@ -689,13 +696,13 @@ predictor:
 
 - [ ] **Step 4: Run the test and the config**
 
-Run: `cd experiments && python -m pytest tests/test_predictor_hose_optional.py -v -rs`
+Run: `python -m pytest experiments/tests/test_predictor_hose_optional.py -v -rs`
 Expected: PASS where the store is prepared, SKIP where it is not.
 
 Then, where the store is prepared, run the config itself and confirm it completes:
 
 ```bash
-cd experiments && python -m experiments run configs/hose-charge-example.yaml
+python -m experiments run experiments/configs/hose-charge-example.yaml
 ```
 
 If the CLI's subcommand differs, read `experiments/experiments/cli.py` for the
@@ -726,7 +733,7 @@ holds here before starting a cross-validation that might run for a day.
 - [ ] **Step 1: Time the featurization on one shard**
 
 ```bash
-cd experiments && python - <<'PY'
+python - <<'PY'
 import time
 import numpy as np
 from experiments.predictors.hose import HoseLookupPredictor
