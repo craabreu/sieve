@@ -45,6 +45,7 @@ from typing import Any, TypeVar, cast
 
 import numpy as np
 
+from experiments.collapse import held_out_floors
 from experiments.data import REPO_ROOT, MoleculeSet, concat_molecule_sets
 from experiments.normalize import NORMALIZERS
 from experiments.predictors.base import Prediction, RawPrediction
@@ -913,6 +914,7 @@ def _write_cv_run(
     train_set: MoleculeSet | None = None,
     train_raw: RawPrediction | None = None,
     analytic_stats: Any = None,
+    floors: Mapping[str, float] | None = None,
     repeat: int,
     fold: int,
     depth: int,
@@ -962,11 +964,12 @@ def _write_cv_run(
     if train_raw is not None and train_set is not None:
         run_metrics.update(_score_train(train_raw, train_set))
 
-    from experiments.collapse import held_out_floor
-
-    floor = held_out_floor(held_out)
-    if floor:
-        run_metrics["floor/rmse"] = floor
+    if floors is None:
+        # Fallback for a caller that has not hoisted it. The drivers pass it
+        # in, because a fold's held-out set is shared by every depth and
+        # variant scored against it and this costs ~21 s a time.
+        floors = held_out_floors(held_out)
+    run_metrics.update({k: v for k, v in floors.items() if v})
 
     for k, v in elapsed_s.items():
         run_metrics[f"time/{k}_s"] = v
@@ -1185,6 +1188,7 @@ def run_hose_cv(
                     continue
 
                 held_out = concat_molecule_sets([mset_by_shard[sid] for sid in group])
+                floors = held_out_floors(held_out)
                 predictor = HoseLookupPredictor(max_radius=radius)
                 predictor.set_model_state(train_states[fold])
 
@@ -1225,6 +1229,7 @@ def run_hose_cv(
                         seed=seed,
                         held_out=held_out,
                         raw=raw,
+                        floors=floors,
                         normalization=normalization,
                         train_set=train_set,
                         train_raw=train_raw,
@@ -1376,6 +1381,7 @@ def run_dash_cv(
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
+            floors = held_out_floors(held_out)
 
             t0 = time.perf_counter()
             paths = predictor.match_paths(held_out, split="cv")
@@ -1423,6 +1429,7 @@ def run_dash_cv(
                         seed=seed,
                         held_out=held_out,
                         raw=raw,
+                        floors=floors,
                         normalization=normalization,
                         train_set=train_set,
                         train_raw=train_raw,
@@ -1598,6 +1605,7 @@ def run_sieve_cv(
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
+            floors = held_out_floors(held_out)
 
             predictor.set_model(train_models[fold])
             t0 = time.perf_counter()
@@ -1660,6 +1668,7 @@ def run_sieve_cv(
                             seed=seed,
                             held_out=held_out,
                             raw=raw,
+                            floors=floors,
                             normalization=normalization,
                             train_set=train_set,
                             train_raw=train_raw,

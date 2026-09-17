@@ -403,3 +403,88 @@ def test_held_out_floor_is_zero_without_duplicates():
         },
     )
     assert held_out_floor(mset) == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------
+# The stereo-blind floor
+# --------------------------------------------------------------------------
+
+
+def _floor_set(pairs):
+    """A MoleculeSet from (smiles, {atom_idx: charge}) pairs, keyed properly."""
+    from experiments.collapse import collapse_key
+    from experiments.data import MoleculeSet
+
+    mols = [_charged(smi, ch) for smi, ch in pairs]
+    return MoleculeSet(
+        mols=mols,
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [collapse_key(m) for m in mols],
+            "dash_id": [f"d{i}" for i in range(len(mols))],
+            "conf_id": ["c0"] * len(mols),
+        },
+    )
+
+
+def test_stereo_blind_floor_sees_an_ez_pair_the_keyed_floor_cannot():
+    """E/Z isomers are different keys, so held_out_floor counts none of their
+    scatter -- but no arm in this series reads bond stereo, so they collide
+    in one class and that scatter is irreducible for them."""
+    from experiments.collapse import held_out_floor, held_out_floor_stereo_blind
+
+    mset = _floor_set([("C/C=C/CO", {0: 1.0, 1: 2.0}), ("C/C=C\\CO", {0: 3.0, 1: 4.0})])
+    assert len(set(mset.ids["collapse_key"])) == 2  # genuinely separate keys
+    assert held_out_floor(mset) == 0.0
+    assert held_out_floor_stereo_blind(mset) > 0.0
+
+
+def test_stereo_blind_floor_sees_a_diastereomer_pair():
+    from experiments.collapse import held_out_floor, held_out_floor_stereo_blind
+
+    mset = _floor_set(
+        [
+            ("N[C@@H](C)[C@H](O)C", {0: 1.0, 1: 2.0}),
+            ("N[C@H](C)[C@H](O)C", {0: 3.0, 1: 4.0}),
+        ]
+    )
+    assert len(set(mset.ids["collapse_key"])) == 2
+    assert held_out_floor(mset) == 0.0
+    assert held_out_floor_stereo_blind(mset) > 0.0
+
+
+def test_stereo_blind_floor_is_never_below_the_keyed_floor():
+    """Its groups are supersets of the keyed floor's -- stripping stereo can
+    only merge -- so it can only be larger. The invariant that makes the
+    pair trustworthy."""
+    from experiments.collapse import held_out_floor, held_out_floor_stereo_blind
+
+    mset = _floor_set(
+        [
+            ("CCO", {0: 1.0, 1: 2.0}),
+            ("CCO", {0: 1.5, 1: 2.5}),  # same key: conformer-like scatter
+            ("C/C=C/CO", {0: 1.0}),
+            ("C/C=C\\CO", {0: 2.0}),  # different keys, same stripped graph
+            ("CCC", {0: 0.5}),  # a singleton
+        ]
+    )
+    assert held_out_floor_stereo_blind(mset) >= held_out_floor(mset) > 0.0
+
+
+def test_stereo_blind_floor_needs_no_collapse_key():
+    """It derives its own grouping, so it works on an un-annotated set."""
+    from experiments.collapse import held_out_floor, held_out_floor_stereo_blind
+    from experiments.data import MoleculeSet
+
+    mols = [_charged("C/C=C/CO", {0: 1.0}), _charged("C/C=C\\CO", {0: 2.0})]
+    mset = MoleculeSet(mols=mols, atom_property="MBIScharge")
+    assert held_out_floor(mset) == 0.0  # no key at all -> 0.0, as documented
+    assert held_out_floor_stereo_blind(mset) > 0.0
+
+
+def test_held_out_floors_reports_both():
+    from experiments.collapse import held_out_floors
+
+    out = held_out_floors(_floor_set([("CCO", {0: 1.0}), ("CCO", {0: 2.0})]))
+    assert set(out) == {"floor/rmse", "floor/rmse_stereo_blind"}
+    assert out["floor/rmse"] > 0.0
