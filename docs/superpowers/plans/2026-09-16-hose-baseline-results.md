@@ -21,45 +21,52 @@ closer together than they would at full scale.
 
 ## Error, on identical data
 
-Sieve as the manuscript configures it: element only, bond types on edges.
+Sieve in the configuration the studies use: **element on nodes, nothing on
+edges**, so refinement past level 0 is pure graph topology.
 
 | arm | RMSE | R² | MAE |
 |---|---:|---:|---:|
 | HOSE lookup, 5 spheres | 0.03927 | 0.98507 | 0.01892 |
-| Sieve, pooled, *r*=5 | 0.03830 | 0.98579 | 0.01883 |
-| Sieve, continuation, *r*=5 | 0.03672 | 0.98694 | 0.01831 |
-| Sieve, continuation + EB, *r*=5 | **0.03651** | **0.98709** | **0.01819** |
+| Sieve, pooled, *r*=5 | 0.03587 | 0.98754 | 0.01844 |
+| Sieve, continuation, *r*=5 | 0.03497 | 0.98816 | 0.01809 |
+| Sieve, continuation + EB, *r*=5 | **0.03478** | **0.98829** | **0.01798** |
 
-Sieve beats the HOSE baseline on every reading, including the pooled one, and
-the two estimator corrections widen the margin: continuation alone accounts for
-a 4.1% reduction in RMSE against the pooled reading, and shrinkage another
-0.6%. Against HOSE the full estimator is 7.0% lower.
+Sieve beats the HOSE baseline on every reading. Against HOSE the full
+estimator is **11.4%** lower in RMSE; the corrections account for part of that,
+continuation taking 2.5% off the pooled reading and shrinkage a further 0.5%.
 
-### With the predictor's richer default attributes
+Note what HOSE sees that Sieve here does not: its codes carry bond order and
+aromaticity, while these Sieve arms carry the element and the graph. The
+comparison is not feature-matched, and it is the *incumbent* that holds the
+richer description.
 
-The same arms run with `DEFAULT_ATTRIBUTES` (element, degree, formal charge,
-aromatic, num_h) rather than element alone:
+### Attributes hurt, monotonically, at this data volume
 
-| arm | RMSE | R² | MAE |
-|---|---:|---:|---:|
-| Sieve, pooled, *r*=5 | 0.04077 | 0.98390 | 0.01962 |
-| Sieve, continuation, *r*=5 | 0.03853 | 0.98563 | 0.01892 |
-| Sieve, continuation + EB, *r*=5 | 0.03837 | 0.98574 | 0.01882 |
+The same fold, same radius, same continuation + EB estimator, varying only what
+each atom and bond carries:
 
-Every one is **worse** than its element-only counterpart, and the pooled
-reading falls behind HOSE. At 4% of the training data the richer attributes
-fragment classes faster than the extra information pays for, which is the
-behaviour the depth sweep already shows in the other direction. Worth
-re-checking at full scale before drawing any conclusion from it.
+| node attributes | edge attributes | RMSE |
+|---|---|---:|
+| element | none | **0.03478** |
+| element | bond type | 0.03651 |
+| element, degree, formal charge, aromatic, num_h | bond type | 0.03837 |
+
+Every addition makes it worse, and the richest setting falls behind HOSE
+(0.03927) on the pooled reading. At 4% of the training data the extra
+attributes fragment classes faster than the information they add pays for.
+Whether that survives at full scale is unknown and worth checking before it is
+repeated anywhere.
 
 ## Cost
 
 | arm | fit | predict |
 |---|---:|---:|
 | HOSE lookup, 5 spheres | 578.4 s | 309.8 s |
-| Sieve, element only, *r*=5 | 15.2 s | 6.7 s |
+| Sieve, element on nodes, none on edges, *r*=5 | 11.9 s | not timed separately |
 
-**38x on fit, 46x on predict.** HOSE's cost is featurization: 394 µs/atom
+**49x on fit.** Predict was timed only for a richer Sieve setting, at 6.7 s
+against HOSE's 309.8 s, so the prediction ratio is of the same order but is
+not quoted here as a measurement of this configuration. HOSE's cost is featurization: 394 µs/atom
 fitting and 401 µs/atom predicting, against the 314 µs/atom benchmarked in the
 spec on a single drug-like molecule. Sieve's whole fit runs at about 10 µs per
 atom.
