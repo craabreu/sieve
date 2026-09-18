@@ -1223,10 +1223,18 @@ STUDY_C_REPEATS="$STUDY_B_REPEATS"
 SIEVE_STUDY_C=sieve-cv-study-c      # stage 1, the depth curve
 SIEVE_STUDY_C_B=sieve-cv-study-c-b  # stage 2, the fixed-depth comparison
 
-# Read off stage 1's curve, by a human, exactly as SIEVE_SELECTED_DEPTH is.
-# These defaults are a prior -- the incumbent's own selected depth -- not a
-# result: stage 2 must not be run until the curve has been looked at, which
-# is what `CV_UNTIL=study-c-depth-curve` is for.
+# Every arm sits at the incumbent's own selected depth, and that is the
+# design rather than a fallback. Study C varies the featurization, so
+# holding the environment size fixed is what isolates that variable: were
+# each arm placed at its own optimum, a difference between arms would
+# confound the featurization with the depth chosen for it.
+#
+# The cost of that choice is real and worth stating -- an arm whose curve
+# peaks elsewhere is scored off its own best -- so stage 1's curves are
+# still to be read before stage 2 runs, not to select from but to check
+# that no arm is badly served by the common depth. `CV_UNTIL=
+# study-c-depth-curve` is what stops there. Override this map to place an
+# arm somewhere else, and say in the paper why.
 STUDY_C_SELECTED_DEPTHS="${STUDY_C_SELECTED_DEPTHS:-$(
   echo "$SIEVE_FEATURIZATIONS" | "$PYTHON" -c '
 import json, sys
