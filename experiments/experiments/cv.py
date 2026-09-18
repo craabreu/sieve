@@ -988,6 +988,7 @@ def _write_cv_run(
     train_set: MoleculeSet | None = None,
     train_raw: RawPrediction | None = None,
     analytic_stats: Any = None,
+    analytic_loo: Any = None,
     floors: Mapping[str, float] | None = None,
     collapse_train_scoring: bool = False,
     repeat: int,
@@ -1016,6 +1017,13 @@ def _write_cv_run(
     started = datetime.now(UTC)
     run_metrics = _score_raw_and_normalized(raw, held_out, normalization=normalization)
 
+    if analytic_loo is not None:
+        # Recorded beside the training error, never in place of it: the two
+        # answer different questions, and section 3 of the diagnostics note
+        # measured this curve's argmin reproducing the depth Study A selected
+        # by its plateau rule, at a fraction of the cost.
+        run_metrics["train/loo_rmse"] = analytic_loo.rmse
+        run_metrics["train/loo_r2"] = analytic_loo.r_squared
     if analytic_stats is not None:
         run_metrics.update(
             {
@@ -1294,11 +1302,16 @@ def run_hose_cv(
                 # shard fits are already on disk, and a mid-sweep artifact
                 # predating this column must keep working, just without the
                 # analytic columns, rather than crash the whole run.
-                analytic_stats = None
+                analytic_stats = analytic_loo = None
                 if train_states[fold].has_second_moment:
                     from experiments.analytic import hose_train_stats
 
                     analytic_stats = hose_train_stats(train_states[fold], radius)
+                    # Exact at the baseline n_min=1, where a training atom's
+                    # own deepest key always answers it.
+                    analytic_loo = hose_train_stats(
+                        train_states[fold], radius, loo=True
+                    )
 
                 results.append(
                     _write_cv_run(
@@ -1315,6 +1328,7 @@ def run_hose_cv(
                         train_set=train_set,
                         train_raw=train_raw,
                         analytic_stats=analytic_stats,
+                        analytic_loo=analytic_loo,
                         repeat=repeat,
                         fold=fold,
                         depth=radius,
@@ -1742,9 +1756,22 @@ def run_sieve_cv(
                     # -- the exact model this run predicted with, variant
                     # respecification included -- so no extra fit or walk is
                     # needed for every depth/variant point of a curve.
-                    from experiments.analytic import sieve_train_stats
+                    from experiments.analytic import (
+                        sieve_train_stats,
+                        supports_loo,
+                    )
 
                     analytic_stats = sieve_train_stats(model_for_run)
+                    # Only where the estimator admits an exact LOO: a
+                    # continuation class estimates its children's mean, so
+                    # removing one atom needs a child identity this walk does
+                    # not carry, and shrinkage reads the very count the
+                    # held-out atom contributes to.
+                    analytic_loo = (
+                        sieve_train_stats(model_for_run, loo=True)
+                        if supports_loo(model_for_run.config)
+                        else None
+                    )
                     results.append(
                         _write_cv_run(
                             experiment=experiment,
@@ -1760,6 +1787,7 @@ def run_sieve_cv(
                             train_set=train_set,
                             train_raw=train_raw,
                             analytic_stats=analytic_stats,
+                            analytic_loo=analytic_loo,
                             repeat=repeat,
                             fold=fold,
                             depth=depth,

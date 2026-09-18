@@ -206,6 +206,17 @@ def _loo_scale(count: NDArray) -> NDArray:
     return (n / (n - 1.0))[:, None] ** 2
 
 
+def supports_loo(cfg: Any) -> bool:
+    """Whether the analytic LOO is exact for this reading of the tables.
+
+    A caller that wants LOO "where it is available" should ask this rather
+    than catch the refusal below, so the two cannot drift apart.
+    """
+    from sieve.config import CLASS_ESTIMATOR_POOLED
+
+    return cfg.class_estimator == CLASS_ESTIMATOR_POOLED and not cfg.applies_shrinkage
+
+
 def _refuse_loo_unsupported(cfg: Any) -> None:
     from sieve.config import CLASS_ESTIMATOR_POOLED
 

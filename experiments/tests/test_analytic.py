@@ -430,3 +430,24 @@ def test_hose_analytic_refuses_a_non_baseline_n_min():
     state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
     with pytest.raises(NotImplementedError, match="n_min"):
         hose_train_stats(state, radius=1, n_min=3)
+
+
+def test_supports_loo_matches_what_the_walk_actually_refuses():
+    """The predicate a caller uses to ask for LOO "where available" must
+    agree with the refusal itself, or the two drift apart."""
+    from experiments.analytic import sieve_train_stats, supports_loo
+
+    cases = [
+        ({}, True),  # pooled, unshrunk
+        ({"class_estimator": "continuation"}, False),
+        ({"shrinkage_strength": 0.5}, False),
+        ({"class_estimator": "continuation", "shrinkage_strength": 0.5}, False),
+    ]
+    for kwargs, expected in cases:
+        model, _ = _fit(**kwargs)
+        assert supports_loo(model.config) is expected, kwargs
+        if expected:
+            sieve_train_stats(model, loo=True)  # must not raise
+        else:
+            with pytest.raises(NotImplementedError):
+                sieve_train_stats(model, loo=True)
