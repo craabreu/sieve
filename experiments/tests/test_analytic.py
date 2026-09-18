@@ -348,13 +348,20 @@ def test_hose_analytic_refuses_a_state_without_the_second_moment():
         hose_train_stats(legacy, radius=1)
 
 
-def test_hose_analytic_refuses_a_non_baseline_n_min():
+def test_hose_analytic_supports_a_higher_n_min_now_that_it_backs_off():
+    """The old restriction to n_min=1 was a consequence of having no backoff
+    chain, not a property of the arm. With one, a key below threshold simply
+    shortens by a sphere, exactly as predict does."""
+    pytest.importorskip("hosegen")
     from experiments.analytic import hose_train_stats
-    from experiments.hose_artifact import HoseState
 
-    state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
-    with pytest.raises(NotImplementedError, match="n_min"):
-        hose_train_stats(state, radius=1, n_min=3)
+    p, _mset = _hose_fit([0.1, -0.2, 0.3, -0.05, 0.02, 0.4], radius=2)
+    state = p.model_state()
+    strict = hose_train_stats(state, radius=2, n_min=3)
+    loose = hose_train_stats(state, radius=2, n_min=1)
+    # a higher threshold forces atoms onto shallower, blunter keys
+    assert strict.sse >= loose.sse
+    assert strict.matched_fraction <= loose.matched_fraction
 
 
 def test_supports_loo_matches_what_the_walk_actually_refuses():
@@ -378,17 +385,47 @@ def test_supports_loo_matches_what_the_walk_actually_refuses():
                 sieve_train_stats(model, loo=True)
 
 
-def test_hose_analytic_loo_is_refused_pending_prefix_backoff():
-    """Removing an atom empties its own deepest key, and HOSE then backs off
-    to a shallower RADIUS by sphere prefix -- which this walk does not
-    implement. An earlier version sent such atoms to the global mean, which
-    is not what predict does, and the error was large: at radius 8, 51.6% of
-    training atoms sit in singleton keys, so the curve climbed to the
-    global-mean error and its argmin was an artifact."""
-    from experiments.analytic import hose_train_stats
-    from experiments.hose_artifact import HoseState
+...
 
-    state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
-    hose_train_stats(state, radius=1)  # the training error is fine
-    with pytest.raises(NotImplementedError, match="SHALLOWER RADIUS"):
-        hose_train_stats(state, radius=1, loo=True)
+
+def test_hose_analytic_loo_matches_a_brute_force_leave_one_out():
+    """HOSE has no predict_loo, so this builds one from the predictor's own
+    rule: drop an atom's contribution from every key it touches, then answer
+    it by shortening a sphere at a time exactly as ``predict`` does, falling
+    to the global mean only once every radius has failed."""
+    pytest.importorskip("hosegen")
+    from experiments.analytic import hose_train_stats
+    from experiments.predictors.hose_keys import sphere_prefix
+
+    p, mset = _hose_fit([0.1, -0.2, 0.3, -0.05, 0.02, 0.4, -0.3, 0.25], radius=3)
+    state = p.model_state()
+    n_min = 1
+
+    brute = 0.0
+    for value, code in zip(mset.atom_target, p._codes(mset.mols), strict=True):
+        pred = state.global_mean
+        for k in range(state.max_radius, 0, -1):
+            s_k, _q_k, n_k = state.tables[k][sphere_prefix(code, k)]
+            n_eff, s_eff = n_k - 1, s_k - float(value)  # this atom removed
+            if n_eff >= n_min:
+                pred = s_eff / n_eff
+                break
+        brute += (float(value) - pred) ** 2
+
+    got = hose_train_stats(state, radius=state.max_radius, loo=True).sse
+    assert got == pytest.approx(brute, rel=1e-10)
+
+
+def test_hose_analytic_loo_backs_off_rather_than_falling_to_the_global_mean():
+    """The defect this replaced sent every singleton straight to the global
+    mean, skipping the prefix chain, so the curve climbed to the global-mean
+    error instead of measuring the model."""
+    pytest.importorskip("hosegen")
+    from experiments.analytic import hose_train_stats
+
+    p, _ = _hose_fit([0.1, -0.2, 0.3, -0.05, 0.02, 0.4], radius=3)
+    state = p.model_state()
+    loo = hose_train_stats(state, radius=3, loo=True)
+    plain = hose_train_stats(state, radius=3)
+    assert loo.sse >= plain.sse  # LOO can only be worse
+    assert loo.matched_fraction > 0.9  # the chain answers nearly everything

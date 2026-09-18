@@ -30,6 +30,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from experiments.predictors.hose_keys import sphere_prefix
+
 # The support thresholds whose atom share every curve reports. 12 is this
 # series' own `minimum_support` ("at least four molecules" at three conformers
 # each); the others bracket it.
@@ -354,34 +356,26 @@ def hose_train_stats(
     loo: bool = False,
     thresholds: tuple[int, ...] = SUPPORT_THRESHOLDS,
 ) -> TrainStats:
-    """Training statistics for one HOSE radius, from its own key table.
+    """Training (or leave-one-out) statistics for one HOSE radius.
 
-    Restricted to the baseline ``n_min=1``, where the deepest key always
-    answers a training atom -- it contributed to that key -- so there is no
-    backoff and the walk collapses to a single level. Generalizing would mean
-    implementing prefix backoff over the key tables, i.e. analysing a method
-    nobody runs (spec section 2).
+    Walks the arm's own inference rule, which its design spec states as
+    "describe an atom by its HOSE code out to *k* spheres; average the
+    reference charges of the training atoms carrying the same code; if none
+    does, shorten by one sphere and try again" -- falling to the global mean
+    only once every radius has failed, exactly as ``predict`` does.
 
-    ``loo=True`` is refused; see the error it raises.
+    The chain is walked with ``sphere_prefix``, not by regenerating a
+    shorter code: within one fitted state every radius' key is cut from one
+    ``max_radius`` code, so a key's ``(k-1)``-prefix is always a key of the
+    ``k-1`` table. Regenerating instead breaks the tree -- the spec measured
+    5 of 340 classes gaining a second parent at radius 3 -> 2 -- which is
+    why the parent here is a prefix and never a fresh generation.
+
+    Without ``loo`` and at ``n_min=1`` nothing backs off: a training atom's
+    deepest key exists because the atom contributed to it. Under ``loo`` that
+    is exactly what fails, since removing the atom empties a key of one, and
+    the walk then shortens by a sphere just as the rule says.
     """
-    if loo:
-        raise NotImplementedError(
-            "analytic LOO is not available for HOSE: removing an atom empties "
-            "its own deepest key, and the predictor then backs off to a "
-            "SHALLOWER RADIUS by sphere prefix, which this walk does not "
-            "implement. An earlier version sent such atoms to the global mean "
-            "instead -- mirroring Sieve's fallback, which only fires once its "
-            "backoff chain is exhausted -- and that is not what predict does. "
-            "The error is not small: at radius 8, 51.6% of training atoms sit "
-            "in singleton keys, so the curve climbed to the global-mean error "
-            "and its argmin was an artifact"
-        )
-    if n_min != 1:
-        raise NotImplementedError(
-            f"analytic HOSE statistics assume the baseline n_min=1, got "
-            f"{n_min}: at a higher threshold a training atom backs off to "
-            f"its own sphere prefix, which this does not implement"
-        )
     if not state.has_second_moment:
         raise ValueError(
             "this HOSE state predates the sumsq column and carries no second "
@@ -392,45 +386,55 @@ def hose_train_stats(
     if not table:
         raise ValueError(f"state has no keys at radius {radius}")
 
-    n = np.array([c for _, _, c in table.values()], dtype=np.float64)
-    s = np.array([v for v, _, _ in table.values()], dtype=np.float64)[:, None]
-    q = np.array([qq for _, qq, _ in table.values()], dtype=np.float64)[:, None]
-    value = s / n[:, None]
-    n_total = float(n.sum())
+    floor = n_min + 1 if loo else n_min
+    # key -> (n, sum y, sum y^2) of the atoms still unanswered
+    carried = {k: (float(c), v, qq) for k, (v, qq, c) in table.items()}
+    n_total = sum(n for n, _, _ in carried.values())
+    sse = 0.0
+    n_matched = 0.0
 
-    if not loo:
-        sse = _sse_against(n, s, q, value)
-        n_matched = n_total  # n_min=1: every training atom answers here
-    else:
-        supported = n >= 2
-        sse = 0.0
-        n_matched = 0.0
-        if supported.any():
-            scale = _loo_scale(n[supported])
-            sse += _sse_against(
-                n[supported],
-                s[supported],
-                q[supported],
-                value[supported],
-                scale=scale,
-            )
-            n_matched += float(n[supported].sum())
-        singleton = ~supported
-        if singleton.any():
-            gvalue = np.broadcast_to(state.global_mean, s[singleton].shape)
-            sse += _sse_against(n[singleton], s[singleton], q[singleton], gvalue)
-            n_matched += float(n[singleton].sum())
+    for k in range(radius, 0, -1):
+        level = state.tables[k]
+        nxt: dict[str, tuple[float, float, float]] = {}
+        for key, (n, s, q) in carried.items():
+            entry = level.get(key)
+            if entry is None:  # pragma: no cover - prefix nesting guarantees it
+                raise AssertionError(
+                    f"key {key!r} absent from the radius-{k} table; the "
+                    f"sphere_prefix chain should make this impossible"
+                )
+            total_s, _total_q, N = entry
+            if N >= floor:
+                mu = total_s / N
+                scale = (N / (N - 1.0)) ** 2 if loo else 1.0
+                sse += scale * (q - 2.0 * mu * s + n * mu * mu)
+                n_matched += n
+            elif k > 1:
+                parent = sphere_prefix(key, k - 1)
+                prev = nxt.get(parent)
+                nxt[parent] = (
+                    (n, s, q)
+                    if prev is None
+                    else (prev[0] + n, prev[1] + s, prev[2] + q)
+                )
+            else:
+                # Every radius has failed. predict leaves such an atom at the
+                # raw global mean, with no leave-one-out correction, so this
+                # does the same.
+                mu = state.global_mean
+                sse += q - 2.0 * mu * s + n * mu * mu
+        carried = nxt
+        if not carried:
+            break
 
-    # Always the plain (non-LOO) partition, matching sieve_train_stats' own
-    # eta^2: it describes the partition, not whichever estimator was asked
-    # for.
-    within = _sse_against(n, s, q, value)
+    counts = np.array([c for _, _, c in table.values()], dtype=np.float64)
+    sums = np.array([v for v, _, _ in table.values()], dtype=np.float64)
+    sqs = np.array([qq for _, qq, _ in table.values()], dtype=np.float64)
+    within = float((sqs - sums * sums / counts).sum())
     tss = float(state.global_sumsq - state.global_sum**2 / state.global_count)
-    populated = n > 0
-
     return TrainStats(
         depth=radius,
-        n_classes=int(populated.sum()),
+        n_classes=len(table),
         n_atoms=int(n_total),
         sse=sse,
         rmse=float(np.sqrt(sse / n_total)),
@@ -438,7 +442,7 @@ def hose_train_stats(
         eta_squared=float(1.0 - within / tss) if tss > 0 else float("nan"),
         matched_fraction=float(n_matched / n_total),
         support_fractions={
-            t: float(n[populated & (n < t)].sum() / n_total) for t in thresholds
+            t: float(counts[counts < t].sum() / n_total) for t in thresholds
         },
     )
 
