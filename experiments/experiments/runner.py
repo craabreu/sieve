@@ -729,6 +729,17 @@ def load_molecule_set(
         )
     id_columns = [c for c in df.columns if c not in ("mol", split_column, mol_prop)]
 
+    # Deserialize only the rows the caller asked for. Every caller reaches its
+    # rows through `masks`, which covers exactly `splits`, so anything outside
+    # it is unreachable through the documented interface. Materializing it
+    # anyway cost ~31 GB of resident memory per process on the real store for
+    # a shard fit that uses one fiftieth of the rows, which is what made a
+    # 16-wide HOSE dispatch exhaust 503 GB and lose workers to the OOM killer.
+    # `limit` is still applied first, so it keeps meaning the file's own row
+    # prefix rather than a prefix of the selected splits.
+    if split_column in df.columns:
+        df = df[df[split_column].isin(splits)].reset_index(drop=True)
+
     mset = MoleculeSet(
         mols=[blob_to_mol(b) for b in df["mol"]],
         atom_property=target.atom_property,

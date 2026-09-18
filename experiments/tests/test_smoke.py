@@ -448,3 +448,47 @@ def test_normalization_rejects_a_predictor_without_predict_raw(tmp_path):
 
     with pytest.raises(AttributeError, match="predict_raw"):
         execute(cfg, mset, masks, runs_root=tmp_path, allow_dirty=True, tracking=None)
+
+
+def test_load_molecule_set_materializes_only_the_requested_splits(tmp_path):
+    """A shard fit asks for one shard and reaches it through `masks`, so
+    rows outside `splits` must never be deserialized -- loading them anyway
+    cost ~31 GB per process on the real store."""
+    import numpy as np
+    import pytest
+
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    import pandas as pd
+
+    from experiments.config import TargetCfg
+    from experiments.data import mol_to_blob
+    from experiments.runner import load_molecule_set
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    store = tmp_path / "s"
+    store.mkdir()
+    pd.DataFrame(
+        {
+            "mol": [mol_to_blob(m) for m in mset.mols],
+            "shard": ["s00", "s01"] * 3,
+            "net_charge": mset.molecule_value,
+        }
+    ).to_parquet(store / "molecules.parquet")
+
+    got, masks = load_molecule_set(
+        "s",
+        target=TargetCfg(atom_property="MBIScharge", molecule_property="net_charge"),
+        split_column="shard",
+        splits=("s00",),
+        stores_root=tmp_path,
+    )
+    assert got.n_conformers == 3  # not 6
+    assert set(got.split) == {"s00"}
+    assert masks["s00"].all()
+    # and the selection a shard fit performs still yields exactly those rows
+    assert got.select(masks["s00"]).n_conformers == 3
+    np.testing.assert_allclose(
+        sorted(got.atom_target), sorted(got.select(masks["s00"]).atom_target)
+    )
