@@ -508,7 +508,7 @@ HOSE_CV_JOBS="${HOSE_CV_JOBS:-12}"
 # setting and the radius its one-shard probe used; Study A's curve, drawn from
 # the same runs, is what checks it afterwards.
 HOSE_SELECTED_RADIUS="${HOSE_SELECTED_RADIUS:-5}"
-HOSE_SELECT_SCRIPT=experiments/workflows/hose_select_radius.py
+HOSE_SELECT_SCRIPT=experiments/workflows/select_setting.py
 
 # Resolved from Study A's own curve when it exists, by the same rule that
 # chose Sieve's depth 5: the shallowest radius whose mean RMSE lies inside the
