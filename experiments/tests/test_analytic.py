@@ -339,81 +339,6 @@ def test_hose_analytic_matches_predicting_its_own_training_set():
     assert stats.matched_fraction == 1.0  # n_min=1: nothing ever backs off
 
 
-def test_hose_analytic_loo_matches_a_real_leave_one_molecule_out_refit():
-    """No predict_loo exists for HOSE, so this builds its own oracle:
-    removing one molecule from the corpus entirely and refitting removes
-    exactly that molecule's own one contribution to the O key (each molecule
-    contributes exactly one O atom), which for a key of count N is the
-    textbook leave-one-out estimate.
-
-    The O key is found by its nonzero sumsq, not by its count: C and the
-    H-on-O key both also happen to have count 4 here, since every molecule
-    contributes exactly one atom to each.
-    """
-    pytest.importorskip("hosegen")
-    from experiments.analytic import hose_train_stats
-
-    values = [0.1, -0.2, 0.3, -0.05]
-    full, _mset = _hose_fit(values, radius=1)
-    full_state = full.model_state()
-
-    o_key = next(k for k, (_s, qq, _c) in full_state.tables[1].items() if qq > 0)
-
-    sse_o_manual = 0.0
-    for i, y_i in enumerate(values):
-        rest, _ = _hose_fit(values[:i] + values[i + 1 :], radius=1)
-        rest_mean = rest.model_state().tables[1][o_key][0] / (len(values) - 1)
-        sse_o_manual += (y_i - rest_mean) ** 2
-
-    # Every other key here (C, and the two H environments) is a constant
-    # 0.0, contributing exactly 0 to LOO SSE either way, so the whole-state
-    # LOO SSE at radius 1 is entirely the O key's own contribution.
-    stats = hose_train_stats(full_state, radius=1, loo=True)
-    assert stats.sse == pytest.approx(sse_o_manual, rel=1e-10)
-
-
-def test_hose_analytic_loo_uncorrected_for_a_singleton_key():
-    """A key with exactly one atom has nowhere to back off to (no prefix
-    backoff at n_min=1), so its LOO contribution must be the *unadjusted*
-    residual against the global mean, not a (N/(N-1))^2-scaled one (which
-    would divide by zero for N=1 in any case).
-
-    Verified against a hand computation over the state's own table, summing
-    each key's LOO contribution by the rule the docstring states -- an
-    independent arithmetic path, not a re-run of the implementation."""
-    pytest.importorskip("hosegen")
-    from experiments.analytic import hose_train_stats
-    from experiments.data import MoleculeSet
-    from experiments.predictors.hose import HoseLookupPredictor
-    from rdkit import Chem
-
-    distinct = Chem.AddHs(Chem.MolFromSmiles("CCO"))
-    for atom in distinct.GetAtoms():
-        atom.SetDoubleProp("MBIScharge", 0.0)
-    distinct.GetAtomWithIdx(2).SetDoubleProp("MBIScharge", 1.0)  # the O
-    companions = _hose_corpus([0.2, -0.3]).mols
-    mset = MoleculeSet(
-        mols=[distinct, *companions],
-        atom_property="MBIScharge",
-        ids={"dash_id": [None] * 3},
-    )
-    p = HoseLookupPredictor(max_radius=2, n_min=1)
-    p.fit(mset, mset, rng=np.random.default_rng(0))
-    state = p.model_state()
-
-    global_mean = state.global_mean
-    expected = 0.0
-    for s, qq, c in state.tables[2].values():
-        if c >= 2:
-            var = qq / c - (s / c) ** 2
-            expected += (c**3) * var / (c - 1) ** 2
-        else:
-            expected += (s - global_mean) ** 2  # c == 1: y itself is s
-
-    stats = hose_train_stats(state, radius=2, loo=True)
-    assert stats.sse == pytest.approx(expected, rel=1e-10)
-
-
 def test_hose_analytic_refuses_a_state_without_the_second_moment():
     from experiments.analytic import hose_train_stats
     from experiments.hose_artifact import HoseState
@@ -451,3 +376,19 @@ def test_supports_loo_matches_what_the_walk_actually_refuses():
         else:
             with pytest.raises(NotImplementedError):
                 sieve_train_stats(model, loo=True)
+
+
+def test_hose_analytic_loo_is_refused_pending_prefix_backoff():
+    """Removing an atom empties its own deepest key, and HOSE then backs off
+    to a shallower RADIUS by sphere prefix -- which this walk does not
+    implement. An earlier version sent such atoms to the global mean, which
+    is not what predict does, and the error was large: at radius 8, 51.6% of
+    training atoms sit in singleton keys, so the curve climbed to the
+    global-mean error and its argmin was an artifact."""
+    from experiments.analytic import hose_train_stats
+    from experiments.hose_artifact import HoseState
+
+    state = HoseState(1, ({}, {"C": (3.0, 5.0, 2)}), 3.0, 2, global_sumsq=5.0)
+    hose_train_stats(state, radius=1)  # the training error is fine
+    with pytest.raises(NotImplementedError, match="SHALLOWER RADIUS"):
+        hose_train_stats(state, radius=1, loo=True)

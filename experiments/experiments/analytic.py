@@ -201,8 +201,20 @@ def _loo_scale(count: NDArray) -> NDArray:
 
     Applied per class, against the class's own *full* count: the held-out
     atom is one of that class's own members whatever level answered it.
+
+    A singleton never reaches this: under LOO a class must hold at least
+    ``minimum_support + 1 >= 2`` atoms to answer, so a class of one fails the
+    support test and is folded into its parent instead. That invariant lives
+    in the caller's mask rather than here, so it is asserted -- without it
+    this would return ``inf`` rather than fail, and a wrong floor would be
+    silently absorbed into the SSE.
     """
     n = count.astype(np.float64)
+    if n.size and n.min() < 2.0:
+        raise AssertionError(
+            "_loo_scale received a class of fewer than 2 atoms; a singleton "
+            "must be folded into its parent, not scored in place"
+        )
     return (n / (n - 1.0))[:, None] ** 2
 
 
@@ -350,12 +362,20 @@ def hose_train_stats(
     implementing prefix backoff over the key tables, i.e. analysing a method
     nobody runs (spec section 2).
 
-    Under ``loo=True``, a key with fewer than 2 atoms has nowhere to back off
-    to (no prefix backoff here), so it is scored against the plain, un-
-    corrected global mean -- the same convention ``sieve_train_stats`` uses
-    for its own global-mean fallback (``_global_sse``), for the same reason:
-    there is nothing to leave one atom out *of*.
+    ``loo=True`` is refused; see the error it raises.
     """
+    if loo:
+        raise NotImplementedError(
+            "analytic LOO is not available for HOSE: removing an atom empties "
+            "its own deepest key, and the predictor then backs off to a "
+            "SHALLOWER RADIUS by sphere prefix, which this walk does not "
+            "implement. An earlier version sent such atoms to the global mean "
+            "instead -- mirroring Sieve's fallback, which only fires once its "
+            "backoff chain is exhausted -- and that is not what predict does. "
+            "The error is not small: at radius 8, 51.6% of training atoms sit "
+            "in singleton keys, so the curve climbed to the global-mean error "
+            "and its argmin was an artifact"
+        )
     if n_min != 1:
         raise NotImplementedError(
             f"analytic HOSE statistics assume the baseline n_min=1, got "

@@ -1307,11 +1307,10 @@ def run_hose_cv(
                     from experiments.analytic import hose_train_stats
 
                     analytic_stats = hose_train_stats(train_states[fold], radius)
-                    # Exact at the baseline n_min=1, where a training atom's
-                    # own deepest key always answers it.
-                    analytic_loo = hose_train_stats(
-                        train_states[fold], radius, loo=True
-                    )
+                    # No analytic LOO for this arm: removing an atom empties
+                    # its deepest key and the predictor backs off to a
+                    # shallower radius, which hose_train_stats does not
+                    # implement. It refuses rather than approximate.
 
                 results.append(
                     _write_cv_run(
