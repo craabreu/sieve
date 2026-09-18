@@ -771,7 +771,7 @@ step study-a-dash \
   "$PYTHON" -m experiments cv-run-dash "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" --max-depth "$DASH_MAX_DEPTH" \
     --depths "$DASH_DEPTHS" --repeats "$STUDY_A_REPEATS" \
-    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG \
+    $MODEL_CACHE_FLAG $SCORE_TRAIN_FLAG $COLLAPSE_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_A"
 
 # Guarded arm by arm, never on the experiment's run count: that count is now
@@ -794,7 +794,7 @@ step study-a-sieve \
     --fit-depth "$SIEVE_MAX_DEPTH" \
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --variants "$SIEVE_STUDY_A_VARIANTS" \
-    $MODEL_CACHE_FLAG \
+    $MODEL_CACHE_FLAG $COLLAPSE_FLAG \
     --normalization equal_weighted --method "$SIEVE_METHOD" \
     --experiment "$SIEVE_STUDY_A"
 
@@ -810,7 +810,7 @@ run_one_hose_cv() {
   "$PYTHON" -m experiments cv-run-hose "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
     --radii "$radius" --folds "$fold" --repeats "$HOSE_CV_REPEATS" \
-    --normalization equal_weighted --method hose \
+    --normalization equal_weighted --method hose $COLLAPSE_FLAG \
     --experiment "$HOSE_CV_EXPERIMENT" $HOSE_CV_EXTRA
 }
 export -f run_one_hose_cv
@@ -938,6 +938,7 @@ run_dash_repeat() {
     --depths "$DASH_SELECTED_DEPTH" --repeats "$1" \
     $MODEL_CACHE_FLAG \
     --normalization std_weighted --method dash --experiment "$DASH_STUDY_B" \
+    $COLLAPSE_FLAG \
     $SAVE_PREDICTIONS_FLAG
 }
 
@@ -955,7 +956,7 @@ run_sieve_repeat() {
     --predictor-params "$SIEVE_PREDICTOR_PARAMS" \
     --variants "$SIEVE_VARIANTS" \
     $MODEL_CACHE_FLAG \
-    --normalization equal_weighted --method "$SIEVE_METHOD" \
+    --normalization equal_weighted --method "$SIEVE_METHOD" $COLLAPSE_FLAG \
     --experiment "$SIEVE_STUDY_B" \
     $SAVE_PREDICTIONS_FLAG
 }
@@ -999,7 +1000,7 @@ run_one_hose_study_b() {
   "$PYTHON" -m experiments cv-run-hose "$STORE" \
     --n-shards "$N_SHARDS" --k "$K" \
     --radii "$HOSE_B_RADIUS" --folds "$fold" --repeats "$repeat" \
-    --normalization equal_weighted --method hose \
+    --normalization equal_weighted --method hose $COLLAPSE_FLAG \
     --experiment "$HOSE_STUDY_B" $HOSE_B_EXTRA
 }
 export -f run_one_hose_study_b
@@ -1455,7 +1456,7 @@ run_study_c_curve() {
       --fit-depth "$SIEVE_MAX_DEPTH" \
       --predictor-params "$(featurization_params "$label")" \
       --variants "$(featurization_variant "$label")" \
-      $MODEL_CACHE_FLAG \
+      $MODEL_CACHE_FLAG $COLLAPSE_FLAG \
       --normalization equal_weighted \
       --method "$(featurization_method "$label")" \
       --experiment "$SIEVE_STUDY_C"
@@ -1533,7 +1534,7 @@ run_study_c_repeat() {
     --predictor-params "$FEAT_PARAMS" \
     --variants "$FEAT_VARIANT" \
     $MODEL_CACHE_FLAG \
-    --normalization equal_weighted --method "$FEAT_METHOD" \
+    --normalization equal_weighted --method "$FEAT_METHOD" $COLLAPSE_FLAG \
     --experiment "$SIEVE_STUDY_C_B" \
     $SAVE_PREDICTIONS_FLAG
 }

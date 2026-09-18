@@ -434,6 +434,7 @@ def _cmd_cv_run_dash(args: argparse.Namespace) -> int:
         seed=args.seed,
         save_predictions=args.save_predictions,
         score_train=args.score_train,
+        collapse=args.collapse,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -480,6 +481,7 @@ def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
         seed=args.seed,
         save_predictions=args.save_predictions,
         score_train=args.score_train,
+        collapse=args.collapse,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -524,6 +526,7 @@ def _cmd_cv_run_sieve(args: argparse.Namespace) -> int:
         seed=args.seed,
         save_predictions=args.save_predictions,
         score_train=args.score_train,
+        collapse=args.collapse,
         runs_root=DEFAULT_RUNS_ROOT,
         allow_dirty=args.allow_dirty,
     )
@@ -1185,6 +1188,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_cv_run_hose.add_argument("--experiment", default="hose-cv")
     p_cv_run_hose.add_argument("--save-predictions", action="store_true")
     p_cv_run_hose.add_argument("--score-train", action="store_true")
+    p_cv_run_hose.add_argument(
+        "--collapse",
+        action="store_true",
+        help="score the training side on collapsed units rather than "
+        "on individual conformers. Use it whenever the shard fits were "
+        "made with --collapse: the fit never saw the individual "
+        "conformers, so scoring against them measures a population it "
+        "was not fitted on, and the number stops meaning what the "
+        "analytically computed train/rmse means for the other arms. "
+        "Also ~3x cheaper, since the walk covers ~244k units instead of "
+        "~740k conformers per fold.",
+    )
     p_cv_run_hose.add_argument("--seed", type=int, default=0)
     p_cv_run_hose.add_argument("--allow-dirty", action="store_true")
     p_cv_run_hose.set_defaults(func=_cmd_cv_run_hose)
@@ -1227,6 +1242,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cv_run_dash.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_dash.add_argument(
+        "--collapse",
+        action="store_true",
+        help="score the training side on collapsed units rather than "
+        "on individual conformers. Use it whenever the shard fits were "
+        "made with --collapse: the fit never saw the individual "
+        "conformers, so scoring against them measures a population it "
+        "was not fitted on, and the number stops meaning what the "
+        "analytically computed train/rmse means for the other arms. "
+        "Also ~3x cheaper, since the walk covers ~244k units instead of "
+        "~740k conformers per fold.",
+    )
     p_cv_run_dash.add_argument(
         "--score-train",
         action="store_true",
@@ -1304,6 +1331,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_cv_run_sieve.add_argument("--allow-dirty", action="store_true")
+    p_cv_run_sieve.add_argument(
+        "--collapse",
+        action="store_true",
+        help="score the training side on collapsed units rather than "
+        "on individual conformers. Use it whenever the shard fits were "
+        "made with --collapse: the fit never saw the individual "
+        "conformers, so scoring against them measures a population it "
+        "was not fitted on, and the number stops meaning what the "
+        "analytically computed train/rmse means for the other arms. "
+        "Also ~3x cheaper, since the walk covers ~244k units instead of "
+        "~740k conformers per fold.",
+    )
     p_cv_run_sieve.add_argument(
         "--score-train",
         action="store_true",

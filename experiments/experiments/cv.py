@@ -954,6 +954,27 @@ def _floors_for(
     return held_out_floors(held_out)
 
 
+def _collapse_for_train_scoring(train_set: MoleculeSet, collapse: bool) -> MoleculeSet:
+    """The training population a ``train/`` metric should describe.
+
+    A collapsed fit never saw the individual conformers, so scoring it
+    against them measures a population it was not fitted on, and the number
+    stops meaning what the same-named number means for an arm scored
+    analytically -- those describe the collapsed units the fit did see.
+    Collapsing here puts every arm's ``train/rmse`` on one population.
+
+    It is also much cheaper, which is what makes it affordable for DASH at
+    all: the walk is over ~244k units instead of ~740k conformers per fold,
+    the same 3.03x the collapse gives everywhere else, taking DASH's
+    ``--score-train`` pass from roughly 4.2 h to 1.4 h.
+    """
+    if not collapse:
+        return train_set
+    from experiments.collapse import collapse_molecule_set
+
+    return collapse_molecule_set(train_set)
+
+
 def _write_cv_run(
     *,
     experiment: str,
@@ -968,6 +989,7 @@ def _write_cv_run(
     train_raw: RawPrediction | None = None,
     analytic_stats: Any = None,
     floors: Mapping[str, float] | None = None,
+    collapse_train_scoring: bool = False,
     repeat: int,
     fold: int,
     depth: int,
@@ -1052,6 +1074,7 @@ def _write_cv_run(
             "method": method,
             "depth": depth,
             "normalization": normalization,
+            "collapse_train_scoring": collapse_train_scoring,
             "held_out_shards": ",".join(held_out_shards),
         },
     }
@@ -1127,6 +1150,7 @@ def run_hose_cv(
     method: str = "hose",
     save_predictions: bool = False,
     score_train: bool = False,
+    collapse: bool = False,
     experiment: str = "hose-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -1260,6 +1284,7 @@ def run_hose_cv(
                             for sid in g
                         ]
                     )
+                    train_set = _collapse_for_train_scoring(train_set, collapse)
                     t0 = time.perf_counter()
                     train_raw = predictor.predict_raw(train_set)
                     predict_s += time.perf_counter() - t0
@@ -1285,6 +1310,7 @@ def run_hose_cv(
                         held_out=held_out,
                         raw=raw,
                         floors=floors,
+                        collapse_train_scoring=collapse,
                         normalization=normalization,
                         train_set=train_set,
                         train_raw=train_raw,
@@ -1315,6 +1341,7 @@ def run_dash_cv(
     method: str = "dash",
     save_predictions: bool = False,
     score_train: bool = False,
+    collapse: bool = False,
     experiment: str = "dash-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -1451,6 +1478,7 @@ def run_dash_cv(
                 train_set = concat_molecule_sets(
                     [mset_by_shard[s] for g in _other_groups(plan, fold) for s in g]
                 )
+                train_set = _collapse_for_train_scoring(train_set, collapse)
                 t0 = time.perf_counter()
                 train_paths = predictor.match_paths(train_set, split="cv")
                 walk_s += time.perf_counter() - t0
@@ -1485,6 +1513,7 @@ def run_dash_cv(
                         held_out=held_out,
                         raw=raw,
                         floors=floors,
+                        collapse_train_scoring=collapse,
                         normalization=normalization,
                         train_set=train_set,
                         train_raw=train_raw,
@@ -1518,6 +1547,7 @@ def run_sieve_cv(
     method: str | None = None,
     save_predictions: bool = False,
     score_train: bool = False,
+    collapse: bool = False,
     experiment: str = "sieve-cv",
     seed: int = 0,
     runs_root: Path = DEFAULT_RUNS_ROOT,
@@ -1675,6 +1705,7 @@ def run_sieve_cv(
                 train_set = concat_molecule_sets(
                     [mset_by_shard[s] for g in _other_groups(plan, fold) for s in g]
                 )
+                train_set = _collapse_for_train_scoring(train_set, collapse)
                 t0 = time.perf_counter()
                 train_batch = predictor.build_predict_batch(train_set.mols)
                 featurize_s += time.perf_counter() - t0
@@ -1724,6 +1755,7 @@ def run_sieve_cv(
                             held_out=held_out,
                             raw=raw,
                             floors=floors,
+                            collapse_train_scoring=collapse,
                             normalization=normalization,
                             train_set=train_set,
                             train_raw=train_raw,

@@ -1296,3 +1296,34 @@ def test_run_sieve_cv_does_not_score_train_by_default(tmp_path):
         assert "train/mae" not in metrics
         assert "train/n_conformers" not in metrics
         assert "train/n_atoms" not in metrics
+
+
+def test_collapse_train_scoring_scores_the_population_the_fit_saw():
+    """A collapsed fit never saw the individual conformers, so its train/
+    metric must describe collapsed units -- otherwise it measures a
+    population it was not fitted on, and stops meaning what the
+    analytically computed train/rmse means for the other arms."""
+    from experiments.collapse import collapse_key
+    from experiments.cv import _collapse_for_train_scoring
+    from experiments.data import MoleculeSet
+
+    from experiments.tests.test_collapse import _charged
+
+    a = _charged("CCO", {0: 1.0, 1: 2.0})
+    b = _charged("CCO", {0: 3.0, 1: 4.0})  # a second conformer of one structure
+    c = _charged("CCC", {0: 0.5})
+    key = collapse_key(a)
+    mset = MoleculeSet(
+        mols=[a, b, c],
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [key, key, collapse_key(c)],
+            "dash_id": ["d1", "d1", "d2"],
+            "conf_id": ["c0", "c1", "c0"],
+        },
+    )
+
+    assert _collapse_for_train_scoring(mset, False) is mset  # off: untouched
+    collapsed = _collapse_for_train_scoring(mset, True)
+    assert collapsed.n_conformers == 2  # the two conformers became one unit
+    assert mset.n_conformers == 3  # and the original is not mutated

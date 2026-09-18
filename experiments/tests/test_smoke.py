@@ -460,10 +460,10 @@ def test_load_molecule_set_materializes_only_the_requested_splits(tmp_path):
     pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
     import pandas as pd
-
     from experiments.config import TargetCfg
     from experiments.data import mol_to_blob
     from experiments.runner import load_molecule_set
+
     from experiments.tests.helpers import synthetic_molecule_set
 
     mset = synthetic_molecule_set(n_mol=6, seed=0)
