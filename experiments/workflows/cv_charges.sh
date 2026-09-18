@@ -247,6 +247,33 @@ sys.exit(0 if found == expected else 1)
 PY
 }
 
+# Neither method_runs_count_is nor depth_runs_count_is can express stage 2's
+# claim on its own. Its arms sit at DIFFERENT depths inside one experiment, so
+# counting an experiment's runs at one depth spans arms, and counting one
+# arm's runs across all depths keeps counting the runs from a previously
+# selected depth -- which stay on disk deliberately, as evidence, and would
+# wedge the guard the moment a depth is revised. Both fields are read
+# structurally from the manifest, as the two guards above read theirs.
+method_depth_runs_count_is() {
+  local experiment=$1 method=$2 depth=$3 expected=$4
+  "$PYTHON" - "$experiment" "$method" "$depth" "$expected" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+experiment, method, depth, expected = (
+    sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+)
+found = 0
+for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    if not (manifest.parent / "metrics.json").exists():
+        continue  # a half-written run is not a finished sample
+    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
+    found += cv.get("method") == method and int(cv.get("depth", -1)) == depth
+sys.exit(0 if found == expected else 1)
+PY
+}
+
 # file_exists is the wrong guard for a *derived* artifact: it cannot tell
 # that the runs the artifact was derived from have changed. compare's plots
 # survived a study growing from 2 arms to 7, and the step skipped. This
@@ -1318,33 +1345,6 @@ if label not in depths:
     raise SystemExit(f"STUDY_C_SELECTED_DEPTHS names no depth for {label!r}")
 print(int(depths[label]))
 ' "$1"
-}
-
-# Neither method_runs_count_is nor depth_runs_count_is can express stage 2's
-# claim on its own. Its arms sit at DIFFERENT depths inside one experiment, so
-# counting an experiment's runs at one depth spans arms, and counting one
-# arm's runs across all depths keeps counting the runs from a previously
-# selected depth -- which stay on disk deliberately, as evidence, and would
-# wedge the guard the moment a depth is revised. Both fields are read
-# structurally from the manifest, as the two guards above read theirs.
-method_depth_runs_count_is() {
-  local experiment=$1 method=$2 depth=$3 expected=$4
-  "$PYTHON" - "$experiment" "$method" "$depth" "$expected" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-experiment, method, depth, expected = (
-    sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-)
-found = 0
-for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
-    if not (manifest.parent / "metrics.json").exists():
-        continue  # a half-written run is not a finished sample
-    cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
-    found += cv.get("method") == method and int(cv.get("depth", -1)) == depth
-sys.exit(0 if found == expected else 1)
-PY
 }
 
 # --- Study C: frozen vocabularies ------------------------------------------
