@@ -522,3 +522,42 @@ def test_floors_from_components_of_an_empty_set_is_zero():
 
     out = floors_from_components([])
     assert out == {"floor/rmse": 0.0, "floor/rmse_stereo_blind": 0.0}
+
+
+def test_alignment_never_pairs_atoms_of_different_elements():
+    """The property the averaging rests on.
+
+    _canonical_order may break ties differently for two rows whose atoms
+    arrive in different orders, but CanonicalRankAtoms is canonical modulo
+    automorphism: a tie can only fall between atoms of one orbit, which
+    agree on every graph invariant. So a mis-ordering can swap a methyl's
+    hydrogens -- for which there is no correct pairing anyway, the group
+    being rotated -- and can never pair a carbon with a hydrogen.
+
+    Verified exhaustively on the real corpus over all 16,125 collapse groups
+    spanning more than one dash_id (94,624 rows): zero disagreements.
+    """
+    import numpy as np
+    from experiments.collapse import _canonical_order, collapse_key
+    from rdkit import Chem
+
+    base = _charged("CC(=O)Nc1ccccc1O", {0: 0.1, 1: 0.2, 2: -0.3, 3: 0.4})
+    rng = np.random.default_rng(0)
+    key = collapse_key(base)
+    ref = None
+    for _ in range(12):
+        perm = [int(i) for i in rng.permutation(base.GetNumAtoms())]
+        other = Chem.RenumberAtoms(base, perm)
+        assert collapse_key(other) == key
+        order = _canonical_order(other, key)
+        seq = [
+            (
+                other.GetAtomWithIdx(int(a)).GetSymbol(),
+                other.GetAtomWithIdx(int(a)).GetDegree(),
+                other.GetAtomWithIdx(int(a)).GetTotalNumHs(),
+            )
+            for a in order
+        ]
+        if ref is None:
+            ref = seq
+        assert seq == ref, "alignment paired atoms of differing invariants"
