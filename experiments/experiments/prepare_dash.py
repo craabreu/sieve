@@ -83,19 +83,98 @@ def download_dash_sdf(dest_dir: Path, *, url: str = DOWNLOAD_URL) -> Path:
     return out_path
 
 
+def _restore_bond_stereo(mol: Any, saved: dict) -> None:
+    """Put back each bond's stereo flag *and* its stereo atoms.
+
+    The flag is meaningless without them: ``STEREOCIS``/``STEREOTRANS`` are
+    read relative to the two reference atoms, so restoring one without the
+    other silently reinterprets the bond.
+    """
+    for idx, (stereo, refs) in saved.items():
+        bond = mol.GetBondWithIdx(idx)
+        if refs:
+            bond.SetStereoAtoms(*refs)
+        bond.SetStereo(stereo)
+
+
 def _assign_stereo_if_needed(mol: Any) -> None:
-    """If ``mol`` has an unassigned stereocenter (not already fully
-    specified by the molblock's own parity bits), perceive stereo from its
-    own 3D coordinates. Mutates ``mol`` in place, matching
-    ``Chem.AssignStereochemistry``'s own convention."""
+    """Fill in stereochemistry the molblock left unspecified, from the record's
+    own 3D coordinates, without disturbing what it did specify.
+
+    Three things this gets right that the obvious spelling does not.
+
+    **It does not overwrite declared parities.** ``AssignStereochemistryFrom3D``
+    rewrites *every* centre, so gating on "any centre is unassigned" and then
+    calling it replaces perfectly good molblock parity bits with perceived ones
+    for every other centre in the same molecule. Measured on the real SDF, that
+    turned 64 genuinely undeclared centres into 160 perceived ones -- 96 whose
+    declaration was discarded only because a neighbour lacked one. The
+    declarations are snapshotted and put back.
+
+    **It looks at bonds, not just atoms.** The gate used to fire only on
+    unassigned tetrahedral centres, so a double bond left ``STEREOANY`` kept
+    that flag while an otherwise identical record carried a definite one. Since
+    ``collapse_key`` serialises what the ``Mol`` declares, the two records
+    became two molecules: on the test split that split 143 groups holding 865
+    conformers, 10.8% of the stereo-sensitive subset, and inflated the
+    blind-vs-keyed floor gap by 7%.
+
+    **It refreshes perception before deciding.** ``FindMolChiralCenters``
+    reports cached CIP labels, so a centre whose tag was cleared after the last
+    assignment still reads as assigned and the gate misses it.
+
+    Mutates ``mol`` in place, matching ``Chem.AssignStereochemistry``'s own
+    convention.
+    """
     from rdkit import Chem
 
+    tagged = {Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}
+    declared_atoms = {
+        atom.GetIdx(): atom.GetChiralTag()
+        for atom in mol.GetAtoms()
+        if atom.GetChiralTag() in tagged
+    }
+    declared_bonds = {
+        bond.GetIdx(): (bond.GetStereo(), tuple(bond.GetStereoAtoms()))
+        for bond in mol.GetBonds()
+        if bond.GetStereo()
+        not in {Chem.BondStereo.STEREONONE, Chem.BondStereo.STEREOANY}
+    }
+
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
     centers = Chem.FindMolChiralCenters(
         mol, includeUnassigned=True, useLegacyImplementation=False
     )
-    if any(tag == "?" for _, tag in centers):
-        Chem.AssignStereochemistryFrom3D(mol)
-        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    needed = any(tag == "?" for _, tag in centers)
+
+    # FindPotentialStereoBonds marks stereogenic-but-unassigned double bonds
+    # STEREOANY, which is how an unassigned one is recognised at all -- and it
+    # mutates the molecule, so the marks are rolled back below when nothing
+    # turns out to need perceiving.
+    restore_marks = {
+        bond.GetIdx(): (bond.GetStereo(), tuple(bond.GetStereoAtoms()))
+        for bond in mol.GetBonds()
+    }
+    Chem.FindPotentialStereoBonds(mol, cleanIt=False)
+    unassigned = [
+        bond for bond in mol.GetBonds() if bond.GetStereo() == Chem.BondStereo.STEREOANY
+    ]
+    if not needed and not unassigned:
+        _restore_bond_stereo(mol, restore_marks)
+        return
+
+    # AssignStereochemistryFrom3D leaves an explicit STEREOANY alone -- the flag
+    # means "stereogenic, configuration unknown", which it declines to overrule
+    # -- so the very bonds that need perceiving are the ones it would skip.
+    # Clearing the mark first is what lets the coordinates speak.
+    for bond in unassigned:
+        bond.SetStereo(Chem.BondStereo.STEREONONE)
+
+    Chem.AssignStereochemistryFrom3D(mol)
+    for idx, tag in declared_atoms.items():
+        mol.GetAtomWithIdx(idx).SetChiralTag(tag)
+    _restore_bond_stereo(mol, declared_bonds)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
 
 
 def _parse_one_record(

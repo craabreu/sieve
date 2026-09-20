@@ -1010,3 +1010,121 @@ def test_prepare_store_after_stop_before_split_can_still_split(tmp_path):
     assert (stores / "s" / "curation_summary.txt").read_text() == summary_before
     assert {"split", "cluster", "shard"} <= set(df.columns)
     assert set(df["split"]) <= {"train", "test"}
+
+
+def _embedded(smiles):
+    """A molecule with real 3D coordinates and stereo perceived from them."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(mol, randomSeed=11)
+    Chem.AssignStereochemistryFrom3D(mol)
+    return mol
+
+
+def test_3d_perception_does_not_overwrite_a_declared_parity():
+    """The bug this guards: gating on "any centre is unassigned" and then
+    calling AssignStereochemistryFrom3D rewrites *every* centre, so one
+    undeclared centre costs every declared one in the same molecule. On the
+    real SDF that turned 64 undeclared centres into 160 perceived ones.
+
+    The declared tag here is deliberately set against the geometry, so only
+    preserving it -- not re-perceiving it -- can pass.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    tagged = {Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}
+    mol = _embedded("C[C@H](O)[C@@H](N)C(=O)O")
+    centers = [a.GetIdx() for a in mol.GetAtoms() if a.GetChiralTag() in tagged]
+    assert len(centers) == 2
+    keep, clear = centers
+    against_geometry = (
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW
+        if mol.GetAtomWithIdx(keep).GetChiralTag() == Chem.ChiralType.CHI_TETRAHEDRAL_CW
+        else Chem.ChiralType.CHI_TETRAHEDRAL_CW
+    )
+    mol.GetAtomWithIdx(keep).SetChiralTag(against_geometry)
+    mol.GetAtomWithIdx(clear).SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+
+    _assign_stereo_if_needed(mol)
+
+    assert mol.GetAtomWithIdx(keep).GetChiralTag() == against_geometry
+    assert mol.GetAtomWithIdx(clear).GetChiralTag() in tagged
+
+
+def test_an_unassigned_double_bond_is_perceived_from_3d():
+    """A bond left STEREOANY used to survive untouched, because the gate only
+    looked at tetrahedral centres. AssignStereochemistryFrom3D also declines to
+    overrule an explicit STEREOANY, so clearing the mark first is what lets the
+    coordinates speak.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    mol = _embedded("C/N=N/C")
+    bond = next(b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE)
+    declared = bond.GetStereo()
+    bond.SetStereo(Chem.BondStereo.STEREOANY)
+
+    _assign_stereo_if_needed(mol)
+
+    got = next(
+        b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
+    ).GetStereo()
+    assert got not in {Chem.BondStereo.STEREOANY, Chem.BondStereo.STEREONONE}
+    assert got == declared
+
+
+def test_two_records_of_one_structure_get_one_collapse_key():
+    """The point of the bond half: collapse_key serialises what the Mol
+    declares, so a STEREOANY in one record and a definite flag in another split
+    a single structure into two molecules. On the test split that affected 143
+    groups holding 865 conformers, 10.8% of the stereo-sensitive subset.
+    """
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    specified, unspecified = _embedded("C/N=N/C"), _embedded("C/N=N/C")
+    next(
+        b for b in unspecified.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
+    ).SetStereo(Chem.BondStereo.STEREOANY)
+
+    for mol in (specified, unspecified):
+        _assign_stereo_if_needed(mol)
+
+    assert collapse_key(specified) == collapse_key(unspecified)
+
+
+def test_genuine_e_and_z_are_still_held_apart():
+    """The complement of the test above: filling in unspecified geometry must
+    not merge records that really do differ."""
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    e_isomer, z_isomer = _embedded("C/N=N/C"), _embedded(r"C/N=N\C")
+    for mol in (e_isomer, z_isomer):
+        _assign_stereo_if_needed(mol)
+
+    assert collapse_key(e_isomer) != collapse_key(z_isomer)
+
+
+def test_a_fully_specified_record_is_left_alone():
+    """Nothing to perceive means nothing is touched -- including the STEREOANY
+    marks FindPotentialStereoBonds leaves behind while looking."""
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    mol = _embedded("F[C@H](Cl)Br")
+    atoms = [(a.GetIdx(), a.GetChiralTag()) for a in mol.GetAtoms()]
+    bonds = [
+        (b.GetIdx(), b.GetStereo(), tuple(b.GetStereoAtoms())) for b in mol.GetBonds()
+    ]
+
+    _assign_stereo_if_needed(mol)
+
+    assert [(a.GetIdx(), a.GetChiralTag()) for a in mol.GetAtoms()] == atoms
+    assert [
+        (b.GetIdx(), b.GetStereo(), tuple(b.GetStereoAtoms())) for b in mol.GetBonds()
+    ] == bonds
