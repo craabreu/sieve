@@ -54,8 +54,8 @@ import pandas as pd
 from rdkit import RDLogger
 
 sys.path.insert(0, "experiments")
-from experiments.collapse import _canonical_order, collapse_key  # noqa: E402
-from experiments.data import blob_to_mol  # noqa: E402
+from experiments.collapse import _canonical_order, collapse_key
+from experiments.data import blob_to_mol
 
 RDLogger.DisableLog("rdApp.*")
 
