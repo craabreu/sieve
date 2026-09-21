@@ -5,6 +5,8 @@ presence."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("rdkit")
@@ -1128,3 +1130,105 @@ def test_a_fully_specified_record_is_left_alone():
     assert [
         (b.GetIdx(), b.GetStereo(), tuple(b.GetStereoAtoms())) for b in mol.GetBonds()
     ] == bonds
+
+
+# ---------------------------------------------------------------------------
+# Stereo perception: the two defects found after the bond-stereo fix.
+#
+# Both use REAL store records, saved beside this file, and that is not
+# incidental. Small symmetric molecules such as 1,4-dimethylcyclohexane keep
+# their dependent stereocentres visible after ``AddHs``, so a toy input passes
+# with or without the gate fix and tests nothing. ``Rest_95518`` (spiro/
+# ring-fusion centres) and ``Rest_128717`` (a phosphorane) are the records the
+# defects were measured on.
+# ---------------------------------------------------------------------------
+
+_DATA = Path(__file__).resolve().parent / "data"
+
+
+def _record(name):
+    from rdkit import Chem
+
+    mol = Chem.MolFromMolFile(str(_DATA / name), removeHs=False, sanitize=True)
+    assert mol is not None, f"fixture {name} did not parse"
+    return mol
+
+
+def test_perception_gate_sees_dependent_stereocentres_under_explicit_hs():
+    """The gate must consult coordinates for spiro/ring-fusion/bridgehead
+    centres, whose ring branches are constitutionally identical.
+
+    ``FindMolChiralCenters`` reports ``[]`` for these on an explicit-H
+    molecule -- silently, an empty list rather than an error -- and the store
+    parses with ``removeHs=False``, so asking on the explicit-H molecule left
+    0.92% of potential centres unassigned corpus-wide. An unassigned centre
+    makes ``collapse_key`` merge genuine diastereomers.
+    """
+    from rdkit import Chem
+
+    from experiments.prepare_dash import _assign_stereo_if_needed, _needs_perception
+
+    mol = _record("dependent_stereocentres.mol")
+    Chem.RemoveStereochemistry(mol)
+
+    # The old gate, asked directly on the explicit-H molecule, sees nothing...
+    blind = any(
+        tag == "?"
+        for _, tag in Chem.FindMolChiralCenters(
+            mol, includeUnassigned=True, useLegacyImplementation=False
+        )
+    )
+    assert not blind, "fixture no longer exercises the blind spot"
+
+    # ...while the heavy-atom probe does, and perception then tags them.
+    assert _needs_perception(mol)
+
+    _assign_stereo_if_needed(mol)
+    tagged = [
+        atom.GetIdx()
+        for atom in mol.GetAtoms()
+        if atom.GetChiralTag()
+        in {Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}
+    ]
+    assert len(tagged) == 2, f"expected both dependent centres tagged, got {tagged}"
+
+
+def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
+    """``AssignStereochemistryFrom3D`` gives pentavalent P and sulfonic S a
+    ``CHI_TRIGONALBIPYRAMIDAL``/``CHI_SQUAREPLANAR`` tag whose permutation
+    index varies between conformers of one molecule, so one structure got
+    several ``collapse_key``s. ``mirror_mol`` inverts only the tetrahedral
+    tags, so the enantiomer merge cannot rescue it either.
+    """
+    from rdkit import Chem
+
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    keep = {
+        Chem.ChiralType.CHI_UNSPECIFIED,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    }
+    mol = _record("phosphorane_tb_tag.mol")
+    _assign_stereo_if_needed(mol)
+
+    exotic = [
+        (atom.GetIdx(), atom.GetSymbol(), str(atom.GetChiralTag()))
+        for atom in mol.GetAtoms()
+        if atom.GetChiralTag() not in keep
+    ]
+    assert not exotic, f"non-tetrahedral tags survived: {exotic}"
+
+    # A rotated copy is the same structure, so it must key the same. With the
+    # TB tag present the permutation index moves and the keys diverge.
+    from rdkit.Geometry import Point3D
+
+    rotated = Chem.Mol(mol)
+    conf = rotated.GetConformer()
+    for i in range(rotated.GetNumAtoms()):
+        p = conf.GetAtomPosition(i)
+        conf.SetAtomPosition(i, Point3D(-p.x, -p.y, p.z))  # a proper rotation
+    _assign_stereo_if_needed(rotated)
+
+    assert collapse_key(mol) == collapse_key(rotated)

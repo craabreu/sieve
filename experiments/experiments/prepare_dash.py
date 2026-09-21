@@ -97,6 +97,78 @@ def _restore_bond_stereo(mol: Any, saved: dict) -> None:
         bond.SetStereo(stereo)
 
 
+def _needs_perception(mol: Any) -> bool:
+    """Whether any tetrahedral centre is stereogenic but unassigned.
+
+    Asked on a **heavy-atom copy**, which is the whole point. On a molecule
+    carrying explicit hydrogens, ``FindMolChiralCenters`` returns ``[]`` for
+    *dependent* (para-) stereocentres -- spiro, ring-fusion and bridgehead
+    centres, whose two ring branches are constitutionally identical, so
+    neither branch is a classical stereocentre while the pair is stereogenic.
+    The legacy implementation returns ``[]`` too, and the store parses with
+    ``removeHs=False``, so this is the live path. The failure is silent: an
+    empty list, not an error, and the gate then never consults the
+    coordinates.
+
+    Measured on the real store at stride 50 (20,551 rows), that left **195 of
+    21,195 potential centres unassigned (0.92%)**, across 121 rows (0.59%) --
+    122 three-coordinate N and 73 four-coordinate C, most of them bridgehead.
+    An unassigned centre makes ``collapse_key`` merge genuine diastereomers,
+    so the fit target becomes a mean over different chemistry.
+
+    Only the *gate* moves to the heavy-atom graph; perception itself still
+    runs on the real molecule, so explicit hydrogens keep their coordinates.
+    Small cases such as 1,4-dimethylcyclohexane survive ``AddHs``, so this
+    cannot be checked on toy inputs -- see the regression tests, which use
+    real records.
+    """
+    from rdkit import Chem
+
+    probe = mol
+    try:
+        probe = Chem.RemoveHs(Chem.Mol(mol))
+    except Exception as exc:  # pragma: no cover -- malformed record
+        # Falling back to the explicit-H molecule reinstates the blind spot
+        # for this one record, so say so rather than degrade silently.
+        logger.warning("could not build a heavy-atom probe (%s); gate may miss "
+                       "dependent stereocentres for this record", exc)
+    centers = Chem.FindMolChiralCenters(
+        probe, includeUnassigned=True, useLegacyImplementation=False
+    )
+    return any(tag == "?" for _, tag in centers)
+
+
+def _clear_non_tetrahedral_tags(mol: Any) -> None:
+    """Drop ``CHI_TRIGONALBIPYRAMIDAL`` / ``CHI_SQUAREPLANAR`` and friends.
+
+    ``AssignStereochemistryFrom3D`` assigns these to pentavalent phosphorus
+    and to sulfonic-acid sulfur, and the **permutation index varies between
+    conformers of one molecule** -- ``[P@TB14]``, ``[P@TB1]``, ``[P@TB13]`` on
+    one phosphorane -- so a single structure receives several
+    ``collapse_key``s. It is compounded by ``collapse.mirror_mol``, which
+    inverts only ``CHI_TETRAHEDRAL_CW/CCW``: a molecule carrying a TB or SP
+    tag is its own mirror in that tag, so the enantiomer merge cannot rescue
+    it either.
+
+    Rare -- 4 rows in 256,885 scanned (0.0016%) -- but on the test split it is
+    the entire remaining labelling-artifact population. These centres are not
+    stereogenic in any sense MBIS charges distinguish, and teaching
+    ``mirror_mol`` the TB/SP permutation algebra is much more work for the
+    same outcome. Cleared here rather than in ``collapse.py`` so that the
+    stored ``Mol`` and the key agree.
+    """
+    from rdkit import Chem
+
+    keep = {
+        Chem.ChiralType.CHI_UNSPECIFIED,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    }
+    for atom in mol.GetAtoms():
+        if atom.GetChiralTag() not in keep:
+            atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+
+
 def _assign_stereo_if_needed(mol: Any) -> None:
     """Fill in stereochemistry the molblock left unspecified, from the record's
     own 3D coordinates, without disturbing what it did specify.
@@ -142,10 +214,7 @@ def _assign_stereo_if_needed(mol: Any) -> None:
     }
 
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
-    centers = Chem.FindMolChiralCenters(
-        mol, includeUnassigned=True, useLegacyImplementation=False
-    )
-    needed = any(tag == "?" for _, tag in centers)
+    needed = _needs_perception(mol)
 
     # FindPotentialStereoBonds marks stereogenic-but-unassigned double bonds
     # STEREOANY, which is how an unassigned one is recognised at all -- and it
@@ -161,6 +230,7 @@ def _assign_stereo_if_needed(mol: Any) -> None:
     ]
     if not needed and not unassigned:
         _restore_bond_stereo(mol, restore_marks)
+        _clear_non_tetrahedral_tags(mol)
         return
 
     # AssignStereochemistryFrom3D leaves an explicit STEREOANY alone -- the flag
@@ -171,6 +241,7 @@ def _assign_stereo_if_needed(mol: Any) -> None:
         bond.SetStereo(Chem.BondStereo.STEREONONE)
 
     Chem.AssignStereochemistryFrom3D(mol)
+    _clear_non_tetrahedral_tags(mol)
     for idx, tag in declared_atoms.items():
         mol.GetAtomWithIdx(idx).SetChiralTag(tag)
     _restore_bond_stereo(mol, declared_bonds)
