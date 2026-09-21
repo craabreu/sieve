@@ -117,9 +117,44 @@ the uncurated parquet and answer:
    structure had a single conformer? Those may be two sound molecules discarded for
    failing to corroborate each other.
 
-Given §2's result — cross-structure pairs agreeing 100% of the time — I expect these
-counts to be small, possibly zero. Measure them anyway: they are the difference between
-"the criterion is sound and we checked" and "the criterion is sound as far as we know".
+**Measured on the 2026-09-21 rebuild** (`curation_deletions.py`, after the corrections
+in `curation-audit-correction.md`). The replay reproduces the recorded 2,247 / 86
+exactly, which is the check the rest rests on.
+
+| | conformers |
+|---|---:|
+| removed by the old `dash_id` rule (replayed) | 2,247 |
+| removed by the new structure-keyed rule (observed) | 2,230 |
+| rescued — old deleted it, new keeps it | 50 |
+| newly deleted — old kept it, new deletes it | 33 |
+
+The net −17 in `curation_summary.txt` is the difference of two much larger movements and
+should not be quoted alone.
+
+1. Removed conformers inside a mixed identifier: **72 of 2,247**.
+2. **Wrongly deleted — rescued *and* holding an agreeing same-structure conformer: 21.**
+   For all 21 every agreeing partner lies in a different deposit, which is what makes the
+   deletion attributable to the grouping rather than to the threshold. The other 29
+   rescued records have no agreeing same-structure partner and are kept as unjudged solo
+   structures, which is §3 part 2's deliberate policy rather than a rescue.
+3. Identifiers dropped entirely that are mixed with every structure holding one
+   conformer: **1 of 86 — `Rest_118752`**, two E/Z isomers of an amidine C=N bond whose
+   charges differ by 1.752 e. The old rule read that as mutual disagreement and deleted
+   both; they are different molecules, so the difference was chemistry, not an MBIS
+   failure. Both survive in the rebuilt store.
+
+> **Open discrepancy.** `curation-audit-correction.md` §2 gives **20** for item 2; this
+> run measures **21**. Ruled out as explanations: a partner that does not itself survive
+> curation (all 21 have surviving partners), and a threshold boundary (the tightest
+> margin is 0.3982 e, none within 0.002 of 0.4). The 21 are listed in
+> `experiments/results/curation-deletions.log`. Reconcile before either figure reaches
+> the manuscript.
+
+The prediction above — "small, possibly zero" — was right about the magnitude and wrong
+about where to look. The 817/817 agreement rate says diastereomers under one identifier
+do not appear anomalous to each other, so the damage was never there; it was in the other
+half of the same mismatch, a structure split across deposits whose corroborating partner
+the grouping could not reach.
 
 ## 5. What changes in the manuscript
 
