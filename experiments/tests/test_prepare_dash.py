@@ -499,6 +499,44 @@ def _store_with_charges(tmp_path, per_conformer_charges, dash_id="Rest_1"):
     return store_dir
 
 
+def _store_with_structures(tmp_path, groups, dash_id="Rest_1"):
+    """A molecules.parquet whose rows share ONE ``dash_id`` but cover several
+    structures -- the shape 3.57% of the real corpus has.
+
+    ``groups`` is ``[(smiles, [charges, ...]), ...]``. Both SMILES used by
+    the tests give 4 atoms after ``AddHs``, so cross-structure pairs are
+    shape-compatible and really are compared by the old rule; if they were
+    not, ``curate_conformers`` would skip the pair and the tests would pass
+    for the wrong reason.
+    """
+    import pandas as pd
+    from experiments.data import mol_to_blob
+    from rdkit import Chem
+
+    rows = []
+    n = 0
+    for smiles, per_conformer in groups:
+        for charges in per_conformer:
+            mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+            assert mol.GetNumAtoms() == len(charges), (smiles, mol.GetNumAtoms())
+            for atom, q in zip(mol.GetAtoms(), charges, strict=True):
+                atom.SetDoubleProp("MBIScharge", float(q))
+            rows.append(
+                {
+                    "chembl_id": None,
+                    "conf_id": f"conf_{n}",
+                    "dash_id": dash_id,
+                    "mol": mol_to_blob(mol),
+                    "net_charge": 0.0,
+                }
+            )
+            n += 1
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    pd.DataFrame(rows).to_parquet(store_dir / "molecules.parquet")
+    return store_dir
+
+
 def _kept_conf_ids(store_dir):
     import pandas as pd
 
@@ -567,15 +605,79 @@ def test_curate_conformers_drops_both_of_a_failing_pair(tmp_path):
     assert _kept_conf_ids(store) == []
 
 
-def test_curate_conformers_drops_a_single_conformer_molecule(tmp_path):
-    """A singleton has no pair to corroborate it. This never occurs in the
-    real corpus (minimum 2 conformers per molecule) but the rule cannot
-    admit an uncorroborated record, so the behaviour is pinned here."""
+def test_curate_conformers_keeps_a_single_conformer_structure(tmp_path):
+    """Reversed deliberately. Under ``dash_id`` grouping a lone conformer
+    never occurred, so removing it was free; under structure grouping 14,815
+    structures have exactly one conformer of their own, and removing them
+    would discard sound data for a reason unrelated to the MBIS convergence
+    failure the criterion exists to catch. Nothing corroborates such a record
+    and nothing contradicts it: it is unjudged, not failed."""
     from experiments.prepare_dash import curate_conformers
 
     store = _store_with_charges(tmp_path, [[0.10, 0.20, -0.30, 0.00]])
     curate_conformers(store)
-    assert _kept_conf_ids(store) == []
+    assert _kept_conf_ids(store) == ["conf_0"]
+
+
+def test_curate_conformers_keeps_a_solo_structure_inside_a_mixed_identifier(
+    tmp_path,
+):
+    """The case the change exists for: one ``dash_id`` holding two
+    structures, one of which was deposited with a single conformer whose
+    charges agree with nothing else under that identifier.
+
+    Under ``dash_id`` grouping it agreed with no sibling and was deleted.
+    Under structure grouping it is alone in its own group and survives.
+    """
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_structures(
+        tmp_path,
+        [
+            ("C=O", [[2.00, 0.00, 0.00, 0.00]]),  # solo structure, far from the rest
+            ("C=S", [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]]),
+        ],
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1", "conf_2"]
+
+
+def test_curate_conformers_does_not_corroborate_across_structures(tmp_path):
+    """The other half of the key change. A structure whose own conformers all
+    disagree must fail, even when a *different* structure under the same
+    ``dash_id`` happens to agree with one of them.
+
+    Old rule: conf_0 agrees with the C=S pair, so it survives on a
+    cross-structure certificate. New rule: C=O is judged among its own
+    conformers, which disagree by 1.0 e, so both go.
+    """
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_structures(
+        tmp_path,
+        [
+            ("C=O", [[0.00, 0.00, 0.00, 0.00], [1.00, 0.00, 0.00, 0.00]]),
+            ("C=S", [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]]),
+        ],
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_2", "conf_3"]
+
+
+def test_curate_conformers_summary_records_the_solo_structures(tmp_path):
+    """The count belongs in the store's own summary, not only in a script:
+    it is the number the manuscript's conditional invariant rests on."""
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_structures(
+        tmp_path,
+        [
+            ("C=O", [[2.00, 0.00, 0.00, 0.00]]),
+            ("C=S", [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]]),
+        ],
+    )
+    summary = curate_conformers(store)
+    assert "structures kept without a same-structure sibling: 1" in summary
 
 
 def test_curate_conformers_groups_on_dash_id_not_chembl_id(tmp_path):
@@ -959,14 +1061,26 @@ def test_curate_conformers_recurates_when_the_parquet_was_rebuilt_underneath(
 
 
 def test_curated_conformer_count_parses_the_summary():
+    """Both formats, deliberately. The count is the *fingerprint* the
+    idempotency guard compares against the parquet's row count, so a summary
+    it cannot parse makes the guard silently fall through to re-curating. The
+    first text is the pre-structure-grouping wording, which real stores on
+    disk still carry."""
     from experiments.prepare_dash import _curated_conformer_count
 
-    text = (
+    older = (
         "conformer curation at threshold 0.4 e\n"
         "conformers: 1029785 -> 1027538 (2247 removed)\n"
         "molecules removed entirely: 86"
     )
-    assert _curated_conformer_count(text) == 1027538
+    current = (
+        "conformer curation at threshold 0.4 e\n"
+        "conformers: 1029785 -> 1027538 (2247 removed)\n"
+        "structures removed entirely: 86\n"
+        "structures kept without a same-structure sibling: 14815"
+    )
+    assert _curated_conformer_count(older) == 1027538
+    assert _curated_conformer_count(current) == 1027538
     assert _curated_conformer_count("no counts here") is None
 
 
@@ -1146,7 +1260,7 @@ def test_a_fully_specified_record_is_left_alone():
 _DATA = Path(__file__).resolve().parent / "data"
 
 
-def _record(name):
+def _fixture_mol(name):
     from rdkit import Chem
 
     mol = Chem.MolFromMolFile(str(_DATA / name), removeHs=False, sanitize=True)
@@ -1168,7 +1282,7 @@ def test_perception_gate_sees_dependent_stereocentres_under_explicit_hs():
 
     from experiments.prepare_dash import _assign_stereo_if_needed, _needs_perception
 
-    mol = _record("dependent_stereocentres.mol")
+    mol = _fixture_mol("dependent_stereocentres.mol")
     Chem.RemoveStereochemistry(mol)
 
     # The old gate, asked directly on the explicit-H molecule, sees nothing...
@@ -1210,7 +1324,7 @@ def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
         Chem.ChiralType.CHI_TETRAHEDRAL_CW,
         Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
     }
-    mol = _record("phosphorane_tb_tag.mol")
+    mol = _fixture_mol("phosphorane_tb_tag.mol")
     _assign_stereo_if_needed(mol)
 
     exotic = [
@@ -1232,3 +1346,57 @@ def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
     _assign_stereo_if_needed(rotated)
 
     assert collapse_key(mol) == collapse_key(rotated)
+
+
+
+def test_prepare_store_keeps_the_uncurated_parse_when_asked(tmp_path):
+    """The uncurated parse exists only between parse and curation inside
+    prepare_store, and it is the only state that can show whether the 0.4 e
+    criterion deleted something it should not have -- the curated store, by
+    construction, holds only survivors. Recovering it afterwards costs a full
+    re-parse of the 8.3GB SDF."""
+    import pandas as pd
+    from experiments.prepare_dash import UNCURATED_PARQUET, prepare_store
+
+    # One structure whose two conformers disagree, so curation really removes
+    # rows and the two parquets differ.
+    _store_with_charges(
+        tmp_path,
+        [[0.00, 0.00, 0.00, 0.00], [1.00, 0.00, 0.00, 0.00]],
+    )
+    sdf = tmp_path / "unused.sdf"  # parsing is skipped; the parquet is there
+    sdf.write_text("")
+
+    prepare_store(
+        "store",
+        stores_root=tmp_path,
+        sdf_path=sdf,
+        stop_before_split=True,
+        keep_uncurated=True,
+    )
+
+    kept = tmp_path / "store" / UNCURATED_PARQUET
+    assert kept.exists(), "the uncurated parse was not kept"
+    assert len(pd.read_parquet(kept)) == 2
+    assert len(pd.read_parquet(tmp_path / "store" / "molecules.parquet")) == 0
+
+
+def test_prepare_store_refuses_to_mislabel_an_already_curated_store(tmp_path):
+    """Copying a curated store to a file named 'uncurated' would be worse
+    than having none: it reads as evidence about what curation deleted while
+    holding only survivors."""
+    from experiments.prepare_dash import UNCURATED_PARQUET, prepare_store
+
+    _store_with_charges(
+        tmp_path,
+        [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]],
+    )
+    sdf = tmp_path / "unused.sdf"
+    sdf.write_text("")
+    common = dict(stores_root=tmp_path, sdf_path=sdf, stop_before_split=True)
+
+    prepare_store("store", **common)  # curates, writes no copy
+    assert not (tmp_path / "store" / UNCURATED_PARQUET).exists()
+
+    prepare_store("store", keep_uncurated=True, **common)
+    assert not (tmp_path / "store" / UNCURATED_PARQUET).exists()

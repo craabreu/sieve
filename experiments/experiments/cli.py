@@ -158,6 +158,7 @@ def _cmd_prepare_store(args: argparse.Namespace) -> int:
         sdf_path=args.sdf_path,
         n_shards=args.n_shards,
         stop_before_split=args.stop_before_split,
+        keep_uncurated=args.keep_uncurated,
     )
     return 0
 
@@ -942,6 +943,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="stop after parse+curate, without writing the split -- the "
         "state cluster-report reads, so --n-shards can be chosen from the "
         "real cluster-size distribution instead of guessed",
+    )
+    p_prepare.add_argument(
+        "--keep-uncurated",
+        action="store_true",
+        help="copy the parsed parquet aside as molecules.parquet.uncurated "
+        "before curation runs -- the only state that can show whether the "
+        "0.4 e criterion deleted anything it should not have, and one that "
+        "otherwise exists only transiently mid-run",
     )
     p_prepare.set_defaults(func=_cmd_prepare_store)
 

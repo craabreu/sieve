@@ -588,9 +588,15 @@ each_metric()   { echo "$COMPARE_METRICS" | tr ',' '\n' | grep -v '^$'; }
 # the SDF, and curate conformers by the DASH paper's own 0.4 e sibling
 # criterion -- stopping *before* the split, so the next step can choose
 # N_SHARDS from real evidence rather than a guess.
+# --keep-uncurated: the parsed-but-not-yet-curated parquet is the only state
+# that can show whether the 0.4 e criterion deleted anything it should not
+# have (curation-key-fix.md section 4), and it exists only transiently inside
+# prepare_store. Recovering it later costs a full re-parse of the 8.3GB SDF,
+# so it is kept here rather than reconstructed.
 step prepare-corpus \
   "store_is_curated $STORE" -- \
-  "$PYTHON" -m experiments prepare-store "$STORE" --stop-before-split
+  "$PYTHON" -m experiments prepare-store "$STORE" --stop-before-split \
+    --keep-uncurated
 
 # --- choose the shard count ------------------------------------------------
 #

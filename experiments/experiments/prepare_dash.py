@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -711,6 +712,7 @@ def assign_splits(
 
 CURATION_THRESHOLD = 0.4
 CURATION_SUMMARY = "curation_summary.txt"
+UNCURATED_PARQUET = "molecules.parquet.uncurated"
 
 
 def _curated_conformer_count(summary_text: str) -> int | None:
@@ -769,16 +771,44 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     (141 molecules of the real corpus). Requiring instead that *all* pairs
     agree would discard those molecules for being smoothly variable.
 
-    Survivors come in pairs by construction, so a molecule ends with
-    0, 2 or 3 conformers and never a lone one; no separate guard is
-    needed for that. A molecule with a single conformer in the *input*
-    has no pair to corroborate it and is therefore removed -- which never
-    occurs in the real corpus (minimum 2 conformers per molecule), but is
-    pinned by test rather than left to chance.
+    Survivors come in pairs **whenever the deposit provided a pair**, so a
+    structure ends with 0, 2 or 3 conformers, or with the single one it was
+    deposited with. That conditional is the honest form of the invariant;
+    the unconditional "survivors come in pairs by construction" is false
+    under the grouping below, for 14,815 structures.
 
-    Grouping is by ``dash_id``, the only identity present on every record:
-    49.6% of the corpus has no ``CHEMBL_ID``, and grouping on that would
-    leave half the molecules uncorroborated and delete them.
+    **Grouping is by structure, not by deposit.** ``dash_id`` is the only
+    identity on every record -- 49.6% of the corpus has no ``CHEMBL_ID`` --
+    but it records a *deposit*, and depositors filed chemically distinct
+    species under single identifiers: predominantly diastereomers, with E/Z
+    isomers and tautomer normalisation behind them. 12,470 identifiers
+    (3.57%), holding 37,121 conformers, cover more than one structure. For
+    those, grouping on ``dash_id`` does not compare the same atom in the
+    same molecule across conformers; it compares an atom across *different
+    molecules*. So the key here is ``collapse_key``, which is a structure
+    key by construction.
+
+    It is computed here rather than read from a column: ``annotate_collapse``
+    writes ``collapse_key`` into the store, but it runs after the split,
+    which is after this. At 0.10 ms/row that is ~2 minutes over the full
+    parse, so recomputing costs less than reordering the pipeline would.
+
+    **A structure with one conformer is kept.** Under ``dash_id`` grouping a
+    lone conformer never occurred (minimum 2 per identifier) and removing it
+    was free; under structure grouping, 14,815 structures have exactly one
+    conformer of their own, and removing them would discard sound data for a
+    reason that has nothing to do with the MBIS convergence failure this
+    criterion exists to catch. Their lack of a sibling is a property of how
+    the corpus was deposited, not evidence that the record failed.
+
+    What is given up by the change is small and was measured: over 400
+    sampled mixed identifiers, cross-structure pairs agreed within the
+    threshold 817 times out of 817 and same-structure pairs 373 of 373, so
+    the cross-structure corroboration this removes was almost never the
+    thing keeping a conformer alive. The MBIS failure mode is a wild outlier
+    -- the documented case puts +2.975 e on a carbon its siblings place near
+    -0.13 e -- and such a record disagrees with everything, so it is still
+    caught by its own structure's siblings when it has any.
 
     On the real store this removes 2,247 of 1,029,785 conformers (0.218%)
     and 86 molecules outright.
@@ -821,25 +851,37 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             actual,
         )
 
+    from experiments.collapse import collapse_key
+
     df = pd.read_parquet(molecules_path)
+    mols = [blob_to_mol(b) for b in df["mol"]]
     charges = [
         np.array(
-            [a.GetDoubleProp("MBIScharge") for a in blob_to_mol(b).GetAtoms()],
+            [a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms()],
             dtype=np.float64,
         )
-        for b in df["mol"]
+        for mol in mols
     ]
+    keys = [collapse_key(mol) for mol in mols]
 
     keep = np.zeros(len(df), dtype=bool)
     n_molecules_dropped = 0
-    for _, positions in df.groupby("dash_id", sort=False).groups.items():
+    n_solo_structures = 0
+    for _, positions in df.groupby(keys, sort=False).groups.items():
         rows = list(positions)
+        if len(rows) == 1:
+            # Deposited without a sibling of its own structure. Nothing
+            # corroborates it and nothing contradicts it, so it is unjudged
+            # rather than failed -- see the docstring.
+            n_solo_structures += 1
+            keep[rows[0]] = True
+            continue
         survivors: set[int] = set()
         for i in range(len(rows)):
             for j in range(i + 1, len(rows)):
                 a, b = charges[rows[i]], charges[rows[j]]
                 if a.shape != b.shape:
-                    # Same molecule id with differing atom counts cannot be
+                    # One structure key with differing atom counts cannot be
                     # compared atom-by-atom; treat the pair as disagreeing
                     # rather than crashing or silently broadcasting.
                     continue
@@ -856,7 +898,8 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
         f"conformer curation at threshold {threshold} e\n"
         f"conformers: {n_before} -> {int(keep.sum())} "
         f"({n_before - int(keep.sum())} removed)\n"
-        f"molecules removed entirely: {n_molecules_dropped}"
+        f"structures removed entirely: {n_molecules_dropped}\n"
+        f"structures kept without a same-structure sibling: {n_solo_structures}"
     )
     summary_path.write_text(summary_text + "\n")
     return summary_text
@@ -872,6 +915,7 @@ def prepare_store(
     n_shards: int = 25,
     sdf_path: Path | None = None,
     stop_before_split: bool = False,
+    keep_uncurated: bool = False,
 ) -> None:
     """Ensure ``store_name`` is downloaded, parsed, curated, and has
     ``split``/``cluster``/``shard`` columns. Idempotent at each stage,
@@ -895,6 +939,16 @@ def prepare_store(
     unit a CV scheme fits once and reassembles by merging. Choose it via
     ``cluster_size_report`` against a parsed-but-not-yet-split store, not
     blind.
+
+    ``keep_uncurated`` copies the parsed parquet aside as
+    ``molecules.parquet.uncurated`` *before* curation runs. That state is
+    otherwise transient -- it exists only between ``parse_dash_molecules``
+    and ``curate_conformers`` inside this function -- and it is the only
+    thing that can answer whether the criterion deleted anything it should
+    not have: the curated store, by construction, holds only survivors.
+    Recovering it after the fact costs a full re-parse of the 8.3GB SDF, so
+    the flag is cheap insurance on a run that is already paying for one.
+    See ``curation-key-fix.md`` section 4 for the three counts it feeds.
 
     ``stop_before_split`` returns after curation, without calling
     ``assign_splits`` -- which is exactly the parsed-and-curated state
@@ -944,6 +998,24 @@ def prepare_store(
             f"leaving a stale split. Delete the store and rebuild it, or "
             f"curate and re-run assign_splits deliberately."
         )
+
+    if keep_uncurated:
+        uncurated_path = store_dir / UNCURATED_PARQUET
+        if uncurated_path.exists():
+            logger.info("%s already kept; not overwriting", uncurated_path)
+        elif already_curated:
+            # The store on disk is already curated, so copying it now would
+            # produce a file named "uncurated" holding survivors only -- a
+            # worse outcome than not having one, because it reads as
+            # evidence. Refuse rather than mislabel.
+            logger.warning(
+                "%s is already curated; cannot keep an uncurated copy "
+                "without re-parsing, so none is written",
+                molecules_path,
+            )
+        else:
+            shutil.copy2(molecules_path, uncurated_path)
+            logger.info("kept the uncurated parse at %s", uncurated_path)
 
     # curate_conformers writes CURATION_SUMMARY itself; writing it again
     # here would stamp its own "already curated" prefix into the file on a
