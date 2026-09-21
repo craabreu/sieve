@@ -1400,3 +1400,66 @@ def test_prepare_store_refuses_to_mislabel_an_already_curated_store(tmp_path):
 
     prepare_store("store", keep_uncurated=True, **common)
     assert not (tmp_path / "store" / UNCURATED_PARQUET).exists()
+
+
+def _embedded(smiles):
+    """A 3D conformer, so AssignStereochemistryFrom3D has coordinates to read."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    assert AllChem.EmbedMolecule(mol, randomSeed=0xF00D) == 0
+    return mol
+
+
+def test_a_spurious_stereoany_mark_is_not_restored(tmp_path):
+    """The molblock can flag a bond STEREOANY that is not stereogenic at all
+    -- a terminal alkene such as OC=CH2, whose =CH2 end carries two
+    hydrogens, so there is no E/Z to determine.
+
+    FindPotentialStereoBonds *clears* such a flag, and the rollback used to
+    put it straight back: the rollback exists to undo marks that call adds,
+    but it was also undoing a correction it made. 731 bonds in 20,551 sampled
+    store rows carried the flag for this reason, 3.34% of records.
+    """
+    from rdkit import Chem
+
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    mol = _embedded("C=CO")
+    bond = next(
+        b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
+    )
+    bond.SetStereo(Chem.BondStereo.STEREOANY)
+
+    _assign_stereo_if_needed(mol)
+
+    assert mol.GetBondWithIdx(bond.GetIdx()).GetStereo() == (
+        Chem.BondStereo.STEREONONE
+    )
+
+
+@pytest.mark.parametrize(
+    ("smiles", "expected"),
+    [("C/C=C/C", "STEREOE"), ("C/C=C\\C", "STEREOZ")],
+)
+def test_a_genuine_stereoany_bond_is_perceived_not_dropped(smiles, expected):
+    """The other half, and the one that makes the fix safe to make. A bond
+    that IS stereogenic keeps its STEREOANY through FindPotentialStereoBonds,
+    so it reaches the perception path and is read off the coordinates.
+    Dropping the flag must not become dropping the chemistry.
+    """
+    from rdkit import Chem
+
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    mol = _embedded(smiles)
+    bond = next(
+        b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
+    )
+    assert str(bond.GetStereo()) == expected, "embedding lost the configuration"
+    bond.SetStereo(Chem.BondStereo.STEREOANY)  # as an unspecified molblock would
+
+    _assign_stereo_if_needed(mol)
+
+    assert str(mol.GetBondWithIdx(bond.GetIdx()).GetStereo()) == expected

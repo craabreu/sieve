@@ -221,9 +221,20 @@ def _assign_stereo_if_needed(mol: Any) -> None:
     # STEREOANY, which is how an unassigned one is recognised at all -- and it
     # mutates the molecule, so the marks are rolled back below when nothing
     # turns out to need perceiving.
+    # Bonds already carrying STEREOANY are deliberately excluded from the
+    # rollback. The rollback exists to undo marks FindPotentialStereoBonds
+    # *adds*; but the call also *removes* the flag from a bond that is not
+    # stereogenic at all, and that removal is its judgment, not damage.
+    # Restoring it put back a flag RDKit had just corrected: 731 bonds in
+    # 20,551 sampled rows, 98.9% of them with an end carrying two
+    # constitutionally identical substituents -- terminal alkenes such as
+    # OC=CH2, which have no E/Z to determine. A genuinely stereogenic bond
+    # marked STEREOANY by the molblock keeps the flag through this call,
+    # lands in `unassigned`, and is perceived from the coordinates below.
     restore_marks = {
         bond.GetIdx(): (bond.GetStereo(), tuple(bond.GetStereoAtoms()))
         for bond in mol.GetBonds()
+        if bond.GetStereo() != Chem.BondStereo.STEREOANY
     }
     Chem.FindPotentialStereoBonds(mol, cleanIt=False)
     unassigned = [
