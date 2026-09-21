@@ -153,30 +153,50 @@ def main(uncurated: str, curated: str) -> None:
         wrongful.append(r)
         if all(unc.at[s, "dash_id"] != unc.at[r, "dash_id"] for s in partners):
             cross_only += 1
+    # Reported in BOTH units, deliberately and always together. The two
+    # differ whenever one structure was deposited more than once and several
+    # of its conformers were wrongly deleted, and quoting one figure without
+    # naming its unit already caused a 21-vs-20 discrepancy that took a
+    # separate investigation to resolve. The criterion acts on conformers, so
+    # the record count suits a sentence about records removed and the
+    # structure count one about molecules affected.
+    wrongful_structures = {keys[r] for r in wrongful}
     print(
         f"2. WRONGLY DELETED -- rescued and holding an agreeing same-structure "
-        f"conformer: {len(wrongful):,}"
+        f"conformer:\n"
+        f"     {len(wrongful):,} CONFORMER(S), spanning "
+        f"{len(wrongful_structures):,} distinct STRUCTURE(S)"
     )
     print(
-        f"     of those, every agreeing partner is in ANOTHER deposit: "
-        f"{cross_only:,}  <- attributable to the grouping, not the threshold"
+        f"     of those conformers, every agreeing partner is in ANOTHER "
+        f"deposit: {cross_only:,}  <- attributable to the grouping, not the "
+        f"threshold"
     )
     print(
         f"     remaining rescued, with no agreeing same-structure partner: "
         f"{unjudged:,}  (kept as unjudged solo structures by policy)"
     )
-    for r in wrongful[:10]:
-        print(f"       {unc.at[r, 'dash_id']} {unc.at[r, 'conf_id']}")
+    shared: dict[str, list[int]] = collections.defaultdict(list)
+    for r in wrongful:
+        shared[keys[r]].append(r)
+    for rs in sorted(shared.values(), key=lambda v: -len(v)):
+        mark = "  <- one structure, several records" if len(rs) > 1 else ""
+        for r in rs:
+            print(f"       {unc.at[r, 'dash_id']} {unc.at[r, 'conf_id']}{mark}")
+            mark = "  <- ...same structure as the line above"
 
     # --- question 3 --------------------------------------------------------
-    per_id_key: dict[tuple[str, str], list[int]] = collections.defaultdict(list)
-    for i in range(len(unc)):
-        per_id_key[(unc.at[i, "dash_id"], keys[i])].append(i)
+    # Grouped per identifier rather than scanned once per dropped identifier;
+    # the latter walked all ~1M (dash_id, key) groups 86 times over.
+    per_id_key: dict[str, collections.Counter] = collections.defaultdict(
+        collections.Counter
+    )
+    for dash_id, key in zip(unc["dash_id"], keys, strict=True):
+        per_id_key[dash_id][key] += 1
     all_solo = [
         d
         for d in dropped_ids
-        if d in mixed
-        and all(len(v) == 1 for (dash_id, _), v in per_id_key.items() if dash_id == d)
+        if d in mixed and all(n == 1 for n in per_id_key[d].values())
     ]
     print(
         f"3. identifiers dropped entirely that are mixed with every structure "
