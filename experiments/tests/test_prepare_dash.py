@@ -5,6 +5,8 @@ presence."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("rdkit")
@@ -497,6 +499,44 @@ def _store_with_charges(tmp_path, per_conformer_charges, dash_id="Rest_1"):
     return store_dir
 
 
+def _store_with_structures(tmp_path, groups, dash_id="Rest_1"):
+    """A molecules.parquet whose rows share ONE ``dash_id`` but cover several
+    structures -- the shape 3.57% of the real corpus has.
+
+    ``groups`` is ``[(smiles, [charges, ...]), ...]``. Both SMILES used by
+    the tests give 4 atoms after ``AddHs``, so cross-structure pairs are
+    shape-compatible and really are compared by the old rule; if they were
+    not, ``curate_conformers`` would skip the pair and the tests would pass
+    for the wrong reason.
+    """
+    import pandas as pd
+    from experiments.data import mol_to_blob
+    from rdkit import Chem
+
+    rows = []
+    n = 0
+    for smiles, per_conformer in groups:
+        for charges in per_conformer:
+            mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+            assert mol.GetNumAtoms() == len(charges), (smiles, mol.GetNumAtoms())
+            for atom, q in zip(mol.GetAtoms(), charges, strict=True):
+                atom.SetDoubleProp("MBIScharge", float(q))
+            rows.append(
+                {
+                    "chembl_id": None,
+                    "conf_id": f"conf_{n}",
+                    "dash_id": dash_id,
+                    "mol": mol_to_blob(mol),
+                    "net_charge": 0.0,
+                }
+            )
+            n += 1
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    pd.DataFrame(rows).to_parquet(store_dir / "molecules.parquet")
+    return store_dir
+
+
 def _kept_conf_ids(store_dir):
     import pandas as pd
 
@@ -565,15 +605,79 @@ def test_curate_conformers_drops_both_of_a_failing_pair(tmp_path):
     assert _kept_conf_ids(store) == []
 
 
-def test_curate_conformers_drops_a_single_conformer_molecule(tmp_path):
-    """A singleton has no pair to corroborate it. This never occurs in the
-    real corpus (minimum 2 conformers per molecule) but the rule cannot
-    admit an uncorroborated record, so the behaviour is pinned here."""
+def test_curate_conformers_keeps_a_single_conformer_structure(tmp_path):
+    """Reversed deliberately. Under ``dash_id`` grouping a lone conformer
+    never occurred, so removing it was free; under structure grouping 14,815
+    structures have exactly one conformer of their own, and removing them
+    would discard sound data for a reason unrelated to the MBIS convergence
+    failure the criterion exists to catch. Nothing corroborates such a record
+    and nothing contradicts it: it is unjudged, not failed."""
     from experiments.prepare_dash import curate_conformers
 
     store = _store_with_charges(tmp_path, [[0.10, 0.20, -0.30, 0.00]])
     curate_conformers(store)
-    assert _kept_conf_ids(store) == []
+    assert _kept_conf_ids(store) == ["conf_0"]
+
+
+def test_curate_conformers_keeps_a_solo_structure_inside_a_mixed_identifier(
+    tmp_path,
+):
+    """The case the change exists for: one ``dash_id`` holding two
+    structures, one of which was deposited with a single conformer whose
+    charges agree with nothing else under that identifier.
+
+    Under ``dash_id`` grouping it agreed with no sibling and was deleted.
+    Under structure grouping it is alone in its own group and survives.
+    """
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_structures(
+        tmp_path,
+        [
+            ("C=O", [[2.00, 0.00, 0.00, 0.00]]),  # solo structure, far from the rest
+            ("C=S", [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]]),
+        ],
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1", "conf_2"]
+
+
+def test_curate_conformers_does_not_corroborate_across_structures(tmp_path):
+    """The other half of the key change. A structure whose own conformers all
+    disagree must fail, even when a *different* structure under the same
+    ``dash_id`` happens to agree with one of them.
+
+    Old rule: conf_0 agrees with the C=S pair, so it survives on a
+    cross-structure certificate. New rule: C=O is judged among its own
+    conformers, which disagree by 1.0 e, so both go.
+    """
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_structures(
+        tmp_path,
+        [
+            ("C=O", [[0.00, 0.00, 0.00, 0.00], [1.00, 0.00, 0.00, 0.00]]),
+            ("C=S", [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]]),
+        ],
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_2", "conf_3"]
+
+
+def test_curate_conformers_summary_records_the_solo_structures(tmp_path):
+    """The count belongs in the store's own summary, not only in a script:
+    it is the number the manuscript's conditional invariant rests on."""
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_structures(
+        tmp_path,
+        [
+            ("C=O", [[2.00, 0.00, 0.00, 0.00]]),
+            ("C=S", [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]]),
+        ],
+    )
+    summary = curate_conformers(store)
+    assert "structures kept without a same-structure sibling: 1" in summary
 
 
 def test_curate_conformers_groups_on_dash_id_not_chembl_id(tmp_path):
@@ -957,14 +1061,26 @@ def test_curate_conformers_recurates_when_the_parquet_was_rebuilt_underneath(
 
 
 def test_curated_conformer_count_parses_the_summary():
+    """Both formats, deliberately. The count is the *fingerprint* the
+    idempotency guard compares against the parquet's row count, so a summary
+    it cannot parse makes the guard silently fall through to re-curating. The
+    first text is the pre-structure-grouping wording, which real stores on
+    disk still carry."""
     from experiments.prepare_dash import _curated_conformer_count
 
-    text = (
+    older = (
         "conformer curation at threshold 0.4 e\n"
         "conformers: 1029785 -> 1027538 (2247 removed)\n"
         "molecules removed entirely: 86"
     )
-    assert _curated_conformer_count(text) == 1027538
+    current = (
+        "conformer curation at threshold 0.4 e\n"
+        "conformers: 1029785 -> 1027538 (2247 removed)\n"
+        "structures removed entirely: 86\n"
+        "structures kept without a same-structure sibling: 14815"
+    )
+    assert _curated_conformer_count(older) == 1027538
+    assert _curated_conformer_count(current) == 1027538
     assert _curated_conformer_count("no counts here") is None
 
 
@@ -1010,3 +1126,333 @@ def test_prepare_store_after_stop_before_split_can_still_split(tmp_path):
     assert (stores / "s" / "curation_summary.txt").read_text() == summary_before
     assert {"split", "cluster", "shard"} <= set(df.columns)
     assert set(df["split"]) <= {"train", "test"}
+
+
+def _embedded(smiles):
+    """A molecule with real 3D coordinates and stereo perceived from them."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(mol, randomSeed=11)
+    Chem.AssignStereochemistryFrom3D(mol)
+    return mol
+
+
+def test_3d_perception_does_not_overwrite_a_declared_parity():
+    """The bug this guards: gating on "any centre is unassigned" and then
+    calling AssignStereochemistryFrom3D rewrites *every* centre, so one
+    undeclared centre costs every declared one in the same molecule. On the
+    real SDF that turned 64 undeclared centres into 160 perceived ones.
+
+    The declared tag here is deliberately set against the geometry, so only
+    preserving it -- not re-perceiving it -- can pass.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    tagged = {Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}
+    mol = _embedded("C[C@H](O)[C@@H](N)C(=O)O")
+    centers = [a.GetIdx() for a in mol.GetAtoms() if a.GetChiralTag() in tagged]
+    assert len(centers) == 2
+    keep, clear = centers
+    against_geometry = (
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW
+        if mol.GetAtomWithIdx(keep).GetChiralTag() == Chem.ChiralType.CHI_TETRAHEDRAL_CW
+        else Chem.ChiralType.CHI_TETRAHEDRAL_CW
+    )
+    mol.GetAtomWithIdx(keep).SetChiralTag(against_geometry)
+    mol.GetAtomWithIdx(clear).SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+
+    _assign_stereo_if_needed(mol)
+
+    assert mol.GetAtomWithIdx(keep).GetChiralTag() == against_geometry
+    assert mol.GetAtomWithIdx(clear).GetChiralTag() in tagged
+
+
+def test_an_unassigned_double_bond_is_perceived_from_3d():
+    """A bond left STEREOANY used to survive untouched, because the gate only
+    looked at tetrahedral centres. AssignStereochemistryFrom3D also declines to
+    overrule an explicit STEREOANY, so clearing the mark first is what lets the
+    coordinates speak.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    mol = _embedded("C/N=N/C")
+    bond = next(b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE)
+    declared = bond.GetStereo()
+    bond.SetStereo(Chem.BondStereo.STEREOANY)
+
+    _assign_stereo_if_needed(mol)
+
+    got = next(
+        b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
+    ).GetStereo()
+    assert got not in {Chem.BondStereo.STEREOANY, Chem.BondStereo.STEREONONE}
+    assert got == declared
+
+
+def test_two_records_of_one_structure_get_one_collapse_key():
+    """The point of the bond half: collapse_key serialises what the Mol
+    declares, so a STEREOANY in one record and a definite flag in another split
+    a single structure into two molecules. On the test split that affected 143
+    groups holding 865 conformers, 10.8% of the stereo-sensitive subset.
+    """
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    specified, unspecified = _embedded("C/N=N/C"), _embedded("C/N=N/C")
+    next(
+        b for b in unspecified.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
+    ).SetStereo(Chem.BondStereo.STEREOANY)
+
+    for mol in (specified, unspecified):
+        _assign_stereo_if_needed(mol)
+
+    assert collapse_key(specified) == collapse_key(unspecified)
+
+
+def test_genuine_e_and_z_are_still_held_apart():
+    """The complement of the test above: filling in unspecified geometry must
+    not merge records that really do differ."""
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    e_isomer, z_isomer = _embedded("C/N=N/C"), _embedded(r"C/N=N\C")
+    for mol in (e_isomer, z_isomer):
+        _assign_stereo_if_needed(mol)
+
+    assert collapse_key(e_isomer) != collapse_key(z_isomer)
+
+
+def test_a_fully_specified_record_is_left_alone():
+    """Nothing to perceive means nothing is touched -- including the STEREOANY
+    marks FindPotentialStereoBonds leaves behind while looking."""
+    from experiments.prepare_dash import _assign_stereo_if_needed
+
+    mol = _embedded("F[C@H](Cl)Br")
+    atoms = [(a.GetIdx(), a.GetChiralTag()) for a in mol.GetAtoms()]
+    bonds = [
+        (b.GetIdx(), b.GetStereo(), tuple(b.GetStereoAtoms())) for b in mol.GetBonds()
+    ]
+
+    _assign_stereo_if_needed(mol)
+
+    assert [(a.GetIdx(), a.GetChiralTag()) for a in mol.GetAtoms()] == atoms
+    assert [
+        (b.GetIdx(), b.GetStereo(), tuple(b.GetStereoAtoms())) for b in mol.GetBonds()
+    ] == bonds
+
+
+# ---------------------------------------------------------------------------
+# Stereo perception: the two defects found after the bond-stereo fix.
+#
+# Both use REAL store records, saved beside this file, and that is not
+# incidental. Small symmetric molecules such as 1,4-dimethylcyclohexane keep
+# their dependent stereocentres visible after ``AddHs``, so a toy input passes
+# with or without the gate fix and tests nothing. ``Rest_95518`` (spiro/
+# ring-fusion centres) and ``Rest_128717`` (a phosphorane) are the records the
+# defects were measured on.
+# ---------------------------------------------------------------------------
+
+_DATA = Path(__file__).resolve().parent / "data"
+
+
+def _fixture_mol(name):
+    from rdkit import Chem
+
+    mol = Chem.MolFromMolFile(str(_DATA / name), removeHs=False, sanitize=True)
+    assert mol is not None, f"fixture {name} did not parse"
+    return mol
+
+
+def test_perception_gate_sees_dependent_stereocentres_under_explicit_hs():
+    """The gate must consult coordinates for spiro/ring-fusion/bridgehead
+    centres, whose ring branches are constitutionally identical.
+
+    ``FindMolChiralCenters`` reports ``[]`` for these on an explicit-H
+    molecule -- silently, an empty list rather than an error -- and the store
+    parses with ``removeHs=False``, so asking on the explicit-H molecule left
+    0.92% of potential centres unassigned corpus-wide. An unassigned centre
+    makes ``collapse_key`` merge genuine diastereomers.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed, _needs_perception
+    from rdkit import Chem
+
+    mol = _fixture_mol("dependent_stereocentres.mol")
+    Chem.RemoveStereochemistry(mol)
+
+    # The old gate, asked directly on the explicit-H molecule, sees nothing...
+    blind = any(
+        tag == "?"
+        for _, tag in Chem.FindMolChiralCenters(
+            mol, includeUnassigned=True, useLegacyImplementation=False
+        )
+    )
+    assert not blind, "fixture no longer exercises the blind spot"
+
+    # ...while the heavy-atom probe does, and perception then tags them.
+    assert _needs_perception(mol)
+
+    _assign_stereo_if_needed(mol)
+    tagged = [
+        atom.GetIdx()
+        for atom in mol.GetAtoms()
+        if atom.GetChiralTag()
+        in {Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TETRAHEDRAL_CCW}
+    ]
+    assert len(tagged) == 2, f"expected both dependent centres tagged, got {tagged}"
+
+
+def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
+    """``AssignStereochemistryFrom3D`` gives pentavalent P and sulfonic S a
+    ``CHI_TRIGONALBIPYRAMIDAL``/``CHI_SQUAREPLANAR`` tag whose permutation
+    index varies between conformers of one molecule, so one structure got
+    several ``collapse_key``s. ``mirror_mol`` inverts only the tetrahedral
+    tags, so the enantiomer merge cannot rescue it either.
+    """
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    keep = {
+        Chem.ChiralType.CHI_UNSPECIFIED,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    }
+    mol = _fixture_mol("phosphorane_tb_tag.mol")
+    _assign_stereo_if_needed(mol)
+
+    exotic = [
+        (atom.GetIdx(), atom.GetSymbol(), str(atom.GetChiralTag()))
+        for atom in mol.GetAtoms()
+        if atom.GetChiralTag() not in keep
+    ]
+    assert not exotic, f"non-tetrahedral tags survived: {exotic}"
+
+    # A rotated copy is the same structure, so it must key the same. With the
+    # TB tag present the permutation index moves and the keys diverge.
+    from rdkit.Geometry import Point3D
+
+    rotated = Chem.Mol(mol)
+    conf = rotated.GetConformer()
+    for i in range(rotated.GetNumAtoms()):
+        p = conf.GetAtomPosition(i)
+        conf.SetAtomPosition(i, Point3D(-p.x, -p.y, p.z))  # a proper rotation
+    _assign_stereo_if_needed(rotated)
+
+    assert collapse_key(mol) == collapse_key(rotated)
+
+
+def test_prepare_store_keeps_the_uncurated_parse_when_asked(tmp_path):
+    """The uncurated parse exists only between parse and curation inside
+    prepare_store, and it is the only state that can show whether the 0.4 e
+    criterion deleted something it should not have -- the curated store, by
+    construction, holds only survivors. Recovering it afterwards costs a full
+    re-parse of the 8.3GB SDF."""
+    import pandas as pd
+    from experiments.prepare_dash import UNCURATED_PARQUET, prepare_store
+
+    # One structure whose two conformers disagree, so curation really removes
+    # rows and the two parquets differ.
+    _store_with_charges(
+        tmp_path,
+        [[0.00, 0.00, 0.00, 0.00], [1.00, 0.00, 0.00, 0.00]],
+    )
+    sdf = tmp_path / "unused.sdf"  # parsing is skipped; the parquet is there
+    sdf.write_text("")
+
+    prepare_store(
+        "store",
+        stores_root=tmp_path,
+        sdf_path=sdf,
+        stop_before_split=True,
+        keep_uncurated=True,
+    )
+
+    kept = tmp_path / "store" / UNCURATED_PARQUET
+    assert kept.exists(), "the uncurated parse was not kept"
+    assert len(pd.read_parquet(kept)) == 2
+    assert len(pd.read_parquet(tmp_path / "store" / "molecules.parquet")) == 0
+
+
+def test_prepare_store_refuses_to_mislabel_an_already_curated_store(tmp_path):
+    """Copying a curated store to a file named 'uncurated' would be worse
+    than having none: it reads as evidence about what curation deleted while
+    holding only survivors."""
+    from experiments.prepare_dash import UNCURATED_PARQUET, prepare_store
+
+    _store_with_charges(
+        tmp_path,
+        [[0.00, 0.00, 0.00, 0.00], [0.10, 0.00, 0.00, 0.00]],
+    )
+    sdf = tmp_path / "unused.sdf"
+    sdf.write_text("")
+    common = {
+        "stores_root": tmp_path,
+        "sdf_path": sdf,
+        "stop_before_split": True,
+    }
+
+    prepare_store("store", **common)  # curates, writes no copy
+    assert not (tmp_path / "store" / UNCURATED_PARQUET).exists()
+
+    prepare_store("store", keep_uncurated=True, **common)
+    assert not (tmp_path / "store" / UNCURATED_PARQUET).exists()
+
+
+def _embedded(smiles):
+    """A 3D conformer, so AssignStereochemistryFrom3D has coordinates to read."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    assert AllChem.EmbedMolecule(mol, randomSeed=0xF00D) == 0
+    return mol
+
+
+def test_a_spurious_stereoany_mark_is_not_restored(tmp_path):
+    """The molblock can flag a bond STEREOANY that is not stereogenic at all
+    -- a terminal alkene such as OC=CH2, whose =CH2 end carries two
+    hydrogens, so there is no E/Z to determine.
+
+    FindPotentialStereoBonds *clears* such a flag, and the rollback used to
+    put it straight back: the rollback exists to undo marks that call adds,
+    but it was also undoing a correction it made. 731 bonds in 20,551 sampled
+    store rows carried the flag for this reason, 3.34% of records.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    mol = _embedded("C=CO")
+    bond = next(b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE)
+    bond.SetStereo(Chem.BondStereo.STEREOANY)
+
+    _assign_stereo_if_needed(mol)
+
+    assert mol.GetBondWithIdx(bond.GetIdx()).GetStereo() == (Chem.BondStereo.STEREONONE)
+
+
+@pytest.mark.parametrize(
+    ("smiles", "expected"),
+    [("C/C=C/C", "STEREOE"), ("C/C=C\\C", "STEREOZ")],
+)
+def test_a_genuine_stereoany_bond_is_perceived_not_dropped(smiles, expected):
+    """The other half, and the one that makes the fix safe to make. A bond
+    that IS stereogenic keeps its STEREOANY through FindPotentialStereoBonds,
+    so it reaches the perception path and is read off the coordinates.
+    Dropping the flag must not become dropping the chemistry.
+    """
+    from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
+
+    mol = _embedded(smiles)
+    bond = next(b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE)
+    assert str(bond.GetStereo()) == expected, "embedding lost the configuration"
+    bond.SetStereo(Chem.BondStereo.STEREOANY)  # as an unspecified molblock would
+
+    _assign_stereo_if_needed(mol)
+
+    assert str(mol.GetBondWithIdx(bond.GetIdx()).GetStereo()) == expected
