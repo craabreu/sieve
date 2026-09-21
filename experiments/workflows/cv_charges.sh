@@ -522,7 +522,7 @@ SIEVE_SELECTED_DEPTH="${SIEVE_SELECTED_DEPTH:-5}"
 HOSE_RADII="${HOSE_RADII:-1,2,3,4,5,6}"
 HOSE_STUDY_A=hose-cv-study-a
 HOSE_STUDY_B=hose-cv-study-b
-HOSE_SHARD_JOBS="${HOSE_SHARD_JOBS:-16}"
+HOSE_SHARD_JOBS="${HOSE_SHARD_JOBS:-8}"
 # One process per (radius, fold) for Study A and per (repeat, fold) for Study
 # B. Fold-level, not radius- or repeat-level: this arm's cost is code
 # generation over each fold's held-out set, and nothing shares it across folds
@@ -752,9 +752,18 @@ step sieve-shard-fits \
 # they fit once at their deepest setting and truncate, this one cannot (spec
 # section 7), so every radius the studies score needs its own 50 fits.
 #
-# Cheap per fit relative to the other arms -- no tree to load and no WL
-# refinement, just code generation and a dict -- so the dispatch is 8 wide
-# like the others and bounded by the generator, not by memory.
+# The dispatch is 8 wide for the same measured reason as the other two
+# arms, NOT because this one is cheap. Code generation really is cheap --
+# no tree to load and no WL refinement -- but a shard fit's footprint is
+# dominated by materializing the shard's molecules, which every arm pays
+# alike:
+#
+#   hose shard fit, radius 1 : 33.7 GB peak RSS, 1m59 wall
+#
+# against dash's 35.1 GB and sieve's 32.0 GB. This dispatch was 16 wide on
+# the theory that the generator bounded it; 16 x 33.7 = 539 GB against 503
+# GB, and the OOM killer took 5 of radius 1's 50 shards. The same ~400 GB
+# budget that gives the other arms 8 gives this one 8.
 each_hose_radius() {
   { echo "$HOSE_RADII" | tr ',' '\n'; hose_radius; } | grep -v '^$' | sort -n -u
 }
