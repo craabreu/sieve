@@ -131,8 +131,11 @@ def _needs_perception(mol: Any) -> bool:
     except Exception as exc:  # pragma: no cover -- malformed record
         # Falling back to the explicit-H molecule reinstates the blind spot
         # for this one record, so say so rather than degrade silently.
-        logger.warning("could not build a heavy-atom probe (%s); gate may miss "
-                       "dependent stereocentres for this record", exc)
+        logger.warning(
+            "could not build a heavy-atom probe (%s); gate may miss "
+            "dependent stereocentres for this record",
+            exc,
+        )
     centers = Chem.FindMolChiralCenters(
         probe, includeUnassigned=True, useLegacyImplementation=False
     )

@@ -1328,6 +1328,7 @@ def test_collapse_train_scoring_scores_the_population_the_fit_saw():
     assert collapsed.n_conformers == 2  # the two conformers became one unit
     assert mset.n_conformers == 3  # and the original is not mutated
 
+
 def _tiny_store(root, name, keys):
     """A store carrying just the one column ``store_identity`` reads."""
     import pyarrow as pa

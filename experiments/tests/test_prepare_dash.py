@@ -1278,9 +1278,8 @@ def test_perception_gate_sees_dependent_stereocentres_under_explicit_hs():
     0.92% of potential centres unassigned corpus-wide. An unassigned centre
     makes ``collapse_key`` merge genuine diastereomers.
     """
-    from rdkit import Chem
-
     from experiments.prepare_dash import _assign_stereo_if_needed, _needs_perception
+    from rdkit import Chem
 
     mol = _fixture_mol("dependent_stereocentres.mol")
     Chem.RemoveStereochemistry(mol)
@@ -1314,10 +1313,9 @@ def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
     several ``collapse_key``s. ``mirror_mol`` inverts only the tetrahedral
     tags, so the enantiomer merge cannot rescue it either.
     """
-    from rdkit import Chem
-
     from experiments.collapse import collapse_key
     from experiments.prepare_dash import _assign_stereo_if_needed
+    from rdkit import Chem
 
     keep = {
         Chem.ChiralType.CHI_UNSPECIFIED,
@@ -1346,7 +1344,6 @@ def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
     _assign_stereo_if_needed(rotated)
 
     assert collapse_key(mol) == collapse_key(rotated)
-
 
 
 def test_prepare_store_keeps_the_uncurated_parse_when_asked(tmp_path):
@@ -1393,7 +1390,11 @@ def test_prepare_store_refuses_to_mislabel_an_already_curated_store(tmp_path):
     )
     sdf = tmp_path / "unused.sdf"
     sdf.write_text("")
-    common = dict(stores_root=tmp_path, sdf_path=sdf, stop_before_split=True)
+    common = {
+        "stores_root": tmp_path,
+        "sdf_path": sdf,
+        "stop_before_split": True,
+    }
 
     prepare_store("store", **common)  # curates, writes no copy
     assert not (tmp_path / "store" / UNCURATED_PARQUET).exists()
@@ -1422,21 +1423,16 @@ def test_a_spurious_stereoany_mark_is_not_restored(tmp_path):
     but it was also undoing a correction it made. 731 bonds in 20,551 sampled
     store rows carried the flag for this reason, 3.34% of records.
     """
+    from experiments.prepare_dash import _assign_stereo_if_needed
     from rdkit import Chem
 
-    from experiments.prepare_dash import _assign_stereo_if_needed
-
     mol = _embedded("C=CO")
-    bond = next(
-        b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
-    )
+    bond = next(b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE)
     bond.SetStereo(Chem.BondStereo.STEREOANY)
 
     _assign_stereo_if_needed(mol)
 
-    assert mol.GetBondWithIdx(bond.GetIdx()).GetStereo() == (
-        Chem.BondStereo.STEREONONE
-    )
+    assert mol.GetBondWithIdx(bond.GetIdx()).GetStereo() == (Chem.BondStereo.STEREONONE)
 
 
 @pytest.mark.parametrize(
@@ -1449,14 +1445,11 @@ def test_a_genuine_stereoany_bond_is_perceived_not_dropped(smiles, expected):
     so it reaches the perception path and is read off the coordinates.
     Dropping the flag must not become dropping the chemistry.
     """
+    from experiments.prepare_dash import _assign_stereo_if_needed
     from rdkit import Chem
 
-    from experiments.prepare_dash import _assign_stereo_if_needed
-
     mol = _embedded(smiles)
-    bond = next(
-        b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE
-    )
+    bond = next(b for b in mol.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE)
     assert str(bond.GetStereo()) == expected, "embedding lost the configuration"
     bond.SetStereo(Chem.BondStereo.STEREOANY)  # as an unspecified molblock would
 
