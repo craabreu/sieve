@@ -1306,6 +1306,38 @@ def test_perception_gate_sees_dependent_stereocentres_under_explicit_hs():
     assert len(tagged) == 2, f"expected both dependent centres tagged, got {tagged}"
 
 
+def test_perception_gate_warns_when_it_cannot_strip_hydrogens(monkeypatch, caplog):
+    """A record RDKit cannot strip must still be gated, loudly.
+
+    The heavy-atom probe is what closes the dependent-stereocentre blind
+    spot, so a record it cannot be built for is gated on the explicit-H
+    molecule instead -- with the blind spot back. That degraded path is
+    reachable on a malformed record and silently returns the same ``False``
+    a clean molecule with nothing to perceive returns, so the warning is the
+    only thing distinguishing them and is worth pinning.
+    """
+    import logging
+
+    from rdkit import Chem
+
+    from experiments import prepare_dash
+
+    mol = _fixture_mol("dependent_stereocentres.mol")
+    Chem.RemoveStereochemistry(mol)
+
+    def _boom(_mol):
+        raise ValueError("synthetic RemoveHs failure")
+
+    monkeypatch.setattr(Chem, "RemoveHs", _boom)
+    with caplog.at_level(logging.WARNING, logger=prepare_dash.logger.name):
+        answer = prepare_dash._needs_perception(mol)
+
+    # It falls back rather than propagating, and reports the same blindness
+    # the un-patched gate is there to avoid -- which is why it must warn.
+    assert answer is False
+    assert "heavy-atom probe" in caplog.text
+
+
 def test_non_tetrahedral_tags_are_cleared_so_conformers_share_one_key():
     """``AssignStereochemistryFrom3D`` gives pentavalent P and sulfonic S a
     ``CHI_TRIGONALBIPYRAMIDAL``/``CHI_SQUAREPLANAR`` tag whose permutation
@@ -1456,3 +1488,65 @@ def test_a_genuine_stereoany_bond_is_perceived_not_dropped(smiles, expected):
     _assign_stereo_if_needed(mol)
 
     assert str(mol.GetBondWithIdx(bond.GetIdx()).GetStereo()) == expected
+
+
+def _store_from_mols(tmp_path, mols, dash_ids):
+    """A molecules.parquet from explicit Mol objects, one row each."""
+    import pandas as pd
+    from experiments.data import mol_to_blob
+
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "chembl_id": None,
+                "conf_id": f"conf_{i}",
+                "dash_id": did,
+                "mol": mol_to_blob(mol),
+                "net_charge": 0.0,
+            }
+            for i, (mol, did) in enumerate(zip(mols, dash_ids, strict=True))
+        ]
+    ).to_parquet(store_dir / "molecules.parquet")
+    return store_dir
+
+
+def test_curate_conformers_groups_two_deposits_of_one_structure(tmp_path):
+    """Structure grouping pools deposits, so two `dash_id`s holding the same
+    molecule form ONE group and corroborate each other.
+
+    The two records here carry identical chemistry with the atoms in a
+    different order, which is the case `a.shape != b.shape` cannot see: 15 of
+    400 sampled multi-deposit groups on the real store (~670 of 17,890) are
+    like this. Compared by raw index the charges differ by 1.1 e and both
+    records would be deleted as anomalous; aligned to the key's canonical
+    order they are identical and both survive.
+    """
+    from experiments.prepare_dash import curate_conformers
+    from rdkit import Chem
+
+    first = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    # A spread well beyond the 0.4 e threshold, so mis-paired atoms cannot
+    # agree by accident and the test really is differential.
+    for atom in first.GetAtoms():
+        atom.SetDoubleProp(
+            "MBIScharge", {"C": -0.5, "O": 0.6, "H": 0.1}[atom.GetSymbol()]
+        )
+
+    # The same molecule as a second deposit would store it: heavy atoms last.
+    order = sorted(
+        range(first.GetNumAtoms()),
+        key=lambda i: first.GetAtomWithIdx(i).GetSymbol() != "H",
+    )
+    second = Chem.RenumberAtoms(first, order)
+    assert [a.GetSymbol() for a in first.GetAtoms()] != [
+        a.GetSymbol() for a in second.GetAtoms()
+    ], "the permutation did not change the atom ordering"
+
+    store = _store_from_mols(tmp_path, [first, second], ["Rest_1", "Rest_2"])
+    summary = curate_conformers(store)
+
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
+    # One group, so neither is the "deposited without a sibling" case.
+    assert "structures kept without a same-structure sibling: 0" in summary

@@ -128,9 +128,14 @@ def _needs_perception(mol: Any) -> bool:
     probe = mol
     try:
         probe = Chem.RemoveHs(Chem.Mol(mol))
-    except Exception as exc:  # pragma: no cover -- malformed record
-        # Falling back to the explicit-H molecule reinstates the blind spot
-        # for this one record, so say so rather than degrade silently.
+    except Exception as exc:
+        # A record RDKit cannot strip hydrogens from still has to be gated,
+        # so fall back to the explicit-H molecule -- which reinstates the
+        # blind spot this function exists to close, for this one record.
+        # Warn rather than degrade silently: the caller cannot tell a
+        # molecule with no unassigned centre from one whose centres were
+        # never looked for. Exercised by
+        # ``test_perception_gate_warns_when_it_cannot_strip_hydrogens``.
         logger.warning(
             "could not build a heavy-atom probe (%s); gate may miss "
             "dependent stereocentres for this record",
@@ -786,10 +791,38 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     agree would discard those molecules for being smoothly variable.
 
     Survivors come in pairs **whenever the deposit provided a pair**, so a
-    structure ends with 0, 2 or 3 conformers, or with the single one it was
-    deposited with. That conditional is the honest form of the invariant;
-    the unconditional "survivors come in pairs by construction" is false
-    under the grouping below, for 14,815 structures.
+    structure ends with zero conformers, with the single one it was
+    deposited with, or with at least two. That conditional is the honest
+    form of the invariant; the unconditional "survivors come in pairs by
+    construction" is false under the grouping below, for 14,815 structures.
+
+    **A group is not one deposit's three conformers.** Grouping by structure
+    pools every deposit of that structure, and pools enantiomers too, since
+    ``collapse_key`` takes the smaller of a molecule's canonical SMILES and
+    its mirror's. So a group is not capped at three: 17,474 of them hold
+    more than three conformers, up to 19 across seven ``dash_id``s, and all
+    17,474 span more than one deposit. This is a deliberate widening of the
+    DASH authors' description, whose "the same atom in the three conformers"
+    plainly means one deposit's own three. It is sound because what the rule
+    needs is that the records compared be the *same molecule computed the
+    same way*, which holds here: the corpus is homogeneous in level of
+    theory, so two deposits of one structure are as comparable as two
+    conformers of one deposit, and MBIS charges are invariant under
+    reflection, so an enantiomer's conformers are comparable as well. It
+    also strengthens the criterion, since a failed record now has more
+    siblings to disagree with. What it gives up is the guarantee that a
+    corroborating sibling shares the deposit, which was never the property
+    that mattered.
+
+    What the widening *does* require is that charges be aligned before they
+    are compared. The rule is index-wise, and one deposit's conformers share
+    an atom ordering by construction, so under ``dash_id`` grouping the
+    atom-count check was enough. Across deposits it is not: 3.75% of sampled
+    multi-deposit groups hold the same atoms in a different order. Charges
+    are therefore stored in the key's own canonical order
+    (``collapse._canonical_order``), which is the alignment
+    ``collapse_molecule_set`` already uses to average charges over exactly
+    these groups.
 
     **Grouping is by structure, not by deposit.** ``dash_id`` is the only
     identity on every record -- 49.6% of the corpus has no ``CHEMBL_ID`` --
@@ -824,8 +857,12 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     -0.13 e -- and such a record disagrees with everything, so it is still
     caught by its own structure's siblings when it has any.
 
-    On the real store this removes 2,247 of 1,029,785 conformers (0.218%)
-    and 86 molecules outright.
+    On the real store, **under the superseded ``dash_id`` grouping**, this
+    removed 2,247 of 1,029,785 conformers (0.218%) and 86 identifiers
+    outright. The structure-keyed rule above removes a different set, and
+    the store has not been rebuilt since the change, so these figures stand
+    as the before-comparison rather than as this function's own result.
+    ``curation-key-fix.md`` section 4 says what to measure on the rebuild.
 
     Idempotent, and *verified* rather than assumed: the skip fires only
     when ``curation_summary.txt`` exists **and** the post-curation
@@ -865,18 +902,43 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             actual,
         )
 
-    from experiments.collapse import collapse_key
+    from experiments.collapse import _canonical_order, collapse_key
 
     df = pd.read_parquet(molecules_path)
-    mols = [blob_to_mol(b) for b in df["mol"]]
-    charges = [
-        np.array(
+    # Both the charges and the structure key come off each ``Mol`` in one
+    # pass, so no ``Mol`` outlives its iteration. The saving is modest and
+    # was measured rather than assumed: retaining all 40,000 mols of one row
+    # group costs 146 B/mol over dropping them, ~0.15 GB across the
+    # uncurated parse, because glibc keeps the freed arena rather than
+    # returning it and the peak is nearly the same either way. The reason to
+    # stream anyway is that the live set stays bounded instead of depending
+    # on allocator behaviour, which is the same caution
+    # ``runner.load_molecule_set`` documents after a shard fit exhausted
+    # 503 GB by materializing rows no caller had asked for.
+    charges: list[np.ndarray] = []
+    keys: list[str] = []
+    for blob in df["mol"]:
+        mol = blob_to_mol(blob)
+        key = collapse_key(mol)
+        own = np.array(
             [a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms()],
             dtype=np.float64,
         )
-        for mol in mols
-    ]
-    keys = [collapse_key(mol) for mol in mols]
+        # Stored in the KEY's canonical order, not the record's own. The
+        # comparison below is index-wise, which was safe while a group was
+        # one deposit's conformers -- those share an atom ordering by
+        # construction -- and is not safe now that a group pools deposits
+        # and enantiomers. Measured on the store: of 400 sampled groups
+        # spanning more than one deposit, 15 (3.75%, ~670 of 17,890) carry
+        # the same atoms in a DIFFERENT order, which `a.shape != b.shape`
+        # cannot see. Comparing those by index pits one atom against
+        # another and fails both ways -- a spurious disagreement, or a
+        # spurious agreement certifying a record that should have failed.
+        # ``_canonical_order`` is the same alignment ``collapse_molecule_set``
+        # uses to average charges over one of these groups, so curation and
+        # the fit now mean the same thing by "the same atom".
+        charges.append(own[_canonical_order(mol, key)])
+        keys.append(key)
 
     keep = np.zeros(len(df), dtype=bool)
     n_molecules_dropped = 0
@@ -895,9 +957,11 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             for j in range(i + 1, len(rows)):
                 a, b = charges[rows[i]], charges[rows[j]]
                 if a.shape != b.shape:
-                    # One structure key with differing atom counts cannot be
-                    # compared atom-by-atom; treat the pair as disagreeing
-                    # rather than crashing or silently broadcasting.
+                    # Defensive only: one canonical SMILES implies one atom
+                    # count, so this should be unreachable under structure
+                    # grouping (0 occurrences across the sampled
+                    # multi-deposit groups). Kept so a malformed record
+                    # cannot crash or silently broadcast.
                     continue
                 if float(np.abs(a - b).max()) <= threshold:
                     survivors.update((rows[i], rows[j]))

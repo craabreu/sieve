@@ -137,8 +137,52 @@ The same section describes the criterion as comparing "the same atom in the thre
 conformers" of a molecule, which is true only for identifiers holding a single structure.
 
 Both are repaired by the fix rather than by rewording: with `collapse_key` grouping and
-part 2 above, the criterion does compare the same atom in the same molecule, and the
-invariant becomes true as soon as it is stated conditionally.
+part 2 above, the criterion does compare the same atom in the same molecule.
+
+The invariant, however, does not simply become true once conditioned — it has to be
+restated, because structure grouping also **widens** what a group is. It pools every
+deposit of a structure, and pools enantiomers too, since the key takes the smaller of a
+molecule's canonical SMILES and its mirror's. Measured on the store: **17,474 groups
+hold more than three conformers, up to 19 across seven identifiers, and every one of
+those 17,474 spans more than one deposit.** So "a molecule ends with zero, two, or three
+conformers" is false in the other direction as well, and the replacement is: a structure
+ends with zero conformers, with the single one it was deposited with, or with at least
+two.
+
+**This widening is deliberate and the manuscript should say so**, in one or two sentences
+in §\ref{sec:curation of anomalous conformers}. The DASH authors' phrase — "the
+difference between the partial charge of the same atom in the three conformers" — plainly
+means one deposit's own three, so pooling across deposits is a departure from the letter
+of the description, and the paper presents the criterion as a faithful reconstruction.
+It is nonetheless the right reading, and the argument is short: what the rule requires is
+that the records compared be the same molecule computed the same way. The corpus is
+homogeneous in level of theory, as §\ref{sec:the dash charges corpus} already
+establishes, so two deposits of one structure are as comparable as two conformers of one
+deposit; and MBIS charges are invariant under reflection, so an enantiomer's conformers
+are comparable as well. Pooling strengthens the criterion rather than weakening it, since
+a failed record then has more siblings to disagree with. What it gives up — the guarantee
+that a corroborating sibling came from the same deposit — was never the property that
+mattered, because a deposit is not a structure, which is the whole reason for the change.
+
+### The widening requires aligning atoms before comparing
+
+Found while implementing §3, and not obvious from the plan. The rule compares
+charges **index-wise**, which was safe only because one deposit's conformers share
+an atom ordering by construction. Pooling deposits removes that guarantee, and the
+existing `a.shape != b.shape` guard cannot see the difference: of 400 sampled groups
+spanning more than one deposit, **15 (3.75%, ~670 of 17,890) hold the same atoms in
+a different order**.
+
+Compared by raw index those pairs pit one atom against another, which fails in both
+directions — a spurious disagreement that deletes a sound record, or a spurious
+agreement that certifies a failed one. Neither is visible in the output; both look
+like ordinary charge comparisons.
+
+The fix is already in the codebase: `collapse._canonical_order(mol, key)`, the same
+alignment `collapse_molecule_set` uses to average charges over exactly these groups.
+Applying it resolves all 15 sampled cases, and makes curation and the fit mean the
+same thing by "the same atom". Charges are stored in the key's canonical order at
+read time, so the comparison itself is unchanged.
 
 Two further notes for the rewrite. The curation subsection should say which key the
 grouping uses and why, since `dash_id`-versus-structure is now a recurring distinction in
@@ -151,7 +195,8 @@ faithful.
 1. Land `store-build-fixes.md` §1 and §2 first — they change which records are distinct
    structures, and therefore what `collapse_key` grouping means here.
 2. Make the two-part change of §3, with a test pinning that a single-conformer structure
-   inside a mixed identifier survives.
+   inside a mixed identifier survives, and one pinning that a structure deposited twice
+   forms a single group.
 3. Rebuild, saving the uncurated parquet, and run §4's three counts.
 4. Update `main.tex` per §5, and re-run `curation_risk.py` on the new store to confirm
    the cross-structure comparison no longer happens at all.
