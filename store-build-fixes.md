@@ -9,6 +9,9 @@ change once the store is rebuilt, and §6, the scripts that produced them.
 **Branch:** measured on `fix-dash-stereo-perception` @ `1603aee`, against
 `experiments/stores/dash-molecules/molecules.parquet` as rebuilt 2026-09-20 20:05, with
 `molecules.parquet.pre-stereofix.bak` as the before-comparison.
+**Companion:** `curation-key-fix.md` covers the 0.4 e conformer criterion, which
+groups on `dash_id` rather than on a structure key. The two interact: §1 below
+increases the population that defect affects, so they should land together.
 **Provenance:** every figure below is measured on the real store, on the date above.
 Sample strides are stated per measurement. Nothing is estimated.
 
@@ -300,6 +303,7 @@ current store or at `molecules.parquet.pre-stereofix.bak` for a before/after pai
 | `audit_store.py` | §0's checks in one pass: tag census, `STEREOANY` count, declared parity vs coordinates | `... <parquet> <stride>` |
 | `lone_pair_probe.py` | §4's evidence that RDKit has no lone-pair pseudoatom and how it scores three-coordinate centres | no arguments |
 | `dump_two.py` | the phosphorane groups of §2, printed per key | `... <parquet>` |
+| `curation_risk.py` | `curation-key-fix.md`'s measurement: identifiers spanning several structures, structures with no same-structure sibling, and whether cross-structure pairs pass the 0.4 e test | `... <parquet>` |
 
 Three things to know before trusting a re-run.
 
@@ -324,10 +328,12 @@ Runtimes are minutes: the full test split is ~40 s per store for
 
 1. Item 1, the gate. It is the only one that changes the fit targets.
 2. Item 2, the exotic tags. Cheap, and it closes the artifact population.
-3. Rebuild the store; keep `molecules.parquet.pre-stereofix.bak` and add a
+3. `curation-key-fix.md` §3, the grouping key, before rebuilding.
+4. Rebuild the store, **saving the uncurated parquet** (`curation-key-fix.md` §4);
+   keep `molecules.parquet.pre-stereofix.bak` and add a
    `.pre-gatefix.bak` alongside it, since every number in §5 is a before/after pair.
-4. Re-run §5's measurements and update `stereochemistry.md` §2, §2.0, §3 and §10.
-5. Item 3, the `STEREOANY` decision, and item 4, the convention note in
+5. Re-run §5's measurements and update `stereochemistry.md` §2, §2.0, §3 and §10.
+6. Item 3, the `STEREOANY` decision, and item 4, the convention note in
    `tetrahedral-chirality.md` §6.
 
 **Commit the measurement harness this time.** `stereochemistry.md`'s provenance note
