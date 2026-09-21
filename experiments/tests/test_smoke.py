@@ -485,6 +485,7 @@ def test_load_molecule_set_materializes_only_the_requested_splits(tmp_path):
         stores_root=tmp_path,
     )
     assert got.n_conformers == 3  # not 6
+    assert got.split is not None  # narrowed for ty: the attribute is optional
     assert set(got.split) == {"s00"}
     assert masks["s00"].all()
     # and the selection a shard fit performs still yields exactly those rows
