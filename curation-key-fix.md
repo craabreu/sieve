@@ -143,12 +143,18 @@ should not be quoted alone.
    both; they are different molecules, so the difference was chemistry, not an MBIS
    failure. Both survive in the rebuilt store.
 
-> **Open discrepancy.** `curation-audit-correction.md` §2 gives **20** for item 2; this
-> run measures **21**. Ruled out as explanations: a partner that does not itself survive
-> curation (all 21 have surviving partners), and a threshold boundary (the tightest
-> margin is 0.3982 e, none within 0.002 of 0.4). The 21 are listed in
-> `experiments/results/curation-deletions.log`. Reconcile before either figure reaches
-> the manuscript.
+> **The 21-vs-20 discrepancy, resolved: it is a unit, not a disagreement.**
+> `curation-audit-correction.md` §2 says 20, this run says 21, and both are right.
+> The wrongly deleted records are **21 conformers** spanning **20 distinct structures**:
+> `Rest_8872 conf_2` and `Rest_144442 conf_2` are the same structure deposited under two
+> identifiers, agreeing to 0.0372 e. They are each other's corroborating partner, and the
+> old rule deleted both — the sharpest illustration of the defect in the corpus, since
+> two records that vouch for each other were discarded purely because the grouping key
+> was a deposit identifier. State the unit wherever either number is quoted; the
+> criterion acts on conformers, so 21 is the natural figure for a sentence about records
+> removed, and 20 for one about molecules affected. Ruled out on the way: partners that
+> do not themselves survive curation (all 21 have surviving partners) and a threshold
+> boundary (tightest margin 0.3982 e).
 
 The prediction above — "small, possibly zero" — was right about the magnitude and wrong
 about where to look. The 817/817 agreement rate says diastereomers under one identifier
