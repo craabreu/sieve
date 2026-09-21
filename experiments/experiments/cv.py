@@ -33,6 +33,7 @@ same raw prediction and costs nothing extra to also report unnormalized
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -152,6 +153,50 @@ def cv_model_cache_dir(cache_root: str | Path, predictor: str, key: str) -> Path
     depth -- so two families can never collide in one cache root.
     """
     return Path(cache_root) / predictor / key
+
+
+def store_identity(store: str, *, stores_root: Path | None = None) -> dict[str, str]:
+    """What a cached model was fitted *on*, for the sidecar to check.
+
+    ``train_shards`` and ``schema_version`` describe the partition and the
+    vocabulary, and a store can change while leaving both alone: re-deriving
+    ``collapse_key`` changes which rows are one fitting unit without touching
+    the split or the config. That happened -- correcting the stereo perception
+    in ``prepare_dash`` moved 2.38% of rows to a different key -- and because
+    the cache path carries no store at all, every entry would have been reused
+    silently under the old sidecar.
+
+    The digest is over a column rather than the file, so a store rewritten with
+    identical content still hits. ``collapse_key`` is the column that decides
+    fitting units, and ``dash_id`` stands in for a store that has not been
+    through ``annotate_collapse`` -- there the units are the rows themselves.
+    Which column was used is recorded, so a store that later gains a
+    ``collapse_key`` cannot match an entry digested from its row ids.
+
+    Not memoised: it costs a second or two against runs measured in hours, and
+    a cache keyed on mtime silently returns a stale digest for two writes
+    inside one filesystem tick.
+    """
+    import pyarrow.parquet as pq
+
+    root = Path(stores_root) if stores_root is not None else DEFAULT_STORES_ROOT
+    path = root / store / "molecules.parquet"
+    available = set(pq.ParquetFile(path).schema_arrow.names)
+    column = next((c for c in ("collapse_key", "dash_id") if c in available), None)
+    if column is None:
+        raise ValueError(
+            f"store {store!r} has neither 'collapse_key' nor 'dash_id'; "
+            "nothing identifies what a cached model was fitted on"
+        )
+    digest = hashlib.blake2b(digest_size=16)
+    for value in pq.read_table(path, columns=[column]).column(column).to_pylist():
+        digest.update(b"" if value is None else str(value).encode())
+        digest.update(b"\x00")
+    return {
+        "store": str(store),
+        "store_column": column,
+        "store_digest": digest.hexdigest(),
+    }
 
 
 def _cache_entry(cache_dir: Path, repeat: int, fold: int) -> tuple[Path, Path]:
@@ -1457,7 +1502,7 @@ def run_dash_cv(
                 repeat=repeat,
                 plan=plan,
                 load_one=load_node_stats,
-                sidecar_extra={},
+                sidecar_extra=store_identity(store, stores_root=stores_root),
             )
         if train_stats is None:
             shards = stats_by_shard()
@@ -1470,7 +1515,7 @@ def run_dash_cv(
                     plan=plan,
                     models=train_stats,
                     save_one=save_node_stats,
-                    sidecar_extra={},
+                    sidecar_extra=store_identity(store, stores_root=stores_root),
                 )
 
         for fold, group in enumerate(plan.groups):
@@ -1657,7 +1702,10 @@ def run_sieve_cv(
         )
         # schema_version pins the vocabulary and depth the fits were built
         # with; a cached model that disagrees is not the same model.
-        sidecar = {"schema_version": reference.config.schema_version}
+        sidecar = {
+            "schema_version": reference.config.schema_version,
+            **store_identity(store, stores_root=stores_root),
+        }
 
     mset_by_shard = load_shards(store, ids, stores_root=stores_root)
     git_info = _check_clean(allow_dirty)

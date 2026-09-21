@@ -1327,3 +1327,73 @@ def test_collapse_train_scoring_scores_the_population_the_fit_saw():
     collapsed = _collapse_for_train_scoring(mset, True)
     assert collapsed.n_conformers == 2  # the two conformers became one unit
     assert mset.n_conformers == 3  # and the original is not mutated
+
+def _tiny_store(root, name, keys):
+    """A store carrying just the one column ``store_identity`` reads."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table({"collapse_key": pa.array(keys, pa.string())}),
+        path / "molecules.parquet",
+    )
+    return path
+
+
+def test_store_identity_tracks_content_not_just_the_name(tmp_path):
+    """The dangerous case is a store rebuilt *in place*: same name, same
+    split, same config, different collapse keys. Nothing else in the sidecar
+    moves, so only a content digest can tell the two apart.
+    """
+    from experiments.cv import store_identity
+
+    _tiny_store(tmp_path, "s", ["a", "b", "c"])
+    before = store_identity("s", stores_root=tmp_path)
+
+    _tiny_store(tmp_path, "s", ["a", "b", "d"])
+    after = store_identity("s", stores_root=tmp_path)
+
+    assert before["store"] == after["store"] == "s"
+    assert before["store_digest"] != after["store_digest"]
+
+
+def test_store_identity_is_stable_for_identical_content(tmp_path):
+    """A store rewritten with the same keys must still hit the cache -- the
+    digest is over the column, not over the file."""
+    from experiments.cv import store_identity
+
+    _tiny_store(tmp_path, "s", ["a", "b", "c"])
+    first = store_identity("s", stores_root=tmp_path)
+    _tiny_store(tmp_path, "t", ["a", "b", "c"])
+    second = store_identity("t", stores_root=tmp_path)
+
+    assert first["store_digest"] == second["store_digest"]
+
+
+def test_a_cache_entry_from_another_store_is_refused(tmp_path):
+    """End of the chain: a sidecar written for one corpus must not satisfy a
+    request for another, which is what stops a re-run silently reporting
+    models fitted on the previous store."""
+    import pytest
+    from experiments.cv import (
+        _check_cache_sidecar,
+        _write_cache_sidecar,
+        store_identity,
+    )
+
+    _tiny_store(tmp_path, "old", ["a", "b", "c"])
+    _tiny_store(tmp_path, "new", ["a", "b", "d"])
+    side = tmp_path / "r0-f0.json"
+    _write_cache_sidecar(
+        side,
+        {**store_identity("old", stores_root=tmp_path), "train_shards": ["s00"]},
+    )
+
+    # Same partition, same shards -- only the corpus differs.
+    with pytest.raises(RuntimeError, match="does not match what was asked for"):
+        _check_cache_sidecar(
+            side,
+            {**store_identity("new", stores_root=tmp_path), "train_shards": ["s00"]},
+        )
