@@ -39,10 +39,12 @@ class NodeBatch:
     graph_id: np.ndarray  # (n_nodes,) int64
     y: np.ndarray | None = None  # (n_nodes, d) float64
     elements: np.ndarray | None = None  # (n_nodes,) int64, for the alignment guard
+    stereo_bonds: np.ndarray | None = None  # (n_stereo, 7) int64
 
     def __post_init__(self) -> None:
         self._check_shapes()
         self._check_edges()
+        self._check_stereo_bonds()
 
     def _check_shapes(self) -> None:
         n = self.node_attrs.shape[0]
@@ -117,6 +119,63 @@ class NodeBatch:
         obj._check_shapes()
         return obj
 
+    def _check_stereo_bonds(self) -> None:
+        """Validate the stereogenic-double-bond table, if present.
+
+        Columns are ``[a, b, a1, a2, b1, b2, cis]``: the two sp2 atoms, each
+        end's controlling substituents, and whether ``a1`` and ``b1`` lie on
+        the same side. Every check here is a corpus bug that would otherwise
+        produce a plausible *wrong* code rather than an error -- the code is
+        consumed into a class label at refinement time, so nothing downstream
+        can notice.
+        """
+        sb = self.stereo_bonds
+        if sb is None:
+            return
+        if sb.ndim != 2 or sb.shape[1] != 7:
+            raise ValueError(
+                f"stereo_bonds must have shape (n_stereo, 7), got {sb.shape}"
+            )
+        n = self.node_attrs.shape[0]
+        a, b, a1, a2, b1, b2, cis = (sb[:, j] for j in range(7))
+        if ((a1 < 0) | (b1 < 0)).any():
+            raise ValueError(
+                "stereo_bonds: -1 marks an absent substituent and is allowed "
+                "only in the second slot of each end (columns a2, b2)"
+            )
+        for name, col in (("a", a), ("b", b), ("a1", a1), ("b1", b1)):
+            if ((col < 0) | (col >= n)).any():
+                raise ValueError(f"stereo_bonds column {name} is out of range [0, {n})")
+        for name, col in (("a2", a2), ("b2", b2)):
+            bad = (col < -1) | (col >= n)
+            if bad.any():
+                raise ValueError(f"stereo_bonds column {name} is out of range [-1, {n})")
+        if ((cis < 0) | (cis > 1)).any():
+            raise ValueError("stereo_bonds: the cis column must be 0 or 1")
+
+        # Adjacency, vectorized: one sorted key per directed edge.
+        key = self.edge_src * n + self.edge_dst
+        order = np.argsort(key, kind="stable")
+        sorted_key = key[order]
+
+        def present(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+            want = u * n + v
+            pos = np.searchsorted(sorted_key, want)
+            pos = np.clip(pos, 0, sorted_key.shape[0] - 1)
+            return sorted_key[pos] == want
+
+        if not present(a, b).all() or not present(b, a).all():
+            raise ValueError(
+                "stereo_bonds: (a, b) is not an edge in both directions"
+            )
+        for end, sub, label in ((a, a1, "a1"), (b, b1, "b1")):
+            if not present(end, sub).all():
+                raise ValueError(f"stereo_bonds: {label} is not adjacent to its end")
+        for end, sub, label in ((a, a2, "a2"), (b, b2, "b2")):
+            have = sub >= 0
+            if have.any() and not present(end[have], sub[have]).all():
+                raise ValueError(f"stereo_bonds: {label} is not adjacent to its end")
+
     @property
     def n_nodes(self) -> int:
         return int(self.node_attrs.shape[0])
@@ -170,6 +229,27 @@ class NodeBatch:
         # selection: the sub-batch inherits bidirectionality and in-range
         # endpoints from a parent that already had them. Re-deriving that is
         # the single most expensive thing this class does, so it is skipped.
+        stereo_bonds = None
+        if self.stereo_bonds is not None:
+            sb = self.stereo_bonds
+            # A stereo bond's six atom columns (all but the trailing `cis`
+            # flag) must all be selected together, or dropped together: -1 is
+            # already the sentinel for "absent substituent" in a2/b2, so a
+            # half-selected row would remap a *present* substituent to -1 and
+            # make it indistinguishable from an absent one -- a wrong stereo
+            # code with no error, not merely a dropped one. `NodeBatch`'s own
+            # contract (callers select whole graphs) means this is normally
+            # all-or-nothing already; checking every column costs nothing and
+            # holds even if that contract is ever violated.
+            cols = sb[:, :6]
+            has = cols >= 0
+            selected = np.where(has, mask[np.where(has, cols, 0)], True)
+            row_keep = selected.all(axis=1)
+            remapped = np.where(has, remap[np.where(has, cols, 0)], -1)
+            stereo_bonds = np.concatenate(
+                [remapped[row_keep], sb[row_keep, 6:7]], axis=1
+            )
+
         return NodeBatch._with_trusted_edges(
             node_attrs=self.node_attrs[sel],
             edge_src=remap[self.edge_src[keep]],
@@ -178,6 +258,7 @@ class NodeBatch:
             graph_id=self.graph_id[sel],
             y=None if self.y is None else self.y[sel],
             elements=None if self.elements is None else self.elements[sel],
+            stereo_bonds=stereo_bonds,
         )
 
     def csr(self) -> CSRLayout:
@@ -239,6 +320,9 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         raise ValueError(
             "cannot concat batches where elements is set on some but not all"
         )
+    has_stereo_bonds = {p.stereo_bonds is not None for p in parts}
+    if len(has_stereo_bonds) > 1:
+        raise ValueError("stereo_bonds is set on some but not all parts")
 
     node_attrs = np.concatenate([p.node_attrs for p in parts], axis=0)
     y = np.concatenate([p.y for p in parts], axis=0) if has_y == {True} else None
@@ -248,7 +332,7 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         else None
     )
 
-    edge_src, edge_dst, edge_attrs, graph_id = [], [], [], []
+    edge_src, edge_dst, edge_attrs, graph_id, stereo_bonds = [], [], [], [], []
     node_off = 0
     graph_off = 0
     for p in parts:
@@ -258,6 +342,15 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         _, inv = np.unique(p.graph_id, return_inverse=True)
         dense_gid = np.asarray(inv, dtype=np.int64).ravel()
         graph_id.append(dense_gid + graph_off)
+        if p.stereo_bonds is not None:
+            sb = p.stereo_bonds.copy()
+            # Only the six atom columns move with the node offset; -1 (an
+            # absent second substituent) must stay -1, and the trailing `cis`
+            # column is a boolean flag, not an index.
+            cols = sb[:, :6]
+            has = cols >= 0
+            cols = np.where(has, cols + node_off, -1)
+            stereo_bonds.append(np.concatenate([cols, sb[:, 6:7]], axis=1))
         node_off += p.n_nodes
         graph_off += int(np.max(dense_gid)) + 1 if dense_gid.size else 0
 
@@ -275,6 +368,9 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         graph_id=np.concatenate(graph_id),
         y=y,
         elements=elements,
+        stereo_bonds=(
+            np.concatenate(stereo_bonds, axis=0) if has_stereo_bonds == {True} else None
+        ),
     )
 
 
