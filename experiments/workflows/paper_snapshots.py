@@ -33,15 +33,13 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
-import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "experiments"))
 
-from experiments.compare import (  # noqa: E402
+from experiments.compare import (
     read_cv_table,
     repeated_measures_anova,
     tukey_hsd,
@@ -117,7 +115,7 @@ def head_commit() -> str:
 
 def _stamp(study: str, note: str) -> dict:
     return {
-        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_repo_commit": head_commit(),
         "store": STORE,
         "study": study,
@@ -201,7 +199,7 @@ def _fold_series(experiment: str, method: str, metric: str) -> list[dict]:
     series = []
     for depth in sorted(by_depth):
         entry = {"depth": depth}
-        entry.update({k: v for k, v in by_depth[depth].items()})
+        entry.update(by_depth[depth])
         series.append(entry)
     return series
 
