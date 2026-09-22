@@ -1095,6 +1095,17 @@ the scope of the task where they surfaced rather than deferred:
   existing per-atom loop already applies for a custom `node_order`, not a
   plain node-count offset as the plan's prose suggested. Caught by a test
   that reverses a molecule's atom order and checks the emitted indices.
+- **After all 7 tasks, at the finishing-branch checkpoint**, asked directly
+  "does this branch break backward compatibility" surfaced a fourth gap no
+  task's tests exercised: `SieveModel.save()`/`.load()` reconstruct
+  `SieveConfig` through an explicit field whitelist on each side, and
+  `stereo` was in neither. A stereo-enabled model fit correctly in memory
+  but could not survive a save/load round trip -- `save()` silently
+  dropped the field, and `load()`'s reconstructed `stereo=()` no longer
+  matched the stored digest, so it raised. Fixed in `src/sieve/model.py`
+  without a `FORMAT_VERSION` bump, since bumping it would have refused
+  every already-saved `.npz` on disk for a field whose absence has one
+  unambiguous reading (the feature did not exist yet), not a guess.
 
 ## Not in this plan
 
