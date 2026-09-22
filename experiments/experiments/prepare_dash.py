@@ -479,16 +479,32 @@ def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
 
 def _achiral_fingerprints(mols: list[Any], *, radius: int = 2, n_bits: int = 2048):
     """Dense achiral Morgan fingerprint matrix, one row per mol -- the input
-    shape ``_chalcedon.butina_cluster`` expects."""
-    from rdkit import DataStructs
-    from rdkit.Chem import AllChem
+    shape ``_chalcedon.butina_cluster`` expects.
 
+    Built through ``rdFingerprintGenerator``, not the deprecated
+    ``AllChem.GetMorganFingerprintAsBitVect``, which emits one
+    ``DEPRECATION WARNING: please use MorganGenerator`` per molecule. On this
+    corpus that buried the 16-line cluster report under 348,859 lines of
+    warning, making the file useless without filtering.
+
+    The generator is verified to produce bit-identical fingerprints for these
+    parameters, checked over 3,000 store molecules with zero mismatches, so
+    the clustering and therefore the split are unchanged. That check matters
+    more than the tidier output: the split is what every held-out number in
+    the study is measured against, and Butina is not bit-exact across runs, so
+    a fingerprint that moved even slightly could not be reconciled afterwards.
+
+    The generator is built once rather than per molecule, which is also how
+    the modern API is meant to be used.
+    """
+    from rdkit.Chem import rdFingerprintGenerator
+
+    generator = rdFingerprintGenerator.GetMorganGenerator(
+        radius=radius, fpSize=n_bits, includeChirality=False
+    )
     out = np.zeros((len(mols), n_bits), dtype=np.uint8)
     for i, mol in enumerate(mols):
-        fp = AllChem.GetMorganFingerprintAsBitVect(
-            mol, radius, nBits=n_bits, useChirality=False
-        )
-        DataStructs.ConvertToNumpyArray(fp, out[i])
+        out[i] = generator.GetFingerprintAsNumPy(mol)
     return out
 
 

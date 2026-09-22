@@ -4,6 +4,8 @@ test_smoke.py's job)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_build_parser_rejects_the_removed_run_nested_command():
     """run-nested was removed when the nested-run machinery
@@ -658,3 +660,34 @@ def test_analytic_curve_writes_a_csv(tmp_path):
     rows = list(csv.DictReader(out.open()))
     assert [r["depth"] for r in rows] == ["1", "2", "3"]
     assert float(rows[0]["rmse"]) > float(rows[-1]["rmse"])
+
+
+def test_merge_states_creates_the_output_directory(tmp_path, monkeypatch):
+    """The predictors disagree about whose job this is: DASH's merge_states
+    creates the output directory while Sieve's writes straight through
+    np.savez, which does not. The command owns --out, so it creates it.
+
+    Without this, merge-sieve-shards failed with FileNotFoundError after a
+    full campaign had already run, which is the most expensive place to
+    discover a missing mkdir.
+    """
+    import argparse
+
+    from experiments import cli
+
+    written = {}
+
+    class _Stub:
+        def merge_states(self, shards, out):
+            written["out"] = out
+            Path(out).write_text("merged")
+
+    monkeypatch.setattr(cli, "build_predictor", lambda *a, **k: _Stub(), raising=False)
+    monkeypatch.setattr(
+        "experiments.predictors.build", lambda *a, **k: _Stub(), raising=False
+    )
+
+    out = tmp_path / "does" / "not" / "exist" / "tree_stats.npz"
+    args = argparse.Namespace(predictor="sieve", out=str(out), shard=["a.npz"])
+    assert cli._cmd_merge_states(args) == 0
+    assert out.exists(), "merge-states did not create the output directory"

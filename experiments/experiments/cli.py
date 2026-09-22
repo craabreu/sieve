@@ -226,6 +226,13 @@ def _cmd_merge_states(args: argparse.Namespace) -> int:
     merge_states = getattr(predictor, "merge_states", None)
     if merge_states is None:
         raise SystemExit(f"predictor {args.predictor!r} has no merge_states method")
+    # The predictors disagree about whose job this is: DASH's merge_states
+    # creates the output directory, Sieve's writes straight through np.savez,
+    # which does not. Creating it here settles it for every predictor at the
+    # layer that owns --out, rather than in each one. Without it
+    # merge-sieve-shards died on FileNotFoundError after the whole campaign
+    # had run.
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     merge_states(args.shard, args.out)
     print(f"merged {len(args.shard)} shard(s) -> {args.out}")
     return 0

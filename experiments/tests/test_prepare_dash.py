@@ -1550,3 +1550,30 @@ def test_curate_conformers_groups_two_deposits_of_one_structure(tmp_path):
     assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
     # One group, so neither is the "deposited without a sibling" case.
     assert "structures kept without a same-structure sibling: 0" in summary
+
+
+def test_achiral_fingerprints_match_the_deprecated_api():
+    """The generator must reproduce AllChem.GetMorganFingerprintAsBitVect
+    exactly, since the clustering built from these fingerprints defines the
+    split every held-out number is measured against, and Butina is not
+    bit-exact across runs -- a fingerprint that moved could not be reconciled
+    after the fact.
+    """
+    import numpy as np
+    from experiments.prepare_dash import _achiral_fingerprints
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import AllChem
+
+    smiles = ["CCO", "c1ccccc1O", "C[C@H](N)C(=O)O", "C1CC2CCC1C2", "FC(F)(F)c1ccncc1"]
+    mols = [Chem.AddHs(Chem.MolFromSmiles(s)) for s in smiles]
+
+    got = _achiral_fingerprints(mols)
+    for i, mol in enumerate(mols):
+        want = np.zeros(2048, dtype=np.uint8)
+        DataStructs.ConvertToNumpyArray(
+            AllChem.GetMorganFingerprintAsBitVect(
+                mol, 2, nBits=2048, useChirality=False
+            ),
+            want,
+        )
+        assert np.array_equal(got[i], want), f"fingerprint changed for {smiles[i]}"
