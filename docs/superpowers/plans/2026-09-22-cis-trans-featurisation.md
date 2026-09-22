@@ -46,7 +46,7 @@
 **Interfaces:**
 - Produces: `SieveConfig.stereo: tuple[str, ...]` (default `()`), `SieveConfig.stereo_radices: tuple[int, ...]`, module constants `STEREO_TRACKS: tuple[str, ...]` and `STEREO_RADIX: int = 4`. `n_edge_types` keeps its name and meaning.
 
-- [ ] **Step 1: Capture today's digest so the compatibility test is real**
+- [x] **Step 1: Capture today's digest so the compatibility test is real**
 
 Run this first and paste the literal into the test below:
 
@@ -59,7 +59,7 @@ cfg = SieveConfig(target_dim=1, attribute_levels=(('element',),),
 print(cfg.schema_version)"
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```python
 def _ref_config(**kw):
@@ -96,12 +96,12 @@ def test_an_unknown_stereo_track_is_rejected():
         _ref_config(stereo=("helical",))
 ```
 
-- [ ] **Step 3: Run them to verify they fail**
+- [x] **Step 3: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_config.py -k stereo -v`
 Expected: FAIL — `SieveConfig.__init__() got an unexpected keyword argument 'stereo'`
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 In `src/sieve/config.py`, beside the other module constants:
 
@@ -158,12 +158,12 @@ In `schema_version`, add the key **conditionally**, after the `edge_codes` entry
             payload["stereo"] = list(self.stereo)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_config.py -v`
 Expected: PASS, including the pre-existing tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/sieve/config.py tests/test_config.py
@@ -182,7 +182,7 @@ git commit -m "feat(config): a stereo track widens the edge alphabet and the dig
 - Consumes: nothing from Task 1.
 - Produces: `NodeBatch.stereo_bonds: np.ndarray | None = None`, shape `(n_stereo, 7)` int64, columns `[a, b, a1, a2, b1, b2, cis]`. `-1` permitted only in `a2`/`b2`. Validated in `__post_init__` by `_check_stereo_bonds`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 import numpy as np
@@ -250,12 +250,12 @@ def test_stereo_bonds_rejects_a_non_boolean_relation():
         _ethene_batch(rows)
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_batch.py -k stereo -v`
 Expected: FAIL — `NodeBatch.__init__() got an unexpected keyword argument 'stereo_bonds'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add the field to `NodeBatch`, after `elements`:
 
@@ -329,12 +329,12 @@ And add the method:
                 raise ValueError(f"stereo_bonds: {label} is not adjacent to its end")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_batch.py -v`
 Expected: PASS, including the pre-existing tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/sieve/batch.py tests/test_batch.py
@@ -353,7 +353,7 @@ git commit -m "feat(batch): carry stereogenic double bonds, validated on constru
 - Consumes: `NodeBatch.stereo_bonds` from Task 2.
 - Produces: `_stereo_bond_rows(mol) -> list[tuple[int, int, int, int, int, int, int]]`, atom indices local to `mol`. `from_rdkit` and `from_smiles` populate `stereo_bonds` when `config.stereo` is non-empty.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_stereo_rows_read_cis_trans_not_cip():
@@ -410,12 +410,12 @@ which is `dataclasses.replace` over a base `SieveConfig`. So write
 `simple_config(stereo=("cis_trans",))` for the enabled one, importing it with
 `from tests.helpers import simple_config`.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_rdkit_adapter.py -k stereo -v`
 Expected: FAIL — `ImportError: cannot import name '_stereo_bond_rows'`
 
-- [ ] **Step 3: Implement the extractor**
+- [x] **Step 3: Implement the extractor**
 
 ```python
 _RDKIT_NO_ATOM = 0xFFFFFFFF  # what controllingAtoms uses for an absent slot
@@ -458,7 +458,7 @@ def _stereo_bond_rows(mol) -> list[tuple[int, int, int, int, int, int, int]]:
     return rows
 ```
 
-- [ ] **Step 4: Populate the batch**
+- [x] **Step 4: Populate the batch**
 
 In `_from_rdkit_sequential`, alongside the per-molecule node offset that already
 exists, accumulate the rows with that offset applied, and pass them to the
@@ -485,12 +485,12 @@ and at construction:
 `reshape(-1, 7)` keeps the shape correct when a corpus has no stereogenic bond
 at all, where `np.array([])` would otherwise be `(0,)` and fail Task 2's check.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_rdkit_adapter.py -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/sieve/io/rdkit_adapter.py tests/test_rdkit_adapter.py
@@ -509,7 +509,7 @@ git commit -m "feat(adapter): extract the local cis/trans relation per double bo
 - Consumes: `CSRLayout` from `sieve.batch`, `_row_keys` from `sieve.dedupe`.
 - Produces: `content_ranks(node_attrs: np.ndarray, csr: CSRLayout, edge_code: np.ndarray, n_rounds: int) -> list[np.ndarray]` returning `n_rounds + 1` arrays of `uint64`, index `j` being the radius-*j* fingerprint.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 import numpy as np
@@ -575,12 +575,12 @@ def test_fingerprints_are_independent_of_batch_composition():
         assert np.array_equal(fp_a[j], fp_t[j][:4])
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_stereo.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'sieve.stereo'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `src/sieve/stereo.py`:
 
@@ -643,12 +643,12 @@ def content_ranks(
     return fp
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_stereo.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/sieve/stereo.py tests/test_stereo.py
@@ -667,7 +667,7 @@ git commit -m "feat(stereo): content-rank fingerprints, invariant to batch compo
 - Consumes: `content_ranks` from Task 4.
 - Produces: `directed_positions(csr: CSRLayout, n_nodes: int, stereo_bonds: np.ndarray) -> tuple[np.ndarray, np.ndarray]` and `cis_trans_codes(stereo_bonds: np.ndarray, fp: np.ndarray) -> np.ndarray` returning one code per stereo bond in `{0, 1, 2}`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from sieve.stereo import cis_trans_codes
@@ -704,12 +704,12 @@ def test_an_end_with_one_substituent_cannot_tie():
     assert cis_trans_codes(rows, fp).tolist() == [2]
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_stereo.py -k cis_trans -v`
 Expected: FAIL — `ImportError: cannot import name 'cis_trans_codes'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `src/sieve/stereo.py`:
 
@@ -768,12 +768,12 @@ def directed_positions(
     return locate(a, b), locate(b, a)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_stereo.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/sieve/stereo.py tests/test_stereo.py
@@ -792,7 +792,7 @@ git commit -m "feat(stereo): resolve the ternary code from a radius's fingerprin
 - Consumes: everything from Tasks 1-5.
 - Produces: no new public names. `refine(batch, config)` gains the behaviour.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def _butene_batch(cis: bool, config):
@@ -862,12 +862,12 @@ def stereo_config(**kw):
 and call `stereo_config()` in each test below, replacing the `stereo_config`
 parameter in the signatures.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_refine.py -k stereo -v`
 Expected: FAIL — the cis and trans chains are identical at every level.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/sieve/refine.py`, import at the top:
 
@@ -923,17 +923,17 @@ Inside the loop, replace the `LEVEL_WL` body's first line:
 
 Initialise `wl_round = 0` immediately before the loop.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_refine.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the whole suite — this task touches the hot path**
+- [x] **Step 5: Run the whole suite — this task touches the hot path**
 
 Run: `.venv/bin/python -m pytest tests/ -q`
 Expected: PASS, no regressions.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/sieve/refine.py tests/test_refine.py
@@ -950,7 +950,7 @@ git commit -m "feat(refine): fold a radius-honest cis/trans code into the pair e
 **Interfaces:**
 - Consumes: the whole feature. Adds no production code; if a test here fails, the fix belongs in Tasks 4-6.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_a_stereo_model_merges_identically_to_a_whole_one():
@@ -1051,13 +1051,13 @@ def test_the_fingerprint_never_sees_the_stereo_trit():
     assert "edge_code" in call and "full" not in call
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_merge.py -k stereo -v`
 Expected: FAIL until Tasks 1-6 are complete; if they pass immediately, the
 fixtures are not exercising the feature — check `stereo_config.stereo`.
 
-- [ ] **Step 3: Fix whatever they catch**
+- [x] **Step 3: Fix whatever they catch**
 
 No new production code is planned here. A failure means one of:
 - codes differ between whole and sharded fits → the fingerprint is seeing
@@ -1066,12 +1066,12 @@ No new production code is planned here. A failure means one of:
 - class counts differ but predictions match → `n_edge_types` is not constant
   across levels (Task 1).
 
-- [ ] **Step 4: Run the whole suite**
+- [x] **Step 4: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest tests/ -q`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_merge.py
@@ -1079,6 +1079,22 @@ git commit -m "test(stereo): the merge monoid holds and reflection is untouched"
 ```
 
 ---
+
+## Execution notes
+
+All 7 tasks completed inline; 299 tests pass, no regressions. Two things
+came up during execution that the plan did not anticipate, both fixed within
+the scope of the task where they surfaced rather than deferred:
+
+- **Task 2** grew to include `NodeBatch.__getitem__` and `concat_batches`,
+  neither of which carried `stereo_bonds` through. Undiscovered, Task 6/7's
+  slicing tests (`b[first]`, `b[graph_id < 3]`) would have silently disabled
+  stereo on every sharded fit. Fixed the same way `elements`/`y` already are:
+  filtered/remapped on slicing, offset and all-or-none checked on concat.
+- **Task 3**'s adapter wiring needed the same `inv[]` permutation the
+  existing per-atom loop already applies for a custom `node_order`, not a
+  plain node-count offset as the plan's prose suggested. Caught by a test
+  that reverses a molecule's atom order and checks the emitted indices.
 
 ## Not in this plan
 
