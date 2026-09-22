@@ -117,6 +117,7 @@ class SieveModel:
             "class_estimator": cfg.class_estimator,
             "shrinkage_weight": cfg.shrinkage_weight,
             "chunk_size": cfg.chunk_size,
+            "stereo": list(cfg.stereo),
         }
         arrays = {
             "config": np.frombuffer(json.dumps(blob).encode(), np.uint8),
@@ -159,6 +160,16 @@ class SieveModel:
             class_estimator=blob["class_estimator"],
             shrinkage_weight=blob["shrinkage_weight"],
             chunk_size=blob["chunk_size"],
+            # .get(), not blob["stereo"]: a file saved before this field
+            # existed has no "stereo" key in its blob at all, not an empty
+            # one, and unlike class_estimator that has an unambiguous
+            # answer -- the feature did not exist yet, so its classes are
+            # stereo-blind by historical fact rather than by guess. No
+            # format_version bump either: bumping it would refuse every
+            # already-saved file on disk for a field whose absence has one
+            # correct reading, which is the opposite of what refusing a
+            # missing class_estimator protects against.
+            stereo=tuple(blob.get("stereo", ())),
         )
         if cfg.schema_version != blob["schema_version"]:
             raise ValueError("schema_version does not match the stored config")
