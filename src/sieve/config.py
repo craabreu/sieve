@@ -191,6 +191,29 @@ class SieveConfig:
             # left level_parents indexing off the end of its own list).
             if self.neighbor_depth == a or self.max_wl_depth == 0:
                 object.__setattr__(self, "neighbor_depth", None)
+        if self.stereo and self.neighbor_depth is not None:
+            # Checked after the normalization above, so the "no coarsening"
+            # spellings still compose with stereo.
+            #
+            # These two do not yet compose, and the failure would be silent.
+            # With a coarse chain, level_kinds is [ATTR]*a + [WL]*d +
+            # [WL_PAIR]*d and level_parents sends the WL block to attribute
+            # level neighbor_depth-1: the LEVEL_WL levels *are* the coarse
+            # chain and the main chain is LEVEL_WL_PAIR. refine folds a
+            # stereo code into LEVEL_WL only, so the code would attach to
+            # the coarse chain -- whose rounds are measured from a shallower
+            # base than the radius the k-2 rule is derived against -- while
+            # the main chain, the one answering at the configured depth,
+            # received no direct code at all. Which chain it belongs on, and
+            # what "honest radius" means for each, is spec work rather than
+            # something to guess here.
+            raise ValueError(
+                f"stereo={list(self.stereo)} cannot be combined with "
+                f"neighbor_depth={self.neighbor_depth}: the stereo code is "
+                "not yet defined for a coarsened chain "
+                "(docs/superpowers/specs/"
+                "2026-09-22-cis-trans-featurisation-design.md)"
+            )
         # An empty edge schema is legal -- it is the pure-topology control arm
         # -- so the zero-width rule above deliberately does not extend here.
         object.__setattr__(self, "edge_attributes", tuple(self.edge_attributes))

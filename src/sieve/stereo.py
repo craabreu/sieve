@@ -6,6 +6,8 @@ readable function; ``refine`` calls in and folds the result.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 
 from sieve.batch import CSRLayout
@@ -33,8 +35,8 @@ def content_ranks(
     csr: CSRLayout,
     edge_code: np.ndarray,
     n_rounds: int,
-) -> list[np.ndarray]:
-    """Radius-resolved content fingerprints, ``fp[j]`` for radius ``j``.
+) -> Iterator[np.ndarray]:
+    """Radius-resolved content fingerprints, ``fp_0 .. fp_{n_rounds}``.
 
     ``fp_0`` is the attribute row; ``fp_j`` mixes ``fp_{j-1}`` of the atom with
     the sorted multiset of its neighbors' ``fp_{j-1}`` paired with the bond.
@@ -55,18 +57,26 @@ def content_ranks(
     already accepts for its own 64-bit keys. ``0`` sorts first, so a lower
     degree still yields more leading zeros than a higher one and the two
     remain distinguishable, matching the reason ``refine.py`` pads with -1.
+
+    **Yields rather than returning a list.** ``refine`` reads ``fp_j`` at WL
+    round ``j + 2``, so ``j`` rises by exactly one per round: the
+    fingerprints are consumed strictly in order, one at a time, and nothing
+    ever indexes backwards. Retaining all of them costs ~1.6 GB on the
+    38.9M-atom train split at depth 6, against ~310 MB for the single array
+    actually in use. A caller that genuinely wants them all can still say
+    ``list(content_ranks(...))``.
     """
     n = node_attrs.shape[0]
-    fp = [_row_keys(node_attrs)]
+    fp = _row_keys(node_attrs)
+    yield fp
     width = max(int(csr.max_deg), 1)
     for _ in range(n_rounds):
-        prev = fp[-1]
-        nb = _mix(prev[csr.dst], edge_code)
+        nb = _mix(fp[csr.dst], edge_code)
         pad = np.zeros((n, width), np.uint64)
         pad[csr.src, csr.slot] = nb
         pad.sort(axis=1)
-        fp.append(_mix(prev, *(pad[:, j] for j in range(width))))
-    return fp
+        fp = _mix(fp, *(pad[:, j] for j in range(width)))
+        yield fp
 
 
 CODE_NONE, CODE_CIS, CODE_TRANS = 0, 1, 2

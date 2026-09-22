@@ -25,7 +25,9 @@ def test_fingerprint_zero_separates_exactly_the_attribute_rows():
 
     batch = _chain(4, [[0], [1], [1], [0]])
     csr = batch.csr()
-    fp = content_ranks(batch.node_attrs, csr, np.zeros(csr.dst.shape[0], np.int64), 0)
+    fp = list(
+        content_ranks(batch.node_attrs, csr, np.zeros(csr.dst.shape[0], np.int64), 0)
+    )
     assert len(fp) == 1
     assert fp[0][0] == fp[0][3] and fp[0][1] == fp[0][2]
     assert fp[0][0] != fp[0][1]
@@ -37,7 +39,9 @@ def test_fingerprints_grow_with_radius():
     # 0-1-2-3 with identical attributes: ends differ from the middle at r=1.
     batch = _chain(4, [[0], [0], [0], [0]])
     csr = batch.csr()
-    fp = content_ranks(batch.node_attrs, csr, np.zeros(csr.dst.shape[0], np.int64), 2)
+    fp = list(
+        content_ranks(batch.node_attrs, csr, np.zeros(csr.dst.shape[0], np.int64), 2)
+    )
     assert len(fp) == 3
     assert fp[0][0] == fp[0][1]  # radius 0: all identical
     assert fp[1][0] != fp[1][1]  # radius 1: degree differs
@@ -50,8 +54,10 @@ def test_fingerprints_are_independent_of_batch_composition():
 
     alone = _chain(4, [[0], [1], [1], [0]])
     csr_a = alone.csr()
-    fp_a = content_ranks(
-        alone.node_attrs, csr_a, np.zeros(csr_a.dst.shape[0], np.int64), 2
+    fp_a = list(
+        content_ranks(
+            alone.node_attrs, csr_a, np.zeros(csr_a.dst.shape[0], np.int64), 2
+        )
     )
 
     # The same path graph, with a second disconnected copy appended.
@@ -65,8 +71,10 @@ def test_fingerprints_are_independent_of_batch_composition():
         graph_id=np.array([0, 0, 0, 0, 1, 1, 1, 1], np.int64),
     )
     csr_t = together.csr()
-    fp_t = content_ranks(
-        together.node_attrs, csr_t, np.zeros(csr_t.dst.shape[0], np.int64), 2
+    fp_t = list(
+        content_ranks(
+            together.node_attrs, csr_t, np.zeros(csr_t.dst.shape[0], np.int64), 2
+        )
     )
     for j in range(3):
         assert np.array_equal(fp_a[j], fp_t[j][:4])
@@ -111,3 +119,19 @@ def test_an_end_with_one_substituent_cannot_tie():
     rows = np.array([[0, 1, 2, -1, 3, -1, 0]], np.int64)
     fp = np.zeros(4, np.uint64)  # everything ties
     assert cis_trans_codes(rows, fp).tolist() == [2]
+
+
+def test_content_ranks_yields_incrementally_without_retaining_every_radius():
+    """refine consumes fp[j] with j = wl_round - 2, which increases by exactly
+    one per round, so the fingerprints are used strictly in order and one at
+    a time. Materializing all of them costs ~1.6 GB on the 38.9M-atom train
+    split at depth 6, against ~310 MB for the one actually in use."""
+    import types
+
+    from sieve.stereo import content_ranks
+
+    batch = _chain(4, [[0], [1], [1], [0]])
+    csr = batch.csr()
+    got = content_ranks(batch.node_attrs, csr, np.zeros(csr.dst.shape[0], np.int64), 3)
+    assert isinstance(got, types.GeneratorType), "must not build the whole list"
+    assert sum(1 for _ in got) == 4  # fp_0 .. fp_3

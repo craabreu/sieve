@@ -271,8 +271,7 @@ def _stereo_bond_rows(mol) -> list[tuple[int, int, int, int, int, int, int]]:
         if element.specified != Chem.StereoSpecified.Specified:
             continue
         controlling = [
-            -1 if int(x) == _RDKIT_NO_ATOM else int(x)
-            for x in element.controllingAtoms
+            -1 if int(x) == _RDKIT_NO_ATOM else int(x) for x in element.controllingAtoms
         ]
         a1, a2, b1, b2 = controlling
         if a1 < 0 or b1 < 0:

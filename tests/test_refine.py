@@ -308,10 +308,11 @@ def test_a_molecule_with_no_stereogenic_bond_is_unaffected_by_the_track():
 
 def test_a_configured_track_without_stereo_bonds_raises():
     import pytest
+
     from sieve.io.rdkit_adapter import from_smiles
     from tests.helpers import simple_config
 
     off_cfg = simple_config(max_wl_depth=3)
     batch = from_smiles(["C/C=C/C"], config=off_cfg)  # no stereo_bonds
-    with pytest.raises(ValueError, match="config.stereo"):
+    with pytest.raises(ValueError, match=r"config\.stereo"):
         refine(batch, stereo_config())

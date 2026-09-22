@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -126,7 +127,7 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     # -- and therefore which substituent wins -- independent of mirroring or
     # remapping.
     stereo_radix = math.prod(config.stereo_radices)
-    fingerprints: list[np.ndarray] = []
+    fingerprints: Iterator[np.ndarray] = iter(())
     pos_ab = pos_ba = None
     if config.stereo:
         if batch.stereo_bonds is None:
@@ -135,9 +136,10 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                 "no stereo_bonds; the adapter was run with a stereo-blind config"
             )
         n_wl = sum(1 for k in kinds if k == LEVEL_WL)
-        fingerprints = content_ranks(
-            batch.node_attrs, csr, edge_code, max(n_wl - 2, 0)
-        )
+        # Consumed one at a time below, never indexed: config refuses
+        # stereo with neighbor_depth, so the WL levels are a single chain
+        # and the radius the code reads rises by exactly one per round.
+        fingerprints = content_ranks(batch.node_attrs, csr, edge_code, max(n_wl - 2, 0))
         pos_ab, pos_ba = directed_positions(csr, n, batch.stereo_bonds)
 
     wl_round = 0
@@ -152,10 +154,9 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                 # the far substituent is two bonds away, outside a radius-1
                 # neighborhood, so the feature stays silent rather than
                 # asserting something the level cannot support.
-                j = wl_round - 2
                 stereo_code = np.zeros(edge_code.shape[0], np.int64)
-                if j >= 0:
-                    codes = cis_trans_codes(batch.stereo_bonds, fingerprints[j])
+                if wl_round >= 2:
+                    codes = cis_trans_codes(batch.stereo_bonds, next(fingerprints))
                     stereo_code[pos_ab] = codes
                     stereo_code[pos_ba] = codes
                 full = edge_code * stereo_radix + stereo_code

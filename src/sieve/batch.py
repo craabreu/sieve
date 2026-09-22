@@ -149,7 +149,9 @@ class NodeBatch:
         for name, col in (("a2", a2), ("b2", b2)):
             bad = (col < -1) | (col >= n)
             if bad.any():
-                raise ValueError(f"stereo_bonds column {name} is out of range [-1, {n})")
+                raise ValueError(
+                    f"stereo_bonds column {name} is out of range [-1, {n})"
+                )
         if ((cis < 0) | (cis > 1)).any():
             raise ValueError("stereo_bonds: the cis column must be 0 or 1")
 
@@ -165,9 +167,7 @@ class NodeBatch:
             return sorted_key[pos] == want
 
         if not present(a, b).all() or not present(b, a).all():
-            raise ValueError(
-                "stereo_bonds: (a, b) is not an edge in both directions"
-            )
+            raise ValueError("stereo_bonds: (a, b) is not an edge in both directions")
         for end, sub, label in ((a, a1, "a1"), (b, b1, "b1")):
             if not present(end, sub).all():
                 raise ValueError(f"stereo_bonds: {label} is not adjacent to its end")

@@ -949,7 +949,7 @@ def test_an_end_with_two_substituents_reports_both():
 
     rows = _stereo_bond_rows(Chem.MolFromSmiles(r"C/C(F)=C(Cl)/C"))
     assert len(rows) == 1
-    _, _, a1, a2, b1, b2, _ = rows[0]
+    a2, b2 = rows[0][3], rows[0][5]
     assert a2 >= 0 and b2 >= 0
 
 
@@ -973,7 +973,7 @@ def test_from_smiles_stereo_bonds_use_batch_global_atom_indices():
     )
     b = from_smiles(["C/C=C/C", r"C/C=C\C"], config=cfg)
     assert b.stereo_bonds.shape == (2, 7)
-    first_atoms = mol_first = Chem.MolFromSmiles("C/C=C/C").GetNumAtoms()
+    first_atoms = Chem.MolFromSmiles("C/C=C/C").GetNumAtoms()
     row0, row1 = b.stereo_bonds
     assert row0[0] < first_atoms and row0[1] < first_atoms
     assert row1[0] >= first_atoms and row1[1] >= first_atoms
@@ -988,9 +988,7 @@ def test_stereo_bonds_respect_a_permuted_node_order():
     mol = Chem.MolFromSmiles("C/C=C/C")
     n = mol.GetNumAtoms()
     reversed_order = np.array(list(reversed(range(n))))
-    cfg = replace(
-        cfg_for(["C/C=C/C"], attrs=(("element",),)), stereo=("cis_trans",)
-    )
+    cfg = replace(cfg_for(["C/C=C/C"], attrs=(("element",),)), stereo=("cis_trans",))
     b = from_rdkit([mol], config=cfg, node_order=[reversed_order])
     assert b.stereo_bonds.shape == (1, 7)
     # atoms 1 and 2 are the sp2 carbons in "C/C=C/C" (0-indexed): C-C=C-C.
@@ -998,3 +996,32 @@ def test_stereo_bonds_respect_a_permuted_node_order():
     expected_a, expected_b = sorted([n - 1 - 1, n - 1 - 2])
     got_a, got_b = sorted([int(b.stereo_bonds[0, 0]), int(b.stereo_bonds[0, 1])])
     assert (got_a, got_b) == (expected_a, expected_b)
+
+
+def test_the_cis_flag_matches_known_geometry_not_merely_itself():
+    """Pins the *absolute* convention, which every other stereo test misses.
+
+    The rest of the suite only asserts cis != trans, so a mis-read of
+    RDKit's controllingAtoms order -- taking Bond_Cis to relate [0] and [3]
+    rather than [0] and [2] -- would still separate the isomers correctly
+    and consistently, and pass everything. 2-butene is the case with no
+    ambiguity to hide in: each end carries exactly one substituent, so each
+    methyl is necessarily its own end's first controlling atom, and SMILES'
+    own / and \\ fix the geometry independently of RDKit's ordering.
+    """
+    from sieve.io.rdkit_adapter import _stereo_bond_rows
+    from sieve.stereo import CODE_CIS, CODE_TRANS, cis_trans_codes
+
+    for smiles, expected_cis, expected_code in [
+        ("C/C=C/C", 0, CODE_TRANS),  # methyls on opposite sides
+        (r"C/C=C\C", 1, CODE_CIS),  # methyls on the same side
+    ]:
+        (row,) = _stereo_bond_rows(Chem.MolFromSmiles(smiles))
+        a2, b2, cis = row[3], row[5], row[6]
+        assert (a2, b2) == (-1, -1), "2-butene's ends carry one substituent each"
+        assert cis == expected_cis, f"{smiles} stored the wrong relation"
+        # With one substituent per end there is no tie and no flip, so the
+        # resolved code must be the stored relation, whatever the ranking.
+        rows = np.array([row], np.int64)
+        fp = np.zeros(Chem.MolFromSmiles(smiles).GetNumAtoms(), np.uint64)
+        assert cis_trans_codes(rows, fp).tolist() == [expected_code]

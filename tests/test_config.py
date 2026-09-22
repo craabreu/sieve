@@ -194,13 +194,13 @@ def test_config_survives_a_pickle_round_trip():
 def _ref_config(**kw):
     from sieve.config import SieveConfig
 
-    base = dict(
-        target_dim=1,
-        attribute_levels=(("element",),),
-        attribute_codes={"element": {"C": 0, "H": 1}},
-        edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
-        max_wl_depth=3,
-    )
+    base = {
+        "target_dim": 1,
+        "attribute_levels": (("element",),),
+        "attribute_codes": {"element": {"C": 0, "H": 1}},
+        "edge_codes": {"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
+        "max_wl_depth": 3,
+    }
     base.update(kw)
     return SieveConfig(**base)
 
@@ -233,3 +233,38 @@ def test_an_unknown_stereo_track_is_rejected():
 
     with pytest.raises(ValueError, match="unknown stereo track"):
         _ref_config(stereo=("helical",))
+
+
+def test_stereo_with_neighbor_depth_is_refused():
+    """The two are not yet designed to compose, and the failure is silent.
+
+    With neighbor_depth set, level_kinds is [ATTR]*a + [WL]*d + [WL_PAIR]*d
+    and level_parents sends the WL block to attribute level
+    neighbor_depth-1 -- so the LEVEL_WL levels are the *coarse* chain and
+    the main chain is LEVEL_WL_PAIR. refine folds the stereo code into
+    LEVEL_WL only, so it would land on the coarse chain, whose rounds are
+    measured from a shallower base than the k-2 radius rule is derived
+    against, while the main chain got no direct code at all. Refuse rather
+    than guess which chain it belongs on.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match=r"stereo.*neighbor_depth"):
+        _ref_config(
+            attribute_levels=(("element",), ("aromatic",)),
+            attribute_codes={
+                "element": {"C": 0, "H": 1},
+                "aromatic": {"True": 0, "False": 1},
+            },
+            neighbor_depth=1,
+            stereo=("cis_trans",),
+        )
+
+
+def test_stereo_is_allowed_when_neighbor_depth_normalizes_away():
+    """neighbor_depth == len(attribute_levels) means "no coarsening" and is
+    normalized to None, so there is no coarse chain to be confused by and
+    the combination is legal."""
+    cfg = _ref_config(neighbor_depth=1, stereo=("cis_trans",))
+    assert cfg.neighbor_depth is None
+    assert cfg.stereo == ("cis_trans",)
