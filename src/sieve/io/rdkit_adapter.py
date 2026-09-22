@@ -242,6 +242,47 @@ _MOL_BOND_ATTRS = {
 }
 
 
+_RDKIT_NO_ATOM = 0xFFFFFFFF  # what controllingAtoms uses for an absent slot
+
+
+def _stereo_bond_rows(mol) -> list[tuple[int, int, int, int, int, int, int]]:
+    """Stereogenic double bonds as ``[a, b, a1, a2, b1, b2, cis]``, in raw
+    RDKit atom-index order -- callers index by raw atom index, so a permuted
+    ``node_order`` stays correct, matching every other provider in this file.
+
+    Read through ``FindPotentialStereo`` rather than ``bond.GetStereo()``.
+    The two are not interchangeable: a molecule parsed from SMILES carries
+    ``STEREOE``/``STEREOZ``, which are CIP-derived and therefore depend on
+    atoms arbitrarily far away, while the store carries the local
+    ``STEREOCIS``/``STEREOTRANS``. ``FindPotentialStereo`` returns
+    ``Bond_Cis``/``Bond_Trans`` relative to its own controlling atoms on both
+    paths, which is the only form this featurization may read.
+
+    Bonds reported ``Unspecified`` yield no row and therefore never receive a
+    code. Ends carrying more than two substituents are skipped by RDKit's own
+    representation, which names at most two per end.
+    """
+    from rdkit import Chem
+
+    rows: list[tuple[int, int, int, int, int, int, int]] = []
+    for element in Chem.FindPotentialStereo(mol):
+        if element.type != Chem.StereoType.Bond_Double:
+            continue
+        if element.specified != Chem.StereoSpecified.Specified:
+            continue
+        controlling = [
+            -1 if int(x) == _RDKIT_NO_ATOM else int(x) for x in element.controllingAtoms
+        ]
+        a1, a2, b1, b2 = controlling
+        if a1 < 0 or b1 < 0:
+            continue
+        bond = mol.GetBondWithIdx(int(element.centeredOn))
+        a, b = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        cis = 1 if element.descriptor == Chem.StereoDescriptor.Bond_Cis else 0
+        rows.append((int(a), int(b), a1, a2, b1, b2, cis))
+    return rows
+
+
 def _min_ring_size(mol) -> list[str]:
     """Size of the smallest SSSR ring each atom belongs to, ``"none"`` when
     the atom is acyclic (the same sentinel ``group``/``chirality`` use).
@@ -537,6 +578,7 @@ def _from_rdkit_sequential(
     graph_id = np.zeros(n, np.int64)
     y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
     src, dst, attr = [], [], []
+    stereo_rows: list[tuple[int, int, int, int, int, int, int]] = []
     off = 0
     # Hoisted out of the per-atom loop below: all three are loop-invariant,
     # and the loop runs once per atom *per attribute* -- at 1.69M atoms and 5
@@ -591,6 +633,24 @@ def _from_rdkit_sequential(
         )
         inv = np.empty(mol.GetNumAtoms(), np.int64)
         inv[order] = np.arange(mol.GetNumAtoms())
+        if config.stereo:
+            # Every atom column must go through the same inv[] permutation
+            # the per-atom loop below uses, or a custom node_order would
+            # silently point a stereo bond at the wrong atoms. -1 (an absent
+            # second substituent) is never a real index and must not be
+            # remapped through it.
+            for a, b, a1, a2, b1, b2, cis in _stereo_bond_rows(mol):
+                stereo_rows.append(
+                    (
+                        off + int(inv[a]),
+                        off + int(inv[b]),
+                        off + int(inv[a1]),
+                        -1 if a2 < 0 else off + int(inv[a2]),
+                        off + int(inv[b1]),
+                        -1 if b2 < 0 else off + int(inv[b2]),
+                        cis,
+                    )
+                )
         for local, idx in enumerate(order):
             a = mol.GetAtomWithIdx(int(idx))
             g = off + local
@@ -625,6 +685,9 @@ def _from_rdkit_sequential(
         graph_id=graph_id,
         y=y if y is not None else y_out,
         elements=elements,
+        stereo_bonds=(
+            np.array(stereo_rows, np.int64).reshape(-1, 7) if config.stereo else None
+        ),
     )
 
 

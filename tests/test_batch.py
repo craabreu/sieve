@@ -156,7 +156,9 @@ def test_trusted_constructor_rejects_unknown_fields():
     """It bypasses __init__, so an unrecognized name would otherwise be set as
     a stray attribute rather than rejected."""
     with pytest.raises(TypeError, match="unexpected"):
-        NodeBatch._with_trusted_edges(**{**ring(4), "elements": None, "bogus": 1})
+        NodeBatch._with_trusted_edges(
+            **{**ring(4), "elements": None, "stereo_bonds": None, "bogus": 1}
+        )
 
 
 def test_edge_attrs_must_be_two_dimensional():
@@ -264,6 +266,9 @@ def test_slicing_carries_every_field():
     kw = ring(40)
     kw["y"] = np.arange(40, dtype=np.float64).reshape(-1, 1)
     kw["elements"] = np.arange(40, dtype=np.int64)
+    # Nodes 0 and 1 are adjacent in a ring of >= 3, and both fall inside the
+    # slice below, so stereo_bonds has something real to carry through.
+    kw["stereo_bonds"] = np.array([[0, 1, 1, -1, 0, -1, 1]], np.int64)
     parent = NodeBatch(**kw)
     sub = parent[np.arange(25)]
 
@@ -496,3 +501,130 @@ def test_concat_batches_single_part_is_identity():
     np.testing.assert_array_equal(r.node_attrs, a.node_attrs)
     np.testing.assert_array_equal(r.edge_src, a.edge_src)
     np.testing.assert_array_equal(r.graph_id, a.graph_id)
+
+
+def _ethene_batch(stereo_bonds=None):
+    """C1=C2 with one substituent on each end: atoms 0-1 sp2, 2 on 0, 3 on 1."""
+    src = np.array([0, 1, 0, 2, 1, 3], np.int64)
+    dst = np.array([1, 0, 2, 0, 3, 1], np.int64)
+    return NodeBatch(
+        node_attrs=np.zeros((4, 1), np.int64),
+        edge_src=src,
+        edge_dst=dst,
+        edge_attrs=np.zeros((6, 1), np.int64),
+        graph_id=np.zeros(4, np.int64),
+        stereo_bonds=stereo_bonds,
+    )
+
+
+def test_stereo_bonds_defaults_to_none_and_changes_nothing():
+    assert _ethene_batch().stereo_bonds is None
+
+
+def test_a_well_formed_stereo_bond_is_accepted():
+    rows = np.array([[0, 1, 2, -1, 3, -1, 1]], np.int64)
+    assert _ethene_batch(rows).stereo_bonds.shape == (1, 7)
+
+
+def test_stereo_bonds_rejects_a_wrong_width():
+    with pytest.raises(ValueError, match="must have shape"):
+        _ethene_batch(np.zeros((1, 5), np.int64))
+
+
+def test_stereo_bonds_rejects_an_out_of_range_atom():
+    rows = np.array([[0, 1, 2, -1, 99, -1, 1]], np.int64)
+    with pytest.raises(ValueError, match="out of range"):
+        _ethene_batch(rows)
+
+
+def test_stereo_bonds_rejects_a_pair_that_is_not_an_edge():
+    # 2-3 are not bonded to each other.
+    rows = np.array([[2, 3, 0, -1, 1, -1, 1]], np.int64)
+    with pytest.raises(ValueError, match="not an edge"):
+        _ethene_batch(rows)
+
+
+def test_stereo_bonds_rejects_a_controlling_atom_that_is_not_adjacent():
+    # atom 3 hangs off atom 1, so it cannot control end 0.
+    rows = np.array([[0, 1, 3, -1, 3, -1, 1]], np.int64)
+    with pytest.raises(ValueError, match="not adjacent"):
+        _ethene_batch(rows)
+
+
+def test_stereo_bonds_rejects_a_missing_first_controlling_atom():
+    rows = np.array([[0, 1, -1, 2, 3, -1, 1]], np.int64)
+    with pytest.raises(ValueError, match="only in the second slot"):
+        _ethene_batch(rows)
+
+
+def test_stereo_bonds_rejects_a_non_boolean_relation():
+    rows = np.array([[0, 1, 2, -1, 3, -1, 7]], np.int64)
+    with pytest.raises(ValueError, match="cis column"):
+        _ethene_batch(rows)
+
+
+def _two_ethenes_batch():
+    """Two disjoint C1=C2 molecules, graphs 0 and 1, each with one stereo bond."""
+    # graph 0: atoms 0-3 (as in _ethene_batch); graph 1: atoms 4-7, same shape.
+    src = np.array([0, 1, 0, 2, 1, 3, 4, 5, 4, 6, 5, 7], np.int64)
+    dst = np.array([1, 0, 2, 0, 3, 1, 5, 4, 6, 4, 7, 5], np.int64)
+    stereo_bonds = np.array(
+        [[0, 1, 2, -1, 3, -1, 1], [4, 5, 6, -1, 7, -1, 0]], np.int64
+    )
+    return NodeBatch(
+        node_attrs=np.zeros((8, 1), np.int64),
+        edge_src=src,
+        edge_dst=dst,
+        edge_attrs=np.zeros((12, 1), np.int64),
+        graph_id=np.array([0, 0, 0, 0, 1, 1, 1, 1], np.int64),
+        stereo_bonds=stereo_bonds,
+    )
+
+
+def test_getitem_keeps_and_remaps_a_selected_graphs_stereo_bond():
+    whole = _two_ethenes_batch()
+    mask = whole.graph_id == 0
+    sub = whole[mask]
+    assert sub.stereo_bonds is not None
+    assert sub.stereo_bonds.shape == (1, 7)
+    np.testing.assert_array_equal(sub.stereo_bonds[0], [0, 1, 2, -1, 3, -1, 1])
+
+
+def test_getitem_drops_a_stereo_bond_whose_graph_is_not_selected():
+    whole = _two_ethenes_batch()
+    sub = whole[whole.graph_id == 0]
+    # Only graph 0's bond should survive; graph 1's bond (cis=0) must not.
+    assert sub.stereo_bonds is not None
+    assert sub.stereo_bonds.shape[0] == 1
+    assert sub.stereo_bonds[0, 6] == 1
+
+
+def test_getitem_on_a_batch_with_no_stereo_bonds_stays_none():
+    whole = _small_batch(offset_graph_id=0, n_graphs=4, seed=1)
+    assert whole[whole.graph_id < 2].stereo_bonds is None
+
+
+def test_concat_batches_offsets_and_concatenates_stereo_bonds():
+    whole = _two_ethenes_batch()
+    parts = [whole[whole.graph_id == 0], whole[whole.graph_id == 1]]
+    r = concat_batches(parts)
+    assert r.stereo_bonds is not None
+    assert r.stereo_bonds.shape == (2, 7)
+    # Re-derive expected rows: part 1's atoms are offset by part 0's node count (4).
+    np.testing.assert_array_equal(
+        r.stereo_bonds, [[0, 1, 2, -1, 3, -1, 1], [4, 5, 6, -1, 7, -1, 0]]
+    )
+
+
+def test_concat_batches_rejects_mixed_stereo_bonds():
+    a = _two_ethenes_batch()[_two_ethenes_batch().graph_id == 0]
+    b = NodeBatch(
+        node_attrs=a.node_attrs,
+        edge_src=a.edge_src,
+        edge_dst=a.edge_dst,
+        edge_attrs=a.edge_attrs,
+        graph_id=a.graph_id,
+        stereo_bonds=None,
+    )
+    with pytest.raises(ValueError, match="stereo_bonds is set on some but not all"):
+        concat_batches([a, b])

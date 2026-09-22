@@ -35,7 +35,7 @@ per-node stats table.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -97,6 +97,7 @@ def _build_config(
     class_estimator: str = "pooled",
     shrinkage_weight: str | None = None,
     predictive_variance: bool = False,
+    stereo: tuple[str, ...] = (),
     n_jobs: int | None = None,
     codes: Mapping[str, Mapping[str, int]] | None = None,
     edge_codes: Mapping[str, Mapping[str, int]] | None = None,
@@ -120,6 +121,17 @@ def _build_config(
     ``n_jobs`` parallelizes ``build_codes``'s own vocabulary-discovery pass
     -- profiling showed this and ``from_rdkit`` (``_batch_for``, below) are
     ~96% of a real fit, against ~4% for ``sieve.fit`` itself.
+
+    ``stereo`` names the stereochemistry tracks the refinement should
+    express (today only ``"cis_trans"``); ``()``, the default, is the
+    stereo-blind behavior every arm has had so far and leaves
+    ``schema_version`` byte-identical to it. It needs no vocabulary of its
+    own -- a track contributes a fixed radix rather than learned codes -- so
+    it is passed straight through and does not touch ``build_codes``.
+    ``_batch_for`` below hands the same config to ``from_rdkit``, which is
+    what puts the per-bond relation on the batch; both halves read one
+    config, so an arm cannot configure the track without also featurizing
+    for it.
 
     ``codes``/``edge_codes``, when both given, are used verbatim and
     ``build_codes`` is never called -- the CV shard-fit seam: a vocabulary
@@ -149,6 +161,7 @@ def _build_config(
         class_estimator=class_estimator,
         shrinkage_weight=shrinkage_weight,
         predictive_variance=predictive_variance,
+        stereo=stereo,
     )
 
 
@@ -255,6 +268,11 @@ class SievePredictor:
         class_estimator: str = "pooled",
         shrinkage_weight: str | None = None,
         predictive_variance: bool = False,
+        # Sequence, not tuple: an arm config's predictor.params comes from
+        # YAML, which hands over a list. The neighbours above are annotated
+        # tuple only because nothing exercises them that way; all of them
+        # normalize with tuple() below just the same.
+        stereo: Sequence[str] = (),
         n_jobs: int | None = None,
         report_loo: bool = False,
         codes_path: str | None = None,
@@ -281,6 +299,10 @@ class SievePredictor:
         self.class_estimator = class_estimator
         self.shrinkage_weight = shrinkage_weight
         self.predictive_variance = predictive_variance
+        # tuple(): an arm config supplies predictor.params straight from
+        # YAML, which hands over a list, and SieveConfig's digest is taken
+        # over the field as given.
+        self.stereo = tuple(stereo)
         self.n_jobs = n_jobs
         self.report_loo = report_loo
         self.codes_path = codes_path
@@ -323,6 +345,7 @@ class SievePredictor:
             class_estimator=self.class_estimator,
             shrinkage_weight=self.shrinkage_weight,
             predictive_variance=self.predictive_variance,
+            stereo=self.stereo,
             n_jobs=self.n_jobs,
             codes=codes,
             edge_codes=edge_codes,

@@ -133,3 +133,59 @@ def test_shrunk_means_are_not_stored(tmp_path):
     m.save(p)
     keys = list(np.load(p, allow_pickle=False).keys())
     assert not any("shrunk" in k or "shrink" in k for k in keys)
+
+
+def _stereo_model_and_batch():
+    import dataclasses
+
+    from rdkit import Chem
+
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    cfg = simple_config(stereo=("cis_trans",), max_wl_depth=3)
+    mols = [Chem.MolFromSmiles(s) for s in ["C/C=C/C", r"C/C=C\C", "CCCC"]]
+    rng = np.random.default_rng(0)
+    b = from_rdkit(mols, y=None, config=cfg)
+    b = dataclasses.replace(b, y=rng.normal(size=(b.n_nodes, 1)))
+    return sieve.fit(b, cfg), b
+
+
+def test_round_trip_preserves_a_stereo_track(tmp_path):
+    """save()/load() went through an explicit field whitelist on each side,
+    and stereo was missing from both: a stereo-enabled model fit correctly
+    but raised on load, since the reconstructed config's schema_version
+    (stereo defaulting back to ()) no longer matched what was stored."""
+    m, b = _stereo_model_and_batch()
+    p = tmp_path / "m.npz"
+    m.save(p)
+    loaded = sieve.SieveModel.load(p)
+    assert loaded.config.stereo == ("cis_trans",)
+    assert loaded.config.schema_version == m.config.schema_version
+    assert np.array_equal(sieve.predict(m, b), sieve.predict(loaded, b))
+
+
+def test_loading_a_pre_stereo_file_defaults_to_no_stereo_rather_than_refusing(
+    tmp_path,
+):
+    """A real file saved before this field existed has no "stereo" key in its
+    JSON blob at all -- not an empty one. Unlike class_estimator (refused,
+    since guessing would silently misdescribe how a stored class is read),
+    a missing stereo key has an unambiguous historical answer: the feature
+    did not exist yet, so the file's classes are stereo-blind by fact, not
+    by guess. This must load successfully, not raise -- the schema_version
+    payload only ever gained the "stereo" key conditionally (config.py), so
+    an old file's stored digest already matches a stereo=() reconstruction."""
+    import json
+
+    m = sieve.fit(chain_batch(6), simple_config())
+    p = tmp_path / "m.npz"
+    m.save(p)
+    data = dict(np.load(p, allow_pickle=False))
+    cfg = json.loads(bytes(data["config"]).decode())
+    del cfg["stereo"]  # simulates a file saved before this field existed
+    data["config"] = np.frombuffer(json.dumps(cfg).encode(), np.uint8)
+    np.savez(p, **data)
+
+    loaded = sieve.SieveModel.load(p)
+    assert loaded.config.stereo == ()
+    assert loaded.config.schema_version == m.config.schema_version

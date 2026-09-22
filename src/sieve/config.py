@@ -48,6 +48,13 @@ CLASS_ESTIMATORS = (
     CLASS_ESTIMATOR_CONTINUATION_RECURSIVE,
 )
 
+# Stereo tracks a config may enable. Each contributes a fixed radix of 4 to
+# the edge alphabet: {none, cis, trans} plus the reserved unknown code. Kept
+# as a tuple of names, not a bool, because a second track (tetrahedral
+# handedness) is coming and a bool would have to become two.
+STEREO_RADIX = 4
+STEREO_TRACKS = ("cis_trans",)
+
 # How shrinkage weights a class's own estimate against its shrunk parent
 # (design.md 4.2, 4.4).
 #
@@ -116,6 +123,7 @@ class SieveConfig:
     max_wl_depth: int
     edge_attributes: tuple[str, ...] = ("bond_type",)
     neighbor_depth: int | None = None
+    stereo: tuple[str, ...] = ()
     minimum_support: int = 1
     shrinkage_strength: float | None = None
     class_estimator: str = CLASS_ESTIMATOR_POOLED
@@ -134,6 +142,11 @@ class SieveConfig:
             raise ValueError("each attribute level must declare >= 1 attribute")
         if self.target_dim < 1:
             raise ValueError("target_dim must be >= 1")
+        for track in self.stereo:
+            if track not in STEREO_TRACKS:
+                raise ValueError(
+                    f"unknown stereo track {track!r}; known: {list(STEREO_TRACKS)}"
+                )
         if self.minimum_support < 1:
             raise ValueError("minimum_support must be >= 1")
         if self.class_estimator not in CLASS_ESTIMATORS:
@@ -178,6 +191,29 @@ class SieveConfig:
             # left level_parents indexing off the end of its own list).
             if self.neighbor_depth == a or self.max_wl_depth == 0:
                 object.__setattr__(self, "neighbor_depth", None)
+        if self.stereo and self.neighbor_depth is not None:
+            # Checked after the normalization above, so the "no coarsening"
+            # spellings still compose with stereo.
+            #
+            # These two do not yet compose, and the failure would be silent.
+            # With a coarse chain, level_kinds is [ATTR]*a + [WL]*d +
+            # [WL_PAIR]*d and level_parents sends the WL block to attribute
+            # level neighbor_depth-1: the LEVEL_WL levels *are* the coarse
+            # chain and the main chain is LEVEL_WL_PAIR. refine folds a
+            # stereo code into LEVEL_WL only, so the code would attach to
+            # the coarse chain -- whose rounds are measured from a shallower
+            # base than the radius the k-2 rule is derived against -- while
+            # the main chain, the one answering at the configured depth,
+            # received no direct code at all. Which chain it belongs on, and
+            # what "honest radius" means for each, is spec work rather than
+            # something to guess here.
+            raise ValueError(
+                f"stereo={list(self.stereo)} cannot be combined with "
+                f"neighbor_depth={self.neighbor_depth}: the stereo code is "
+                "not yet defined for a coarsened chain "
+                "(docs/superpowers/specs/"
+                "2026-09-22-cis-trans-featurisation-design.md)"
+            )
         # An empty edge schema is legal -- it is the pure-topology control arm
         # -- so the zero-width rule above deliberately does not extend here.
         object.__setattr__(self, "edge_attributes", tuple(self.edge_attributes))
@@ -351,16 +387,28 @@ class SieveConfig:
         return tuple(len(self.edge_codes[n]) + 1 for n in self.edge_attributes)
 
     @property
+    def stereo_radices(self) -> tuple[int, ...]:
+        """One radix per enabled stereo track, each ``STEREO_RADIX`` wide:
+        ``{none, cis, trans}`` plus the reserved unknown code.
+
+        Kept separate from ``edge_radices``, which describes the *static*
+        adapter columns present in ``batch.edge_attrs``: a stereo code is
+        recomputed every WL round from the content-rank fingerprint and has
+        no column there at all.
+        """
+        return tuple(STEREO_RADIX for _ in self.stereo)
+
+    @property
     def n_edge_types(self) -> int:
         """Size of the collapsed edge alphabet -- the modulus ``refine``,
         ``merge`` and ``predict`` encode a (neighbor label, edge) pair with.
 
-        A product over ``edge_radices`` because the columns collapse mixed
-        radix. The empty product is 1, which is exactly right for an empty
-        edge schema: every edge collapses to code 0 and the pair encoding
-        degenerates to the neighbor label alone.
+        A product over ``edge_radices`` and ``stereo_radices`` because the
+        columns collapse mixed radix. The empty product is 1, which is
+        exactly right for an empty edge schema: every edge collapses to code
+        0 and the pair encoding degenerates to the neighbor label alone.
         """
-        return math.prod(self.edge_radices)
+        return math.prod(self.edge_radices) * math.prod(self.stereo_radices)
 
     @property
     def schema_version(self) -> str:
@@ -390,6 +438,13 @@ class SieveConfig:
             "max_wl_depth": self.max_wl_depth,
             "neighbor_depth": self.neighbor_depth,
         }
+        if self.stereo:
+            # Added only when non-empty so that every digest computed before
+            # stereo existed stays byte-identical, and the models carrying it
+            # stay valid (design.md 9.2). A plain payload["stereo"] = []
+            # would move every existing digest and silently invalidate every
+            # fitted model on disk.
+            payload["stereo"] = list(self.stereo)
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(blob).hexdigest()
 

@@ -594,3 +594,144 @@ def test_merge_states_matches_fitting_the_union_directly(tmp_path):
     np.testing.assert_allclose(
         from_merge.predict(test).atom_value, direct.predict(test).atom_value
     )
+
+
+def _stereo_molecule_set(atom_property: str = "MBIScharge"):
+    """A MoleculeSet whose molecules actually carry stereogenic double bonds.
+
+    ``synthetic_molecule_set``'s alkanes and alcohols have none, so a stereo
+    track configured against them would be inert and any test using it would
+    pass for the wrong reason.
+    """
+    from experiments.data import MoleculeSet, molecule_sum
+    from rdkit import Chem
+
+    smiles = ["C/C=C/C", r"C/C=C\C", "C/C=C/CC", r"C/C=C\CC", "CCCC", "CC(C)C"]
+    rng = np.random.default_rng(0)
+    mols, num_atoms = [], []
+    for smi in smiles:
+        params = Chem.SmilesParserParams()
+        params.removeHs = False
+        mol = Chem.MolFromSmiles(smi, params)
+        assert mol is not None, smi
+        charges = rng.normal(scale=0.2, size=mol.GetNumAtoms())
+        for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
+            atom.SetDoubleProp(atom_property, float(charge))
+        mols.append(mol)
+        num_atoms.append(mol.GetNumAtoms())
+
+    atom_value = np.concatenate(
+        [np.array([a.GetDoubleProp(atom_property) for a in m.GetAtoms()]) for m in mols]
+    )
+    mol_id = np.repeat(np.arange(len(mols)), num_atoms)
+    return MoleculeSet(
+        mols=mols,
+        atom_property=atom_property,
+        molecule_property="net_charge",
+        molecule_value=molecule_sum(atom_value, mol_id, len(mols)),
+        ids={"dash_id": [f"m{i}" for i in range(len(mols))]},
+    )
+
+
+def test_build_config_defaults_to_no_stereo_track():
+    from experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+    )
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=4, seed=0)
+    config = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    assert config.stereo == ()
+
+
+def test_build_config_threads_a_stereo_track_through_to_the_config():
+    from experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _build_config,
+    )
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    mset = synthetic_molecule_set(n_mol=4, seed=0)
+    # Spelled out rather than unpacked from a shared **kw dict: unpacking
+    # loses each parameter's own declared type, so every keyword arrives as
+    # the dict's value union and the type checker rejects all of them.
+    off = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+    )
+    on = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+        stereo=("cis_trans",),
+    )
+    assert on.stereo == ("cis_trans",)
+    # The digest must move, or shards fit with and without the track would
+    # be silently mergeable with each other.
+    assert on.schema_version != off.schema_version
+
+
+def test_batch_for_carries_stereo_bonds_under_a_stereo_config():
+    """Configuring the track is not enough: the batch has to carry the
+    relation too, or refine raises. This is the seam that makes an arm
+    actually runnable rather than merely configurable."""
+    from experiments.predictors.sieve_predictor import (
+        DEFAULT_ATTRIBUTES,
+        _batch_for,
+        _build_config,
+    )
+
+    mset = _stereo_molecule_set()
+    config = _build_config(
+        mset.mols,
+        attributes=DEFAULT_ATTRIBUTES,
+        target_dim=1,
+        max_wl_depth=3,
+        minimum_support=1,
+        shrinkage_strength=None,
+        stereo=("cis_trans",),
+    )
+    batch = _batch_for(
+        mset.mols, config, atom_property=mset.atom_property, with_target=True
+    )
+    assert batch.stereo_bonds is not None
+    assert batch.stereo_bonds.shape[1] == 7
+    assert batch.stereo_bonds.shape[0] == 4  # four stereogenic double bonds
+
+
+def test_the_predictor_accepts_a_stereo_track_as_an_arm_would_pass_it():
+    """An arm config supplies predictor.params as __init__ kwargs, and YAML
+    hands over a list, not a tuple."""
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    mset = _stereo_molecule_set()
+    predictor = SievePredictor(stereo=["cis_trans"], max_wl_depth=3)
+    assert predictor.stereo == ("cis_trans",)
+
+    predictor.fit(mset, mset, rng=np.random.default_rng(0))
+    assert predictor._config.stereo == ("cis_trans",)
+    out = predictor.predict_raw(mset)
+    assert np.isfinite(np.asarray(out.atom_value)).all()
+
+
+def test_the_predictor_defaults_to_no_stereo_track():
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    assert SievePredictor().stereo == ()

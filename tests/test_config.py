@@ -189,3 +189,84 @@ def test_config_survives_a_pickle_round_trip():
     assert restored.attribute_codes == cfg.attribute_codes
     with pytest.raises(TypeError):
         restored.attribute_codes["element"]["N"] = 2  # still frozen
+
+
+_REF_CONFIG = SieveConfig(
+    target_dim=1,
+    attribute_levels=(("element",),),
+    attribute_codes={"element": {"C": 0, "H": 1}},
+    edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
+    max_wl_depth=3,
+)
+
+
+def _ref_config(**kw):
+    """``replace`` over a frozen base, as ``tests/helpers.simple_config``
+    does. Unpacking a plain ``**base`` dict instead loses each field's own
+    type, so every keyword lands as the dict's value union."""
+    return replace(_REF_CONFIG, **kw)
+
+
+def test_stereo_defaults_off_and_leaves_the_digest_untouched():
+    # This literal is today's digest for the reference config above. A fitted
+    # model on disk carries this digest; changing it silently invalidates
+    # every one of them.
+    assert (
+        _ref_config().schema_version
+        == "f54a104c61946eef939179d20cf473cd1a1e42b778fdc115599472d71eb8e4b0"
+    )
+    assert _ref_config().stereo == ()
+    assert _ref_config().stereo_radices == ()
+
+
+def test_enabling_a_stereo_track_changes_the_digest():
+    off, on = _ref_config(), _ref_config(stereo=("cis_trans",))
+    assert on.schema_version != off.schema_version
+
+
+def test_a_stereo_track_widens_the_edge_alphabet_by_four():
+    off, on = _ref_config(), _ref_config(stereo=("cis_trans",))
+    assert on.n_edge_types == off.n_edge_types * 4
+    assert on.stereo_radices == (4,)
+
+
+def test_an_unknown_stereo_track_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown stereo track"):
+        _ref_config(stereo=("helical",))
+
+
+def test_stereo_with_neighbor_depth_is_refused():
+    """The two are not yet designed to compose, and the failure is silent.
+
+    With neighbor_depth set, level_kinds is [ATTR]*a + [WL]*d + [WL_PAIR]*d
+    and level_parents sends the WL block to attribute level
+    neighbor_depth-1 -- so the LEVEL_WL levels are the *coarse* chain and
+    the main chain is LEVEL_WL_PAIR. refine folds the stereo code into
+    LEVEL_WL only, so it would land on the coarse chain, whose rounds are
+    measured from a shallower base than the k-2 radius rule is derived
+    against, while the main chain got no direct code at all. Refuse rather
+    than guess which chain it belongs on.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match=r"stereo.*neighbor_depth"):
+        _ref_config(
+            attribute_levels=(("element",), ("aromatic",)),
+            attribute_codes={
+                "element": {"C": 0, "H": 1},
+                "aromatic": {"True": 0, "False": 1},
+            },
+            neighbor_depth=1,
+            stereo=("cis_trans",),
+        )
+
+
+def test_stereo_is_allowed_when_neighbor_depth_normalizes_away():
+    """neighbor_depth == len(attribute_levels) means "no coarsening" and is
+    normalized to None, so there is no coarse chain to be confused by and
+    the combination is legal."""
+    cfg = _ref_config(neighbor_depth=1, stereo=("cis_trans",))
+    assert cfg.neighbor_depth is None
+    assert cfg.stereo == ("cis_trans",)
