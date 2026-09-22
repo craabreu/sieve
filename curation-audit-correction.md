@@ -128,16 +128,20 @@ says diastereomers under one identifier do not look anomalous to each other, and
 damage was never there. It was in the *other* half of the same mismatch — a structure
 split across deposits, whose corroborating partner the grouping could not reach.
 
-So the honest sentence for §\ref{sec:curation of anomalous conformers}, or for the
-Supporting Information beside the pairwise-versus-all-pairs analysis, is that the
-criterion was reconstructed on a deposit identifier, that this deleted 20 sound records
-whose corroborating conformer was deposited separately and retained 33 that only a
-different molecule vouched for, and that grouping on the structure key corrects both.
-Both figures are tiny against 1,029,785 conformers, and saying so is stronger than the
-alternative of not having looked.
+> **Retracted 2026-09-22, by the author's decision: none of this goes in the paper.**
+> The deposit-keyed curation is considered simply wrong, so the manuscript reports the
+> structure-keyed rule alone and draws no comparison with it. An earlier revision of this
+> section told you to put the old rule's damage — records deleted, records retained on a
+> different molecule's word — into §\ref{sec:curation of anomalous conformers} or the
+> Supporting Information. **Do not.** You do not audit a rule you have discarded.
+>
+> The audit keeps its full value as *verification*: it is how we know the structure-keyed
+> rule behaves as intended and that nothing unrelated moved in the parse. That is an
+> internal result, and this document is where it lives.
 
-Do **not** write "no records were wrongly deleted" on the strength of the current
-script's output.
+Do **not** write "no records were wrongly deleted" on the strength of the pre-fix
+script's output either — inside this repository the figure is 21 conformers across 20
+structures, and §2 is the record of it.
 
 ## 6. Order of work
 

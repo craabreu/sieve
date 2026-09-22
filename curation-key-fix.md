@@ -233,11 +233,16 @@ Applying it resolves all 15 sampled cases, and makes curation and the fit mean t
 same thing by "the same atom". Charges are stored in the key's canonical order at
 read time, so the comparison itself is unchanged.
 
-Two further notes for the rewrite. The curation subsection should say which key the
+One further note for the rewrite: the curation subsection should say which key the
 grouping uses and why, since `dash_id`-versus-structure is now a recurring distinction in
-the paper. And whatever §4 measures belongs in the Supporting Information beside the
-existing pairwise-versus-all-pairs analysis, as the evidence that the reconstruction is
-faithful.
+the paper.
+
+> **Superseded 2026-09-22.** An earlier revision of this paragraph said §4's measurements
+> belong in the Supporting Information. They do not: by the author's decision the
+> deposit-keyed rule is considered wrong, the paper reports the structure-keyed rule
+> alone, and no comparison between the two appears anywhere in it. §4 remains worth
+> running — it is the verification that the new rule is sound — but its output is an
+> internal result. See `curation-audit-correction.md` §5.
 
 ## 6. Order of work
 
