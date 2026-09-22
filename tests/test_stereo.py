@@ -70,3 +70,44 @@ def test_fingerprints_are_independent_of_batch_composition():
     )
     for j in range(3):
         assert np.array_equal(fp_a[j], fp_t[j][:4])
+
+
+def test_the_stored_relation_is_used_when_both_winners_are_the_first():
+    from sieve.stereo import cis_trans_codes
+
+    rows = np.array([[0, 1, 2, -1, 3, -1, 1]], np.int64)  # cis, no ties possible
+    fp = np.arange(4, dtype=np.uint64)
+    assert cis_trans_codes(rows, fp).tolist() == [1]  # 1 == cis
+
+
+def test_the_relation_flips_when_exactly_one_winner_differs():
+    from sieve.stereo import cis_trans_codes
+
+    # End a has substituents 2 and 4; 4 outranks 2, so a's winner is not a1.
+    rows = np.array([[0, 1, 2, 4, 3, -1, 1]], np.int64)
+    fp = np.array([0, 0, 10, 0, 20], np.uint64)
+    assert cis_trans_codes(rows, fp).tolist() == [2]  # 2 == trans
+
+
+def test_the_relation_is_restored_when_both_winners_differ():
+    from sieve.stereo import cis_trans_codes
+
+    rows = np.array([[0, 1, 2, 4, 3, 5, 1]], np.int64)
+    fp = np.array([0, 0, 10, 0, 20, 30], np.uint64)
+    assert cis_trans_codes(rows, fp).tolist() == [1]
+
+
+def test_a_tie_at_either_end_defers():
+    from sieve.stereo import cis_trans_codes
+
+    rows = np.array([[0, 1, 2, 4, 3, -1, 1]], np.int64)
+    fp = np.array([0, 0, 10, 0, 10], np.uint64)  # 2 and 4 tie
+    assert cis_trans_codes(rows, fp).tolist() == [0]  # 0 == none
+
+
+def test_an_end_with_one_substituent_cannot_tie():
+    from sieve.stereo import cis_trans_codes
+
+    rows = np.array([[0, 1, 2, -1, 3, -1, 0]], np.int64)
+    fp = np.zeros(4, np.uint64)  # everything ties
+    assert cis_trans_codes(rows, fp).tolist() == [2]

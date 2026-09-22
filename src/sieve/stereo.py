@@ -67,3 +67,57 @@ def content_ranks(
         pad.sort(axis=1)
         fp.append(_mix(prev, *(pad[:, j] for j in range(width))))
     return fp
+
+
+CODE_NONE, CODE_CIS, CODE_TRANS = 0, 1, 2
+
+
+def cis_trans_codes(stereo_bonds: np.ndarray, fp: np.ndarray) -> np.ndarray:
+    """One code in ``{none, cis, trans}`` per stereogenic double bond.
+
+    At each end the substituent with the larger fingerprint wins; equal
+    fingerprints mean the bond is not distinguishable at this radius and the
+    feature defers rather than guessing. The stored relation holds between the
+    *first* controlling atom of each end, so it flips exactly when one winner
+    -- and not both -- is the second.
+    """
+    a1, a2, b1, b2, cis = (stereo_bonds[:, j] for j in (2, 3, 4, 5, 6))
+    zero = np.uint64(0)
+
+    def winner_is_first(first: np.ndarray, second: np.ndarray):
+        has = second >= 0
+        f1 = fp[first]
+        f2 = np.where(has, fp[np.where(has, second, 0)], zero)
+        return (~has) | (f1 > f2), has & (f1 == f2)
+
+    a_first, a_tie = winner_is_first(a1, a2)
+    b_first, b_tie = winner_is_first(b1, b2)
+    flipped = a_first ^ b_first
+    same_side = cis.astype(bool) ^ flipped
+    return np.where(
+        a_tie | b_tie, CODE_NONE, np.where(same_side, CODE_CIS, CODE_TRANS)
+    ).astype(np.int64)
+
+
+def directed_positions(
+    csr: CSRLayout, n_nodes: int, stereo_bonds: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Positions of each stereo bond's two directed halves in CSR order.
+
+    Resolved once, before the round loop: the bond set never changes, only
+    the code on it does. Positions index the CSR-ordered edge arrays, which
+    is the order ``refine`` folds the codes into.
+    """
+    key = csr.src * n_nodes + csr.dst
+    order = np.argsort(key, kind="stable")
+    sorted_key = key[order]
+
+    def locate(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        want = u * n_nodes + v
+        pos = np.searchsorted(sorted_key, want)
+        if (pos >= sorted_key.shape[0]).any() or (sorted_key[pos] != want).any():
+            raise ValueError("stereo_bonds names a pair that is not an edge")
+        return order[pos]
+
+    a, b = stereo_bonds[:, 0], stereo_bonds[:, 1]
+    return locate(a, b), locate(b, a)
