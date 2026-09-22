@@ -250,3 +250,122 @@ def _assert_same_statistics(a, b):
         np.testing.assert_array_equal(x.count[ox], y.count[oy])
         np.testing.assert_allclose(x.mean[ox], y.mean[oy], rtol=1e-10, atol=1e-12)
         np.testing.assert_allclose(x.msd[ox], y.msd[oy], rtol=1e-10, atol=1e-12)
+
+
+def _stereo_config():
+    from tests.helpers import simple_config
+
+    return simple_config(stereo=("cis_trans",), max_wl_depth=3)
+
+
+def test_a_stereo_model_merges_identically_to_a_whole_one():
+    """The property the construction exists to preserve. Same shape as
+    test_a_pickled_shard_merges_identically_to_a_local_one just above."""
+    import dataclasses
+
+    from rdkit import Chem
+
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    cfg = _stereo_config()
+    smiles = [
+        "C/C=C/C",
+        r"C/C=C\C",
+        "C/C=C/CC",
+        r"C/C=C\CC",
+        "C/C(F)=C(Cl)/C",
+        r"C/C(F)=C(Cl)\C",
+        "CCCC",
+        "CC(C)C",
+    ]
+    mols = [Chem.MolFromSmiles(s) for s in smiles]
+    rng = np.random.default_rng(0)
+    b = from_rdkit(mols, y=None, config=cfg)
+    # NodeBatch is a frozen dataclass; y is per-node and n_nodes is only known
+    # once the batch exists, so attach the targets with replace().
+    b = dataclasses.replace(b, y=rng.normal(size=(b.n_nodes, 1)))
+
+    first = b.graph_id < 4
+    a, c = sieve.fit(b[first], cfg), sieve.fit(b[~first], cfg)
+    whole = sieve.fit(b, cfg)
+    merged = a.merge(c)
+
+    counts = [lv.n_classes for lv in whole.levels]
+    assert [lv.n_classes for lv in merged.levels] == counts
+    np.testing.assert_allclose(preds(merged, b), preds(whole, b))
+
+
+def test_a_stereo_model_merges_identically_over_three_shards():
+    """Two shards can pass by luck; three is the check that the ordering is
+    genuinely batch-independent rather than symmetric in one split."""
+    import dataclasses
+
+    from rdkit import Chem
+
+    from sieve.io.rdkit_adapter import from_rdkit
+
+    cfg = _stereo_config()
+    smiles = [
+        "C/C=C/C",
+        r"C/C=C\C",
+        "C/C=C/CC",
+        r"C/C=C\CC",
+        "C/C(F)=C(Cl)/C",
+        r"C/C(F)=C(Cl)\C",
+        "CCCC",
+        "CC(C)C",
+        "C/C=C/Br",
+    ]
+    mols = [Chem.MolFromSmiles(s) for s in smiles]
+    rng = np.random.default_rng(1)
+    b = from_rdkit(mols, y=None, config=cfg)
+    b = dataclasses.replace(b, y=rng.normal(size=(b.n_nodes, 1)))
+
+    shards = [
+        b[b.graph_id < 3],
+        b[(b.graph_id >= 3) & (b.graph_id < 6)],
+        b[b.graph_id >= 6],
+    ]
+    merged = sieve.fit(shards[0], cfg)
+    for shard in shards[1:]:
+        merged = merged.merge(sieve.fit(shard, cfg))
+    whole = sieve.fit(b, cfg)
+
+    assert [lv.n_classes for lv in merged.levels] == [
+        lv.n_classes for lv in whole.levels
+    ]
+    np.testing.assert_allclose(preds(merged, b), preds(whole, b))
+
+
+def test_enantiomers_are_not_separated_by_the_cis_trans_code():
+    """E/Z survives reflection; this half must be blind to handedness, which
+    is what keeps it independent of the mirror quotient the tetrahedral half
+    will need."""
+    from sieve.io.rdkit_adapter import from_smiles
+    from sieve.refine import refine
+
+    cfg = _stereo_config()
+    for left, right in [
+        ("C[C@H](F)/C=C/C", "C[C@@H](F)/C=C/C"),
+        (r"C[C@H](F)/C=C\C", r"C[C@@H](F)/C=C\C"),
+    ]:
+        a = refine(from_smiles([left], config=cfg), cfg)
+        b = refine(from_smiles([right], config=cfg), cfg)
+        for la, lb in zip(a, b, strict=True):
+            assert np.array_equal(
+                np.sort(la.signatures, axis=0), np.sort(lb.signatures, axis=0)
+            )
+
+
+def test_the_fingerprint_never_sees_the_stereo_trit():
+    """The one-character mistake with no error message: folding `full`
+    instead of `edge_code` into the fingerprint makes the ordering
+    stereo-dependent, so mirroring or remapping reorders substituents and a
+    merged model disagrees on a handful of atoms."""
+    import inspect
+
+    from sieve import refine as refine_module
+
+    source = inspect.getsource(refine_module)
+    call = source.split("content_ranks(")[1].split(")")[0]
+    assert "edge_code" in call and "full" not in call
