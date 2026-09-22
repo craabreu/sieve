@@ -228,17 +228,28 @@ Rebuilt on both stores with one harness, which reproduces §2 exactly on the pre
 (102,824 conformers, 4,211,148 atoms, 32,633 stereo-blind groups, 1,493 subset groups,
 8,027 conformers, 7.81%, keyed 0.009168 / blind 0.009348):
 
-| | pre-fix | post-fix |
-|---|---:|---:|
-| whole split, keyed floor | 0.009168 | 0.009108 |
-| whole split, stereo-blind floor | 0.009348 | 0.009348 |
-| whole split, gap | 0.000180 | **0.000240** |
-| subset groups | 1,493 | **1,998** |
-| subset conformers | 8,027 | **9,397** |
-| subset share of split | 7.81% | **9.14%** |
-| subset keyed floor | 0.009040 | 0.008567 |
-| subset stereo-blind floor | 0.011161 | 0.011082 |
-| subset gap | 0.002121 | **0.002515** |
+| | pre-fix | bond-stereo fix | rebuilt store |
+|---|---:|---:|---:|
+| whole split, keyed floor | 0.009168 | 0.009108 | 0.009078 |
+| whole split, stereo-blind floor | 0.009348 | 0.009348 | 0.009332 |
+| whole split, gap | 0.000180 | 0.000240 | **0.000253** |
+| subset groups | 1,493 | 1,998 | 1,976 |
+| subset conformers | 8,027 | 9,397 | 9,257 |
+| subset share of split | 7.81% | 9.14% | **9.00%** |
+| subset keyed floor | 0.009040 | 0.008567 | 0.008440 |
+| subset stereo-blind floor | 0.011161 | 0.011082 | 0.011144 |
+| subset gap | 0.002121 | 0.002515 | **0.002704** |
+| artifact groups / conformers | 51 / 309 | 3 / 9 | **0 / 0** |
+
+The third column is the store rebuilt 2026-09-21, holding 102,855 test conformers and
+4,209,344 atoms in 32,667 stereo-blind groups.
+
+**Read the third column as a new measurement, not as a controlled increment.** The
+rebuild recomputed the split, and Butina is not bit-exact across runs, so the test set is
+a different set of molecules from the one the first two columns describe. The direction
+of every movement is consistent across all three, and the artifact count falls to zero,
+but a difference of one part in the fourth decimal between columns two and three is not
+attributable to the gate and exotic-tag fixes alone.
 
 Three consequences for the prose.
 
@@ -249,20 +260,25 @@ appear. §2.0 modelled the defect as groups that should be *merged*; perceiving 
 stereo from 3D mostly *splits*. The sentence "correcting it makes §2's argument stronger
 rather than weaker" is right in conclusion and wrong in mechanism.
 
-**The artifact population is gone.** On a geometric criterion — all conformers sharing
-one signature of signed volumes and torsion classes, up to a global reflection —
-it is 51 groups / 309 conformers pre-fix and **3 groups / 9 conformers post-fix**
-(0.10% of the subset, moving the gap by 0.2%). §2.0's "~11% of the stereo-sensitive
-subset is a labelling artifact" does not survive on either store under this criterion.
+**The artifact population is gone, now completely.** On a geometric criterion — all
+conformers sharing one signature of signed volumes and torsion classes, up to a global
+reflection — it is 51 groups / 309 conformers pre-fix, 3 groups / 9 conformers after
+the bond-stereo fix, and **0 groups / 0 conformers on the rebuilt store**. §2.0's
+"~11% of the stereo-sensitive subset is a labelling artifact" does not survive on any of
+the three.
 
 **The two tracks re-weight.** Classifying subset groups by what differs geometrically:
 
-| | pre-fix groups | post-fix groups | post-fix share of conformers |
-|---|---:|---:|---:|
-| E/Z only | 443 | **990** | **40.5%** |
-| tetrahedral only | 857 | 857 | **50.7%** |
-| both | 118 | 124 | 7.8% |
-| neither | 75 | 27 | 1.1% |
+| | pre-fix groups | bond-stereo fix | rebuilt store | share of conformers |
+|---|---:|---:|---:|---:|
+| E/Z only | 443 | 990 | 967 | **40.3%** |
+| tetrahedral only | 857 | 857 | 884 | **51.9%** |
+| both | 118 | 124 | 125 | 7.7% |
+| neither | 75 | 27 | **0** | **0%** |
+
+The "neither" bucket closing is the result worth keeping: on the rebuilt store every
+stereo-sensitive group is explained by an E/Z difference, a tetrahedral one, or both,
+with no residue that the two tracks fail to account for.
 
 The tetrahedral bucket is *identical* before and after — the fix touched bond stereo and
 stopped overwriting atom parities, so atom geometry did not move — while the E/Z bucket
