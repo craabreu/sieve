@@ -189,3 +189,47 @@ def test_config_survives_a_pickle_round_trip():
     assert restored.attribute_codes == cfg.attribute_codes
     with pytest.raises(TypeError):
         restored.attribute_codes["element"]["N"] = 2  # still frozen
+
+
+def _ref_config(**kw):
+    from sieve.config import SieveConfig
+
+    base = dict(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes={"element": {"C": 0, "H": 1}},
+        edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
+        max_wl_depth=3,
+    )
+    base.update(kw)
+    return SieveConfig(**base)
+
+
+def test_stereo_defaults_off_and_leaves_the_digest_untouched():
+    # This literal is today's digest for the reference config above. A fitted
+    # model on disk carries this digest; changing it silently invalidates
+    # every one of them.
+    assert (
+        _ref_config().schema_version
+        == "f54a104c61946eef939179d20cf473cd1a1e42b778fdc115599472d71eb8e4b0"
+    )
+    assert _ref_config().stereo == ()
+    assert _ref_config().stereo_radices == ()
+
+
+def test_enabling_a_stereo_track_changes_the_digest():
+    off, on = _ref_config(), _ref_config(stereo=("cis_trans",))
+    assert on.schema_version != off.schema_version
+
+
+def test_a_stereo_track_widens_the_edge_alphabet_by_four():
+    off, on = _ref_config(), _ref_config(stereo=("cis_trans",))
+    assert on.n_edge_types == off.n_edge_types * 4
+    assert on.stereo_radices == (4,)
+
+
+def test_an_unknown_stereo_track_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown stereo track"):
+        _ref_config(stereo=("helical",))
