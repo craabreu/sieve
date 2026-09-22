@@ -143,18 +143,26 @@ should not be quoted alone.
    both; they are different molecules, so the difference was chemistry, not an MBIS
    failure. Both survive in the rebuilt store.
 
-> **The 21-vs-20 discrepancy, resolved: it is a unit, not a disagreement.**
-> `curation-audit-correction.md` §2 says 20, this run says 21, and both are right.
-> The wrongly deleted records are **21 conformers** spanning **20 distinct structures**:
-> `Rest_8872 conf_2` and `Rest_144442 conf_2` are the same structure deposited under two
-> identifiers, agreeing to 0.0372 e. They are each other's corroborating partner, and the
-> old rule deleted both — the sharpest illustration of the defect in the corpus, since
-> two records that vouch for each other were discarded purely because the grouping key
-> was a deposit identifier. State the unit wherever either number is quoted; the
-> criterion acts on conformers, so 21 is the natural figure for a sentence about records
-> removed, and 20 for one about molecules affected. Ruled out on the way: partners that
-> do not themselves survive curation (all 21 have surviving partners) and a threshold
-> boundary (tightest margin 0.3982 e).
+> **The 21-vs-20 discrepancy, resolved: it is the atom alignment.**
+> `curation-audit-correction.md` §2's 20 came from a harness comparing charges by raw
+> atom index; with `_canonical_order` alignment the count is 21. Measured both ways on
+> this corpus:
+>
+> | comparison | conformers | structures |
+> |---|---:|---:|
+> | raw atom index | 20 | 19 |
+> | `_canonical_order` aligned | **21** | **20** |
+>
+> The one record only the aligned comparison finds is `QMUGS500_14704 conf_00`, whose
+> best same-structure margin is 0.4073 e raw against 0.3274 e aligned: the misalignment
+> pushed a genuine agreement just past the threshold. This is the same cross-deposit
+> defect `61b2b82` fixed in `curate_conformers`, reappearing in the audit harness.
+>
+> An earlier reading of this file attributed the gap to a unit difference, on the
+> grounds that the 21 conformers span 20 structures. That is true but coincidental, and
+> it is worth recording as a caution: a hypothesis that reproduces the expected number
+> is not thereby confirmed. The raw-index hypothesis reproduces it too, and disagrees on
+> the structure count (19, not 20), which distinguishes them.
 
 The prediction above — "small, possibly zero" — was right about the magnitude and wrong
 about where to look. The 817/817 agreement rate says diastereomers under one identifier
