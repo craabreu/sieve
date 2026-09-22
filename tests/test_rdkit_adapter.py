@@ -917,3 +917,84 @@ def test_bond_stereo_leaves_chirality_vocabulary_unchanged():
     )
     assert codes_without["chirality"] == codes_with["chirality"]
     assert "unspecified" not in codes_without["chirality"]
+
+
+def test_stereo_rows_read_cis_trans_not_cip():
+    """The store gives STEREOCIS/STEREOTRANS and SMILES gives STEREOE/STEREOZ,
+    so reading bond.GetStereo() would import CIP on the from_smiles path.
+    FindPotentialStereo gives the same local answer on both."""
+    from sieve.io.rdkit_adapter import _stereo_bond_rows
+
+    trans = _stereo_bond_rows(Chem.MolFromSmiles("C/C=C/C"))
+    cis = _stereo_bond_rows(Chem.MolFromSmiles(r"C/C=C\C"))
+    assert len(trans) == 1 and len(cis) == 1
+    assert trans[0][:6] == cis[0][:6]  # same atoms, same controlling pairs
+    assert trans[0][6] != cis[0][6]  # opposite relation
+
+
+def test_an_unspecified_double_bond_yields_no_row():
+    from sieve.io.rdkit_adapter import _stereo_bond_rows
+
+    assert _stereo_bond_rows(Chem.MolFromSmiles("CC=CC")) == []
+
+
+def test_a_non_stereogenic_double_bond_yields_no_row():
+    from sieve.io.rdkit_adapter import _stereo_bond_rows
+
+    assert _stereo_bond_rows(Chem.MolFromSmiles("CC(C)=CC")) == []
+
+
+def test_an_end_with_two_substituents_reports_both():
+    from sieve.io.rdkit_adapter import _stereo_bond_rows
+
+    rows = _stereo_bond_rows(Chem.MolFromSmiles(r"C/C(F)=C(Cl)/C"))
+    assert len(rows) == 1
+    _, _, a1, a2, b1, b2, _ = rows[0]
+    assert a2 >= 0 and b2 >= 0
+
+
+def test_from_smiles_populates_stereo_bonds_only_when_configured():
+    from dataclasses import replace
+
+    cfg = cfg_for(["C/C=C/C"], attrs=(("element",),))
+    off = from_smiles(["C/C=C/C"], config=cfg)
+    on = from_smiles(["C/C=C/C"], config=replace(cfg, stereo=("cis_trans",)))
+    assert off.stereo_bonds is None
+    assert on.stereo_bonds.shape == (1, 7)
+
+
+def test_from_smiles_stereo_bonds_use_batch_global_atom_indices():
+    """A second molecule in the same batch must not collide with the first."""
+    from dataclasses import replace
+
+    cfg = replace(
+        cfg_for(["C/C=C/C", r"C/C=C\C"], attrs=(("element",),)),
+        stereo=("cis_trans",),
+    )
+    b = from_smiles(["C/C=C/C", r"C/C=C\C"], config=cfg)
+    assert b.stereo_bonds.shape == (2, 7)
+    first_atoms = mol_first = Chem.MolFromSmiles("C/C=C/C").GetNumAtoms()
+    row0, row1 = b.stereo_bonds
+    assert row0[0] < first_atoms and row0[1] < first_atoms
+    assert row1[0] >= first_atoms and row1[1] >= first_atoms
+
+
+def test_stereo_bonds_respect_a_permuted_node_order():
+    """The offset loop must go through the same inv[] permutation every
+    other per-atom column does, or a custom node_order silently corrupts
+    every stereo bond."""
+    from dataclasses import replace
+
+    mol = Chem.MolFromSmiles("C/C=C/C")
+    n = mol.GetNumAtoms()
+    reversed_order = np.array(list(reversed(range(n))))
+    cfg = replace(
+        cfg_for(["C/C=C/C"], attrs=(("element",),)), stereo=("cis_trans",)
+    )
+    b = from_rdkit([mol], config=cfg, node_order=[reversed_order])
+    assert b.stereo_bonds.shape == (1, 7)
+    # atoms 1 and 2 are the sp2 carbons in "C/C=C/C" (0-indexed): C-C=C-C.
+    # Under the reversed order, local position = n - 1 - raw_index.
+    expected_a, expected_b = sorted([n - 1 - 1, n - 1 - 2])
+    got_a, got_b = sorted([int(b.stereo_bonds[0, 0]), int(b.stereo_bonds[0, 1])])
+    assert (got_a, got_b) == (expected_a, expected_b)
