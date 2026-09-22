@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,6 +10,7 @@ import numpy as np
 from sieve.batch import NodeBatch
 from sieve.config import LEVEL_WL, SieveConfig
 from sieve.dedupe import dense_rows
+from sieve.stereo import cis_trans_codes, content_ranks, directed_positions
 
 
 @dataclass(frozen=True)
@@ -115,12 +117,51 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     for j, radix in enumerate(radices):
         edge_code = edge_code * radix + csr.attr[:, j]
 
+    # --- stereo codes (docs/superpowers/specs/2026-09-22-cis-trans-
+    # featurisation-design.md) --------------------------------------------
+    # Recomputed every WL round from the content-rank fingerprint, never
+    # stored: what reaches a signature row is the pair encoding below, which
+    # merge can remap freely. The fingerprint itself folds the *static*
+    # edge_code only (never a stereo code), which is what keeps the ordering
+    # -- and therefore which substituent wins -- independent of mirroring or
+    # remapping.
+    stereo_radix = math.prod(config.stereo_radices)
+    fingerprints: list[np.ndarray] = []
+    pos_ab = pos_ba = None
+    if config.stereo:
+        if batch.stereo_bonds is None:
+            raise ValueError(
+                f"config.stereo is {list(config.stereo)} but the batch carries "
+                "no stereo_bonds; the adapter was run with a stereo-blind config"
+            )
+        n_wl = sum(1 for k in kinds if k == LEVEL_WL)
+        fingerprints = content_ranks(
+            batch.node_attrs, csr, edge_code, max(n_wl - 2, 0)
+        )
+        pos_ab, pos_ba = directed_positions(csr, n, batch.stereo_bonds)
+
+    wl_round = 0
     for offset, kind in enumerate(kinds):
         base = levels[parents[offset]].labels
         if kind == LEVEL_WL:
+            wl_round += 1
+            full = edge_code
+            if config.stereo:
+                # The gather reaches distance 2, so an honest code needs
+                # radius-(k-2) identities. At k = 1 there is no such radius:
+                # the far substituent is two bonds away, outside a radius-1
+                # neighborhood, so the feature stays silent rather than
+                # asserting something the level cannot support.
+                j = wl_round - 2
+                stereo_code = np.zeros(edge_code.shape[0], np.int64)
+                if j >= 0:
+                    codes = cis_trans_codes(batch.stereo_bonds, fingerprints[j])
+                    stereo_code[pos_ab] = codes
+                    stereo_code[pos_ba] = codes
+                full = edge_code * stereo_radix + stereo_code
             # Encode (neighbor label, bond) as one integer so a row of
             # neighbors is a plain integer vector.
-            pair = base[csr.dst] * n_edge_types + edge_code
+            pair = base[csr.dst] * n_edge_types + full
             pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
             pad[csr.src, csr.slot] = pair
             # Sorting canonicalizes the multiset; -1 pads sort first, and

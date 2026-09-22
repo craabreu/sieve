@@ -251,3 +251,67 @@ def test_graded_attribute_levels_refine_progressively():
 def _same_partition(a, b):
     pairs = {(int(x), int(y)) for x, y in zip(a, b, strict=True)}
     return len(pairs) == len(set(a.tolist())) == len(set(b.tolist()))
+
+
+def stereo_config(**kw):
+    from tests.helpers import simple_config
+
+    return simple_config(stereo=("cis_trans",), max_wl_depth=3, **kw)
+
+
+def test_cis_and_trans_2_butene_separate_but_not_before_radius_two():
+    """The radius rule, pinned. cis/trans is a fact about a four-atom span, so
+    a radius-1 class asserting it would be naming an atom outside its own
+    neighborhood."""
+    from sieve.io.rdkit_adapter import from_smiles
+
+    cfg = stereo_config()
+    cis = refine(from_smiles([r"C/C=C\C"], config=cfg), cfg)
+    trans = refine(from_smiles(["C/C=C/C"], config=cfg), cfg)
+    assert sorted(cis[1].signatures.tolist()) == sorted(trans[1].signatures.tolist())
+    assert sorted(cis[2].signatures.tolist()) != sorted(trans[2].signatures.tolist())
+
+
+def test_a_non_stereogenic_double_bond_never_separates():
+    from sieve.io.rdkit_adapter import from_smiles
+
+    cfg = stereo_config()
+    a = refine(from_smiles(["CC(C)=CC"], config=cfg), cfg)
+    b = refine(from_smiles(["CC(C)=CC"], config=cfg), cfg)
+    for la, lb in zip(a, b, strict=True):
+        assert np.array_equal(la.signatures, lb.signatures)
+
+
+def test_an_identical_pair_never_separates():
+    """Nothing spurious is manufactured when there is nothing to separate."""
+    from sieve.io.rdkit_adapter import from_smiles
+
+    cfg = stereo_config()
+    a = refine(from_smiles(["C/C=C/C"], config=cfg), cfg)
+    b = refine(from_smiles(["C/C=C/C"], config=cfg), cfg)
+    for la, lb in zip(a, b, strict=True):
+        assert np.array_equal(la.signatures, lb.signatures)
+
+
+def test_a_molecule_with_no_stereogenic_bond_is_unaffected_by_the_track():
+    """Enabling the track must not perturb a molecule it has nothing to say
+    about: same class count at every level, stereo on or off."""
+    from sieve.io.rdkit_adapter import from_smiles
+    from tests.helpers import simple_config
+
+    off_cfg = simple_config(max_wl_depth=3)
+    on_cfg = stereo_config()
+    off = refine(from_smiles(["CCCC"], config=off_cfg), off_cfg)
+    on = refine(from_smiles(["CCCC"], config=on_cfg), on_cfg)
+    assert [lv.n_classes for lv in off] == [lv.n_classes for lv in on]
+
+
+def test_a_configured_track_without_stereo_bonds_raises():
+    import pytest
+    from sieve.io.rdkit_adapter import from_smiles
+    from tests.helpers import simple_config
+
+    off_cfg = simple_config(max_wl_depth=3)
+    batch = from_smiles(["C/C=C/C"], config=off_cfg)  # no stereo_bonds
+    with pytest.raises(ValueError, match="config.stereo"):
+        refine(batch, stereo_config())
