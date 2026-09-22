@@ -128,6 +128,10 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     # remapping.
     stereo_radix = math.prod(config.stereo_radices)
     fingerprints: Iterator[np.ndarray] = iter(())
+    # Bound once here rather than read off the batch in the loop: non-None
+    # exactly when a track is enabled, so the loop's own `is not None` both
+    # narrows the type and says the same thing as `if config.stereo`.
+    stereo_bonds: np.ndarray | None = None
     pos_ab = pos_ba = None
     if config.stereo:
         if batch.stereo_bonds is None:
@@ -135,12 +139,13 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                 f"config.stereo is {list(config.stereo)} but the batch carries "
                 "no stereo_bonds; the adapter was run with a stereo-blind config"
             )
+        stereo_bonds = batch.stereo_bonds
         n_wl = sum(1 for k in kinds if k == LEVEL_WL)
         # Consumed one at a time below, never indexed: config refuses
         # stereo with neighbor_depth, so the WL levels are a single chain
         # and the radius the code reads rises by exactly one per round.
         fingerprints = content_ranks(batch.node_attrs, csr, edge_code, max(n_wl - 2, 0))
-        pos_ab, pos_ba = directed_positions(csr, n, batch.stereo_bonds)
+        pos_ab, pos_ba = directed_positions(csr, n, stereo_bonds)
 
     wl_round = 0
     for offset, kind in enumerate(kinds):
@@ -148,7 +153,7 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
         if kind == LEVEL_WL:
             wl_round += 1
             full = edge_code
-            if config.stereo:
+            if stereo_bonds is not None:
                 # The gather reaches distance 2, so an honest code needs
                 # radius-(k-2) identities. At k = 1 there is no such radius:
                 # the far substituent is two bonds away, outside a radius-1
@@ -156,7 +161,7 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                 # asserting something the level cannot support.
                 stereo_code = np.zeros(edge_code.shape[0], np.int64)
                 if wl_round >= 2:
-                    codes = cis_trans_codes(batch.stereo_bonds, next(fingerprints))
+                    codes = cis_trans_codes(stereo_bonds, next(fingerprints))
                     stereo_code[pos_ab] = codes
                     stereo_code[pos_ba] = codes
                 full = edge_code * stereo_radix + stereo_code

@@ -191,18 +191,20 @@ def test_config_survives_a_pickle_round_trip():
         restored.attribute_codes["element"]["N"] = 2  # still frozen
 
 
-def _ref_config(**kw):
-    from sieve.config import SieveConfig
+_REF_CONFIG = SieveConfig(
+    target_dim=1,
+    attribute_levels=(("element",),),
+    attribute_codes={"element": {"C": 0, "H": 1}},
+    edge_codes={"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
+    max_wl_depth=3,
+)
 
-    base = {
-        "target_dim": 1,
-        "attribute_levels": (("element",),),
-        "attribute_codes": {"element": {"C": 0, "H": 1}},
-        "edge_codes": {"bond_type": {"SINGLE": 0, "DOUBLE": 1}},
-        "max_wl_depth": 3,
-    }
-    base.update(kw)
-    return SieveConfig(**base)
+
+def _ref_config(**kw):
+    """``replace`` over a frozen base, as ``tests/helpers.simple_config``
+    does. Unpacking a plain ``**base`` dict instead loses each field's own
+    type, so every keyword lands as the dict's value union."""
+    return replace(_REF_CONFIG, **kw)
 
 
 def test_stereo_defaults_off_and_leaves_the_digest_untouched():

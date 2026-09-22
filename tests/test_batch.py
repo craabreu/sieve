@@ -585,6 +585,7 @@ def test_getitem_keeps_and_remaps_a_selected_graphs_stereo_bond():
     whole = _two_ethenes_batch()
     mask = whole.graph_id == 0
     sub = whole[mask]
+    assert sub.stereo_bonds is not None
     assert sub.stereo_bonds.shape == (1, 7)
     np.testing.assert_array_equal(sub.stereo_bonds[0], [0, 1, 2, -1, 3, -1, 1])
 
@@ -593,6 +594,7 @@ def test_getitem_drops_a_stereo_bond_whose_graph_is_not_selected():
     whole = _two_ethenes_batch()
     sub = whole[whole.graph_id == 0]
     # Only graph 0's bond should survive; graph 1's bond (cis=0) must not.
+    assert sub.stereo_bonds is not None
     assert sub.stereo_bonds.shape[0] == 1
     assert sub.stereo_bonds[0, 6] == 1
 
@@ -606,6 +608,7 @@ def test_concat_batches_offsets_and_concatenates_stereo_bonds():
     whole = _two_ethenes_batch()
     parts = [whole[whole.graph_id == 0], whole[whole.graph_id == 1]]
     r = concat_batches(parts)
+    assert r.stereo_bonds is not None
     assert r.stereo_bonds.shape == (2, 7)
     # Re-derive expected rows: part 1's atoms are offset by part 0's node count (4).
     np.testing.assert_array_equal(

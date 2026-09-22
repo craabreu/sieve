@@ -960,6 +960,7 @@ def test_from_smiles_populates_stereo_bonds_only_when_configured():
     off = from_smiles(["C/C=C/C"], config=cfg)
     on = from_smiles(["C/C=C/C"], config=replace(cfg, stereo=("cis_trans",)))
     assert off.stereo_bonds is None
+    assert on.stereo_bonds is not None
     assert on.stereo_bonds.shape == (1, 7)
 
 
@@ -972,6 +973,7 @@ def test_from_smiles_stereo_bonds_use_batch_global_atom_indices():
         stereo=("cis_trans",),
     )
     b = from_smiles(["C/C=C/C", r"C/C=C\C"], config=cfg)
+    assert b.stereo_bonds is not None
     assert b.stereo_bonds.shape == (2, 7)
     first_atoms = Chem.MolFromSmiles("C/C=C/C").GetNumAtoms()
     row0, row1 = b.stereo_bonds
@@ -990,6 +992,7 @@ def test_stereo_bonds_respect_a_permuted_node_order():
     reversed_order = np.array(list(reversed(range(n))))
     cfg = replace(cfg_for(["C/C=C/C"], attrs=(("element",),)), stereo=("cis_trans",))
     b = from_rdkit([mol], config=cfg, node_order=[reversed_order])
+    assert b.stereo_bonds is not None
     assert b.stereo_bonds.shape == (1, 7)
     # atoms 1 and 2 are the sp2 carbons in "C/C=C/C" (0-indexed): C-C=C-C.
     # Under the reversed order, local position = n - 1 - raw_index.
