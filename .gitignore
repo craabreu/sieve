@@ -40,6 +40,13 @@ experiments/results
 experiments/stores
 experiments/external
 
+# Study figures. Regenerable from experiments/runs by the depth-curve and
+# compare steps, and not what the manuscript ships -- main.tex builds its own
+# from sieve_paper/figures. Tracking them cost 9.1 MB of blobs across 10
+# commits and, because every fitting entry point refuses a dirty tree, made
+# each figure-producing step abort the step that followed it.
+experiments/docs/figures/
+
 # cosmo_experiments/ isn't part of this branch (it lives on experiments/
 # dash-charges) -- ignored here so a shared checkout's leftover copy never
 # gets accidentally staged on this branch.
