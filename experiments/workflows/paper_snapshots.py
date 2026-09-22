@@ -35,6 +35,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "experiments"))
@@ -72,7 +73,9 @@ LABELS = {
 }
 
 # Study A: one panel per arm, with the axis label each arm's setting carries.
-DEPTH_SWEEP_ARMS = (
+# Annotated because ty infers dict[str, str | None] from the literal below,
+# which then rejects the nested metrics dict assigned in depth_sweep_snapshot.
+DEPTH_SWEEP_ARMS: tuple[dict[str, Any], ...] = (
     {
         "experiment": "dash-cv-study-a",
         "method": "dash",
@@ -213,7 +216,7 @@ def depth_sweep_snapshot() -> dict:
     )
     arms = []
     for spec in DEPTH_SWEEP_ARMS:
-        arm = dict(spec)
+        arm: dict[str, Any] = dict(spec)
         arm["metrics"] = {
             m: _fold_series(spec["experiment"], spec["method"], m)
             for m in DEPTH_SWEEP_METRICS
