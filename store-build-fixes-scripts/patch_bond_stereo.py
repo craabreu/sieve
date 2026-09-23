@@ -16,7 +16,7 @@ derived from the blobs:
    ``collapse_key`` and the fix moves rows between keys;
 3. ``collapse_key`` and its three counts, through ``collapse_columns``, the
    same code ``annotate_collapse`` runs;
-4. ``floor-components.json``, for the train shards whose rows changed.
+4. ``floor-components.json``, for every train shard, with the current floor code.
 
 Nothing else reads the blobs' bond stereo: the split, cluster and shard come
 from achiral fingerprints, and no code table in the store names a stereo
@@ -25,9 +25,10 @@ attribute (checked below rather than assumed).
 Two modes. By default everything is built in ``<store>/bondfix-staging/``
 and a report is written there; the store is not touched. ``--apply`` then
 moves the staged files into the store, keeping each original beside it with
-a ``.pre-bondfix`` suffix, the naming the earlier fixes used. The staging run
-refuses to go on if curation would decide differently, since adding rows back
-needs a split and shard for them -- a decision, not a patch.
+a ``.pre-bondfix`` suffix, the naming the earlier fixes used. If curation would
+decide differently, the staging still completes, as an oracle for a rebuild,
+but ``--apply`` refuses: adding rows back needs a split and shard for them --
+a decision, not a patch.
 
 Usage, from the repository root:
 
@@ -199,6 +200,13 @@ def compare_groups(old: pd.DataFrame, new: pd.DataFrame, rows: set[int]) -> list
     return out
 
 
+def _floor_components_of(shard: str) -> tuple[str, dict]:
+    staged_root = STORES_ROOT / STORE / STAGING
+    return shard, floor_components(
+        load_shards(STORE, [shard], stores_root=staged_root)[shard]
+    )
+
+
 def stage(store_dir: Path, processes: int) -> None:
     staging = store_dir / STAGING
     if staging.exists():
@@ -242,14 +250,16 @@ def stage(store_dir: Path, processes: int) -> None:
     }
     shutil.rmtree(replay_dir)
     if curation["restored"] or curation["removed"]:
-        (staging / REPORT).write_text(json.dumps({"curation": curation}, indent=2))
-        raise SystemExit(
+        # Staged anyway, as an oracle for a rebuild: every other row is still
+        # what the rebuild must reproduce. Only --apply refuses, since a
+        # restored row needs a split and shard, which a patch cannot choose.
+        log(
             f"curation decides differently: {len(curation['restored'])} row(s) "
-            f"restored, {len(curation['removed'])} removed. That needs a split "
-            f"and shard for the restored rows, which is a decision, not a patch. "
-            f"See {staging / REPORT}."
+            f"restored, {len(curation['removed'])} removed; staged without them, "
+            f"and --apply will refuse"
         )
-    log(f"curation keeps the same {len(kept_ids):,} rows")
+    else:
+        log(f"curation keeps the same {len(kept_ids):,} rows")
 
     log("recomputing collapse columns")
     new = collapse_columns(new)
@@ -262,22 +272,17 @@ def stage(store_dir: Path, processes: int) -> None:
     log("writing the staged store")
     new.to_parquet(staging / STORE / "molecules.parquet")
 
-    # Floors: only a train shard whose rows changed can move.
-    moved = sorted(
-        {s for g in groups for s in g["shard"] if g["kind"] != "unchanged"} - {"test"}
-    )
-    floors = json.loads((store_dir / FLOORS).read_text())
-    if moved:
-        log(f"recomputing floor components for {moved}")
-        by_shard = load_shards(STORE, moved, stores_root=staging)
-        before = {s: floors[s] for s in moved}
-        for s in moved:
-            floors[s] = floor_components(by_shard[s])
-        floor_deltas = {
-            s: {k: floors[s][k] - before[s][k] for k in floors[s]} for s in moved
-        }
-    else:
-        floor_deltas = {}
+    # Floors, for every train shard, with the current floor code: the
+    # definition itself may have changed since the store was built, so no
+    # shard's cached components can be assumed current.
+    old_floors = json.loads((store_dir / FLOORS).read_text())
+    shards = sorted(old_floors)
+    log(f"recomputing floor components for all {len(shards)} train shards")
+    with mp.Pool(min(processes, len(shards))) as pool:
+        floors = dict(pool.map(_floor_components_of, shards))
+    floor_deltas = {
+        s: {k: floors[s][k] - old_floors[s][k] for k in floors[s]} for s in shards
+    }
     (staging / FLOORS).write_text(json.dumps(floors, indent=2, sort_keys=True))
     (staging / CURATION_SUMMARY).write_text(curation_text + "\n")
 
@@ -309,7 +314,13 @@ def stage(store_dir: Path, processes: int) -> None:
     }
     (staging / REPORT).write_text(json.dumps(report, indent=2, default=str))
     summarise(report)
-    log(f"staged in {staging}; nothing in the store was touched. --apply swaps it in.")
+    next_step = (
+        "curation differs, so rebuild (rebuild_store.sh) and check the rebuild "
+        "against this with compare_rebuild.py"
+        if curation["restored"] or curation["removed"]
+        else "--apply swaps it in"
+    )
+    log(f"staged in {staging}; nothing in the store was touched; {next_step}.")
 
 
 def summarise(report: dict) -> None:
@@ -348,6 +359,12 @@ def apply(store_dir: Path) -> None:
     report = json.loads((staging / REPORT).read_text())
     if "rows_changed" not in report:
         raise SystemExit("the staging run stopped early; see its report")
+    if report["curation"]["restored"] or report["curation"]["removed"]:
+        raise SystemExit(
+            "curation decides differently under the current code, and a patch "
+            "cannot place restored rows in a split and shard: rebuild instead "
+            "(rebuild_store.sh), and check it with compare_rebuild.py"
+        )
     moves = [
         (staging / STORE / "molecules.parquet", store_dir / "molecules.parquet"),
         (staging / FLOORS, store_dir / FLOORS),

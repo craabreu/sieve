@@ -8,7 +8,8 @@ where else it moved, before any experiment is rerun on it.
 
 Checked, keyed by ``(dash_id, conf_id)`` so row order cannot matter:
 
-* the row set;
+* the row set, allowing exactly the rows the staging's curation replay
+  restores or removes;
 * every column of ``molecules.parquet``, the ``mol`` blobs byte for byte.
   ``cluster`` is compared as a partition, since a rebuild may number the
   same clusters differently; ``split`` and ``shard`` by label, since the
@@ -53,18 +54,39 @@ def _examples(index: pd.Index, n: int = 5) -> str:
     return shown + (f" (+{len(index) - n} more)" if len(index) > n else "")
 
 
-def compare_rows(rebuilt: pd.DataFrame, staged: pd.DataFrame) -> list[str]:
+# Counts over a collapse group, which a row curation restored or removed
+# changes for its whole group.
+_GROUP_COUNTS = {"n_collapsed", "n_molecules", "n_enantiomer_forms"}
+
+
+def compare_rows(
+    rebuilt: pd.DataFrame, staged: pd.DataFrame, restored: set, removed: set
+) -> list[str]:
+    """``restored``/``removed``: the rows the staging's curation replay says
+    the rebuild keeps or drops differently from the store it patched. Those
+    rows are expected in one store only, and their groups' counts differ."""
     problems = []
-    only_r = rebuilt.index.difference(staged.index)
-    only_s = staged.index.difference(rebuilt.index)
-    if len(only_r) or len(only_s):
-        problems.append(
-            f"row sets differ: {len(only_r)} only in the rebuild "
-            f"[{_examples(only_r)}], {len(only_s)} only in the staged store "
-            f"[{_examples(only_s)}]"
+    only_r = set(rebuilt.index.difference(staged.index))
+    only_s = set(staged.index.difference(rebuilt.index))
+    if only_r != restored or only_s != removed:
+        extra_r, extra_s = sorted(only_r - restored), sorted(only_s - removed)
+        missing = sorted((restored - only_r) | (removed - only_s))
+        in_rebuild, in_staged = (
+            _examples(pd.Index(extra_r)),
+            _examples(pd.Index(extra_s)),
         )
+        problems.append(
+            f"row sets differ beyond curation's expected changes: "
+            f"{len(extra_r)} unexpected in the rebuild [{in_rebuild}], "
+            f"{len(extra_s)} unexpected in the staged store [{in_staged}], "
+            f"{len(missing)} expected but absent"
+        )
+    touched_keys = set(rebuilt.loc[sorted(only_r), "collapse_key"]) | set(
+        staged.loc[sorted(only_s), "collapse_key"]
+    )
     common = rebuilt.index.intersection(staged.index)
     r, s = rebuilt.loc[common], staged.loc[common]
+    untouched = ~r["collapse_key"].isin(touched_keys).values
 
     columns = sorted(set(r.columns) | set(s.columns))
     for column in columns:
@@ -82,6 +104,8 @@ def compare_rows(rebuilt: pd.DataFrame, staged: pd.DataFrame) -> list[str]:
             continue
         a, b = r[column], s[column]
         differ = ~((a == b) | (a.isna() & b.isna()))
+        if column in _GROUP_COUNTS:
+            differ &= untouched
         if differ.any():
             problems.append(
                 f"{column}: {int(differ.sum())} row(s) differ "
@@ -90,12 +114,14 @@ def compare_rows(rebuilt: pd.DataFrame, staged: pd.DataFrame) -> list[str]:
     return problems
 
 
-def compare_floors(rebuilt: Path, staged: Path) -> list[str]:
+def compare_floors(rebuilt: Path, staged: Path, skip: set[str]) -> list[str]:
+    """Per shard, except the shards in ``skip``: those hold rows curation
+    restored or removed, which only the rebuild's floors can count."""
     a, b = json.loads(rebuilt.read_text()), json.loads(staged.read_text())
     if set(a) != set(b):
         return [f"floor-components shards differ: {sorted(set(a) ^ set(b))}"]
     problems = []
-    for shard in sorted(a):
+    for shard in sorted(set(a) - skip):
         for field in sorted(set(a[shard]) | set(b[shard])):
             x, y = a[shard].get(field), b[shard].get(field)
             if x is None or y is None or abs(x - y) > 1e-9 * max(1.0, abs(y)):
@@ -144,10 +170,22 @@ def main() -> int:
 
     rebuilt = _load(rebuilt_dir / "molecules.parquet")
     staged = _load(STAGED / "dash-molecules" / "molecules.parquet")
-    problems = compare_rows(rebuilt, staged)
-    problems += compare_floors(
-        rebuilt_dir / "floor-components.json", STAGED / "floor-components.json"
+    curation = json.loads((STAGED / "bondfix-report.json").read_text())["curation"]
+    restored = {tuple(x) for x in curation["restored"]}
+    removed = {tuple(x) for x in curation["removed"]}
+    problems = compare_rows(rebuilt, staged, restored, removed)
+    skip = set(rebuilt.loc[sorted(restored & set(rebuilt.index)), "shard"]) | set(
+        staged.loc[sorted(removed & set(staged.index)), "shard"]
     )
+    problems += compare_floors(
+        rebuilt_dir / "floor-components.json", STAGED / "floor-components.json", skip
+    )
+    if restored or removed:
+        print(
+            f"expected from curation: {len(restored)} row(s) restored, "
+            f"{len(removed)} removed; their groups' counts and the floors of "
+            f"shards {sorted(skip)} are not compared"
+        )
     problems += compare_text(
         "curation_summary.txt",
         rebuilt_dir / "curation_summary.txt",
