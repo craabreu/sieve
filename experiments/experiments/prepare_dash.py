@@ -885,10 +885,11 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     an atom ordering by construction, so under ``dash_id`` grouping the
     atom-count check was enough. Across deposits it is not: 3.75% of sampled
     multi-deposit groups hold the same atoms in a different order. Charges
-    are therefore stored in the key's own canonical order
-    (``collapse._canonical_order``), which is the alignment
-    ``collapse_molecule_set`` already uses to average charges over exactly
-    these groups.
+    are therefore aligned by ``collapse.aligned_values`` -- an explicit
+    isomorphism onto the group's first row, the alignment
+    ``collapse_molecule_set`` uses to average charges over exactly these
+    groups -- and sorted within each symmetry orbit, whose atoms have no
+    correct pairing to compare by.
 
     **Grouping is by structure, not by deposit.** ``dash_id`` is the only
     identity on every record -- 49.6% of the corpus has no ``CHEMBL_ID`` --
@@ -968,43 +969,20 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             actual,
         )
 
-    from experiments.collapse import _canonical_order, collapse_key
+    from experiments.collapse import aligned_values, collapse_key
 
     df = pd.read_parquet(molecules_path)
-    # Both the charges and the structure key come off each ``Mol`` in one
-    # pass, so no ``Mol`` outlives its iteration. The saving is modest and
-    # was measured rather than assumed: retaining all 40,000 mols of one row
-    # group costs 146 B/mol over dropping them, ~0.15 GB across the
-    # uncurated parse, because glibc keeps the freed arena rather than
-    # returning it and the peak is nearly the same either way. The reason to
-    # stream anyway is that the live set stays bounded instead of depending
-    # on allocator behaviour, which is the same caution
+    # One pass for the keys, and no Mol outlives its iteration. The saving
+    # is modest and was measured rather than assumed: retaining all 40,000
+    # mols of one row group costs 146 B/mol over dropping them, ~0.15 GB
+    # across the uncurated parse, because glibc keeps the freed arena rather
+    # than returning it and the peak is nearly the same either way. The
+    # reason to stream anyway is that the live set stays bounded instead of
+    # depending on allocator behaviour, which is the same caution
     # ``runner.load_molecule_set`` documents after a shard fit exhausted
-    # 503 GB by materializing rows no caller had asked for.
-    charges: list[np.ndarray] = []
-    keys: list[str] = []
-    for blob in df["mol"]:
-        mol = blob_to_mol(blob)
-        key = collapse_key(mol)
-        own = np.array(
-            [a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms()],
-            dtype=np.float64,
-        )
-        # Stored in the KEY's canonical order, not the record's own. The
-        # comparison below is index-wise, which was safe while a group was
-        # one deposit's conformers -- those share an atom ordering by
-        # construction -- and is not safe now that a group pools deposits
-        # and enantiomers. Measured on the store: of 400 sampled groups
-        # spanning more than one deposit, 15 (3.75%, ~670 of 17,890) carry
-        # the same atoms in a DIFFERENT order, which `a.shape != b.shape`
-        # cannot see. Comparing those by index pits one atom against
-        # another and fails both ways -- a spurious disagreement, or a
-        # spurious agreement certifying a record that should have failed.
-        # ``_canonical_order`` is the same alignment ``collapse_molecule_set``
-        # uses to average charges over one of these groups, so curation and
-        # the fit now mean the same thing by "the same atom".
-        charges.append(own[_canonical_order(mol, key)])
-        keys.append(key)
+    # 503 GB by materializing rows no caller had asked for. A group's own
+    # mols are rebuilt below, one group at a time.
+    keys = [collapse_key(blob_to_mol(blob)) for blob in df["mol"]]
 
     keep = np.zeros(len(df), dtype=bool)
     n_molecules_dropped = 0
@@ -1018,18 +996,24 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             n_solo_structures += 1
             keep[rows[0]] = True
             continue
+        # Charges aligned atom for atom across the group, then sorted within
+        # each symmetry orbit. The rule is index-wise, which is only safe once
+        # "the same atom" means the same thing for every row: the rows of a
+        # group pool deposits and enantiomers, whose atoms arrive in
+        # different orders (3.75% of sampled multi-deposit groups), and the
+        # atoms of one orbit have no correct pairing at all -- a methyl's
+        # hydrogens, rotated. Sorting within the orbit pairs them the way that
+        # minimises the largest difference, so a mere relabelling of
+        # symmetric atoms cannot read as a disagreement.
+        values, orbit = aligned_values(
+            [blob_to_mol(df["mol"].iat[r]) for r in rows], "MBIScharge", stereo=True
+        )
+        arrange = [np.lexsort((row, orbit)) for row in values]
+        charges = [row[order] for row, order in zip(values, arrange, strict=True)]
         survivors: set[int] = set()
         for i in range(len(rows)):
             for j in range(i + 1, len(rows)):
-                a, b = charges[rows[i]], charges[rows[j]]
-                if a.shape != b.shape:
-                    # Defensive only: one canonical SMILES implies one atom
-                    # count, so this should be unreachable under structure
-                    # grouping (0 occurrences across the sampled
-                    # multi-deposit groups). Kept so a malformed record
-                    # cannot crash or silently broadcast.
-                    continue
-                if float(np.abs(a - b).max()) <= threshold:
+                if float(np.abs(charges[i] - charges[j]).max()) <= threshold:
                     survivors.update((rows[i], rows[j]))
         if not survivors:
             n_molecules_dropped += 1

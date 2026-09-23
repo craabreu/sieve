@@ -566,6 +566,22 @@ def test_curate_conformers_drops_only_the_conformer_that_disagrees_with_all(tmp_
     assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
 
 
+def test_curate_conformers_does_not_read_swapped_symmetric_atoms_as_disagreement(
+    tmp_path,
+):
+    """Formaldehyde's two hydrogens are one atom to every arm and have no
+    correct pairing across conformers. Two conformers that differ only by
+    which H carries which charge agree, however far apart those charges are;
+    compared index by index they would be 0.5 e apart and both dropped."""
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(
+        tmp_path, [[0.1, -0.4, 0.0, 0.5], [0.1, -0.4, 0.5, 0.0]]
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
+
+
 def test_curate_conformers_keeps_a_smooth_continuum(tmp_path):
     """A-B and A-C agree while B-C does not: the charge varies smoothly with
     geometry and no conformer is isolated, so all three are kept. Removing
