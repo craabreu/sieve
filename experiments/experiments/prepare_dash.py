@@ -823,9 +823,34 @@ def _parquet_row_count(path: Path) -> int:
     return int(pq.ParquetFile(path).metadata.num_rows)
 
 
+def _isolated_rows(
+    values: np.ndarray, orbit: np.ndarray, threshold: float
+) -> np.ndarray:
+    """Which rows of ``values`` (rows x aligned atoms) carry an isolated atom:
+    one whose every equivalent -- every other value of its orbit, in any row
+    -- is ``threshold`` or more away. A value's nearest equivalent is a
+    neighbour in the sorted pool, so each orbit costs one sort."""
+    n_rows, _ = values.shape
+    isolated = np.zeros(n_rows, dtype=bool)
+    for label in np.unique(orbit):
+        columns = np.flatnonzero(orbit == label)
+        pool = values[:, columns].ravel()
+        if len(pool) < 2:
+            continue  # nothing to be judged against
+        owner = np.repeat(np.arange(n_rows), len(columns))
+        order = np.argsort(pool, kind="stable")
+        steps = np.diff(pool[order])
+        nearest = np.full(len(pool), np.inf)
+        nearest[order[1:]] = steps
+        nearest[order[:-1]] = np.minimum(nearest[order[:-1]], steps)
+        isolated[owner[nearest >= threshold]] = True
+    return isolated
+
+
 def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD) -> str:
-    """Drop conformers whose MBIS charges disagree with *every* sibling, and
-    overwrite ``molecules.parquet`` in place; return the summary text.
+    """Drop every conformer carrying an atom whose MBIS charge is ``threshold``
+    or more away from *every* equivalent atom, and overwrite
+    ``molecules.parquet`` in place; return the summary text.
 
     This is the DASH paper's own conformer criterion -- "we used the
     difference between the partial charge of the same atom in the three
@@ -842,25 +867,37 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     and 2,292 molecules of the distributed SDF violate it, for reasons
     this code cannot determine.
 
-    **The rule.** For each molecule, compare every *pair* of conformers
-    atom by atom; a pair agrees when no atom's charge differs by more than
-    ``threshold``. A conformer is removed exactly when it agrees with none
-    of its siblings.
+    **The rule.** Within one structure, an atom's *equivalents* are every
+    atom of its symmetry orbit in every conformer: the same atom in the
+    siblings, and the atoms symmetry makes it indistinguishable from -- a
+    methyl's other hydrogens -- in its own conformer too. An atom is
+    *isolated* when every one of its equivalents is ``threshold`` or more
+    away, and a conformer with an isolated atom is removed. An atom with no
+    equivalent at all cannot be judged and counts for nothing.
 
     Stated the other way round: a failed MBIS partition is wrong in its
-    own particular way, so it disagrees with everything and is identified
-    without a tie-break. Charges that vary smoothly with geometry leave
-    every conformer agreeing with at least one neighbour, so a molecule
-    spread along a continuum is kept whole -- the A-B and A-C agree while
-    B-C does not case, where deleting either B or C would be arbitrary
-    (141 molecules of the real corpus). Requiring instead that *all* pairs
-    agree would discard those molecules for being smoothly variable.
+    own particular way, so its bad atom disagrees with everything and is
+    identified without a tie-break, while the siblings it disagrees with
+    keep each other's company and survive. Charges that vary smoothly with
+    geometry leave every value near some other, so a molecule spread along a
+    continuum is kept whole -- the A-B and A-C agree while B-C does not case,
+    where deleting either B or C would be arbitrary.
 
-    Survivors come in pairs **whenever the deposit provided a pair**, so a
-    structure ends with zero conformers, with the single one it was
-    deposited with, or with at least two. That conditional is the honest
-    form of the invariant; the unconditional "survivors come in pairs by
-    construction" is false under the grouping below, for 14,815 structures.
+    Judging atoms rather than whole conformers is what makes that true
+    atom by atom. The rule this replaced kept a conformer only when one
+    sibling agreed with it on *every* atom, so a conformer whose atoms were
+    each corroborated, but by different siblings, was deleted (26 of its
+    2,205 deletions on the uncurated parse). And a lone conformer, which it
+    could not judge at all, is now judged through its symmetric atoms (8
+    deletions). The two rules agree on 2,179 rows.
+
+    Isolation, not distance from the median of the other equivalents, and
+    measured rather than argued: with three conformers and one outlier --
+    the corpus's common case -- the others' median is the midpoint of the
+    outlier and the good sibling, so a leave-one-out median flags the good
+    conformers too, and wiped 467 structures out entirely against 95 here.
+    What isolation gives up is two errors that agree with each other, which
+    corroborate one another and survive.
 
     **A group is not one deposit's three conformers.** Grouping by structure
     pools every deposit of that structure, and pools enantiomers too, since
@@ -907,13 +944,13 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     which is after this. At 0.10 ms/row that is ~2 minutes over the full
     parse, so recomputing costs less than reordering the pipeline would.
 
-    **A structure with one conformer is kept.** Under ``dash_id`` grouping a
-    lone conformer never occurred (minimum 2 per identifier) and removing it
-    was free; under structure grouping, 14,815 structures have exactly one
-    conformer of their own, and removing them would discard sound data for a
-    reason that has nothing to do with the MBIS convergence failure this
-    criterion exists to catch. Their lack of a sibling is a property of how
-    the corpus was deposited, not evidence that the record failed.
+    **A structure with one conformer is judged only through its symmetry.**
+    Under ``dash_id`` grouping a lone conformer never occurred (minimum 2 per
+    identifier); under structure grouping, about 14,800 structures have
+    exactly one conformer of their own. Their lack of a sibling is a
+    property of how the corpus was deposited, not evidence that the record
+    failed, so they are not removed for it -- but an atom that disagrees with
+    its own symmetric partners is still isolated.
 
     What is given up by the change is small and was measured: over 400
     sampled mixed identifiers, cross-structure pairs agreed within the
@@ -990,35 +1027,19 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     for _, positions in df.groupby(keys, sort=False).groups.items():
         rows = list(positions)
         if len(rows) == 1:
-            # Deposited without a sibling of its own structure. Nothing
-            # corroborates it and nothing contradicts it, so it is unjudged
-            # rather than failed -- see the docstring.
             n_solo_structures += 1
-            keep[rows[0]] = True
-            continue
-        # Charges aligned atom for atom across the group, then sorted within
-        # each symmetry orbit. The rule is index-wise, which is only safe once
-        # "the same atom" means the same thing for every row: the rows of a
-        # group pool deposits and enantiomers, whose atoms arrive in
-        # different orders (3.75% of sampled multi-deposit groups), and the
-        # atoms of one orbit have no correct pairing at all -- a methyl's
-        # hydrogens, rotated. Sorting within the orbit pairs them the way that
-        # minimises the largest difference, so a mere relabelling of
-        # symmetric atoms cannot read as a disagreement.
+        # Charges aligned atom for atom across the group, so that "the same
+        # atom" means the same thing for every row: the rows of a group pool
+        # deposits and enantiomers, whose atoms arrive in different orders
+        # (3.75% of sampled multi-deposit groups).
         values, orbit = aligned_values(
             [blob_to_mol(df["mol"].iat[r]) for r in rows], "MBIScharge", stereo=True
         )
-        arrange = [np.lexsort((row, orbit)) for row in values]
-        charges = [row[order] for row, order in zip(values, arrange, strict=True)]
-        survivors: set[int] = set()
-        for i in range(len(rows)):
-            for j in range(i + 1, len(rows)):
-                if float(np.abs(charges[i] - charges[j]).max()) <= threshold:
-                    survivors.update((rows[i], rows[j]))
-        if not survivors:
+        isolated = _isolated_rows(values, orbit, threshold)
+        if isolated.all():
             n_molecules_dropped += 1
-        for r in survivors:
-            keep[r] = True
+        for r, bad in zip(rows, isolated, strict=True):
+            keep[r] = not bad
 
     n_before = len(df)
     df.loc[keep].reset_index(drop=True).to_parquet(molecules_path)

@@ -582,6 +582,57 @@ def test_curate_conformers_does_not_read_swapped_symmetric_atoms_as_disagreement
     assert _kept_conf_ids(store) == ["conf_0", "conf_1"]
 
 
+def test_curate_conformers_judges_atoms_not_whole_conformers(tmp_path):
+    """Every atom has a close equivalent, but no two conformers agree on
+    both C and O: judged conformer against conformer all four would go,
+    judged atom by atom none is isolated and all four stay."""
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(
+        tmp_path,
+        [
+            [0.0, 0.0, 0.1, 0.1],
+            [0.0, 0.5, 0.1, 0.1],
+            [0.5, 0.0, 0.1, 0.1],
+            [0.5, 0.5, 0.1, 0.1],
+        ],
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0", "conf_1", "conf_2", "conf_3"]
+
+
+def test_curate_conformers_judges_a_lone_conformer_by_its_symmetric_atoms(
+    tmp_path,
+):
+    """A structure deposited once has no sibling, but formaldehyde's two
+    hydrogens are equivalents of each other: 0.5 e apart, each is isolated."""
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(tmp_path, [[0.1, -0.4, 0.0, 0.5]])
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == []
+
+
+def test_curate_conformers_keeps_a_lone_conformer_it_cannot_fault(tmp_path):
+    from experiments.prepare_dash import curate_conformers
+
+    store = _store_with_charges(tmp_path, [[0.1, -0.4, 0.15, 0.15]])
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == ["conf_0"]
+
+
+def test_curate_conformers_isolates_at_exactly_the_threshold(tmp_path):
+    """ "0.4 e or more": a difference equal to the threshold isolates."""
+    from experiments.prepare_dash import CURATION_THRESHOLD, curate_conformers
+
+    t = CURATION_THRESHOLD
+    store = _store_with_charges(
+        tmp_path, [[0.0, -0.4, 0.1, 0.1], [0.0 + t, -0.4, 0.1, 0.1]]
+    )
+    curate_conformers(store)
+    assert _kept_conf_ids(store) == []
+
+
 def test_curate_conformers_keeps_a_smooth_continuum(tmp_path):
     """A-B and A-C agree while B-C does not: the charge varies smoothly with
     geometry and no conformer is isolated, so all three are kept. Removing
