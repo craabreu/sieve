@@ -63,3 +63,6 @@ tmp/
 # Pre-collapse artifacts, moved aside for the corpus rebuild (2026-09-17).
 # Superseded by the collapsed-corpus run; kept only until that validates.
 experiments/backup-precollapse
+# Reports (metrics, manifests, logs) of the runs on the pre-bond-fix store,
+# kept for comparison before those runs are wiped (2026-09-23).
+experiments/backup-prebondfix

@@ -362,7 +362,7 @@ def test_held_out_floor_is_the_within_key_scatter():
 
     a = _charged("CCO", {0: 1.0, 1: 1.0, 2: 1.0})
     b = _charged("CCO", {0: 3.0, 1: 3.0, 2: 3.0})
-    c = _charged("CCC", {0: 5.0})
+    c = _charged("CCC", {1: 5.0})  # the middle carbon: no symmetric partner
     key_ab, key_c = collapse_key(a), collapse_key(c)
     mset = MoleculeSet(
         mols=[a, b, c],
@@ -391,8 +391,10 @@ def test_held_out_floor_is_zero_without_duplicates():
     from experiments.collapse import collapse_key, held_out_floor
     from experiments.data import MoleculeSet
 
+    # Charges respect each molecule's symmetry -- propane's middle carbon has
+    # no partner -- so no class holds unequal values either.
     a = _charged("CCO", {0: 1.0})
-    b = _charged("CCC", {0: 2.0})
+    b = _charged("CCC", {1: 2.0})
     mset = MoleculeSet(
         mols=[a, b],
         atom_property="MBIScharge",
@@ -528,11 +530,13 @@ def test_alignment_never_pairs_atoms_of_different_elements():
     """The property the averaging rests on.
 
     _canonical_order may break ties differently for two rows whose atoms
-    arrive in different orders, but CanonicalRankAtoms is canonical modulo
-    automorphism: a tie can only fall between atoms of one orbit, which
-    agree on every graph invariant. So a mis-ordering can swap a methyl's
-    hydrogens -- for which there is no correct pairing anyway, the group
-    being rotated -- and can never pair a carbon with a hydrogen.
+    arrive in different orders, but a tie can only fall between atoms the
+    refinement could not separate, and those agree on every local invariant.
+    So a mis-ordering can swap a methyl's hydrogens -- for which there is no
+    correct pairing anyway, the group being rotated -- and can never pair a
+    carbon with a hydrogen. A refinement class is not always one orbit: in
+    O=P(N1CC1)(N1CC1)N1CCN(P(=O)(N2CC2)N2CC2)CC1, the store's one such
+    molecule, it merges aziridine and piperazine nitrogens -- still N with N.
 
     Verified exhaustively on the real corpus over all 16,125 collapse groups
     spanning more than one dash_id (94,624 rows): zero disagreements.
@@ -561,3 +565,204 @@ def test_alignment_never_pairs_atoms_of_different_elements():
         if ref is None:
             ref = seq
         assert seq == ref, "alignment paired atoms of differing invariants"
+
+
+# --------------------------------------------------------------------------
+# Symmetry orbits, and what is built on them
+#
+# Atoms related by a symmetry of the molecule are the same atom to every arm,
+# so a collapsed target is their pooled mean and a floor counts their scatter,
+# within one conformer too. The orbits come from automorphisms, not canonical
+# ranks: CanonicalRankAtoms(breakTies=False) gives refinement classes, which
+# with includeChirality=True split C2-related halves and without it merge the
+# aziridine and piperazine nitrogens below.
+# --------------------------------------------------------------------------
+
+# Two methyl carbons, 0 and 2, related by the molecule's mirror plane.
+_ISOPROPANOL = "CC(C)O"
+
+# Two butenyl arms, one E and one Z: their methyl carbons, 7 and 11, are
+# distinct atoms with stereo and the same atom without it.
+_EZ_ARMS = "C/C=C/C(C/C=C/C)C/C=C\\C"
+
+# Four aziridine nitrogens (2, 5, 14, 17) and two piperazine ones (8, 11)
+# whose neighbourhoods a refinement cannot tell apart at any radius.
+_AZIRIDINES = "O=P(N1CC1)(N1CC1)N1CCN(P(=O)(N2CC2)N2CC2)CC1"
+
+
+def _same_orbit(labels, i, j):
+    return bool(labels[i] == labels[j])
+
+
+@pytest.mark.parametrize(
+    ("smiles", "stereo", "same", "different"),
+    [
+        # C2: RDKit's chirality-aware ranking splits these halves.
+        ("O[C@@H](C)[C@@H](C)O", True, [(0, 5), (1, 3), (2, 4)], []),
+        # meso: the halves are related only through the mirror.
+        ("O[C@@H](C)[C@H](C)O", True, [(0, 5), (1, 3), (2, 4)], []),
+        (_EZ_ARMS, True, [], [(7, 11)]),
+        (_EZ_ARMS, False, [(7, 11)], []),
+        # the [nH] and the n: a Mol query ignores H counts unless told not to
+        ("c1nc2ccccc2[nH]1", True, [], [(1, 8)]),
+        # the methyls on N+ and on N: a neutral query atom matches any charge
+        ("C[N+](C)(C)CCN(C)C", True, [(0, 2), (7, 8)], [(0, 7)]),
+        (_AZIRIDINES, False, [(2, 5), (2, 14), (8, 11)], [(2, 8)]),
+    ],
+)
+def test_symmetry_orbits_are_the_molecule_s_symmetry(smiles, stereo, same, different):
+    from experiments.collapse import symmetry_orbits
+
+    labels = symmetry_orbits(_mol(smiles), stereo=stereo)
+    for i, j in same:
+        assert _same_orbit(labels, i, j), (i, j)
+    for i, j in different:
+        assert not _same_orbit(labels, i, j), (i, j)
+
+
+def test_hydrogens_share_their_host_s_orbit():
+    from experiments.collapse import symmetry_orbits
+
+    mol = _mol(_ISOPROPANOL)
+    labels = symmetry_orbits(mol, stereo=True)
+    methyl_hs = [
+        a.GetIdx()
+        for a in mol.GetAtoms()
+        if a.GetSymbol() == "H" and a.GetNeighbors()[0].GetIdx() in (0, 2)
+    ]
+    assert len(methyl_hs) == 6
+    assert len({int(labels[h]) for h in methyl_hs}) == 1
+
+
+def test_a_collapsed_target_is_the_orbit_mean():
+    import numpy as np
+    from experiments.collapse import collapse_molecule_set
+
+    a = _charged(_ISOPROPANOL, {0: 0.1, 2: -0.1, 1: 0.2})
+    b = _charged(_ISOPROPANOL, {0: 0.3, 2: 0.1, 1: 0.4})
+    out = collapse_molecule_set(_floor_set_of([a, b]))
+    rep = out.mols[0]
+    values = [rep.GetAtomWithIdx(i).GetDoubleProp("MBIScharge") for i in (0, 2, 1)]
+    np.testing.assert_allclose(values, [0.1, 0.1, 0.3])
+
+
+def test_collapse_keeps_the_molecule_level_value():
+    """A set carrying a molecule-level property (net_charge, in the store)
+    keeps one value per representative."""
+    import numpy as np
+    from experiments.collapse import collapse_key, collapse_molecule_set
+    from experiments.data import MoleculeSet
+
+    a = _charged(_ISOPROPANOL, {0: 0.1})
+    b = _charged(_ISOPROPANOL, {0: 0.3})
+    c = _charged("CCC", {1: 0.2})
+    mset = MoleculeSet(
+        mols=[a, b, c],
+        atom_property="MBIScharge",
+        molecule_property="net_charge",
+        molecule_value=np.array([0.0, 0.0, 1.0]),
+        ids={
+            "collapse_key": [collapse_key(m) for m in (a, b, c)],
+            "dash_id": ["d0", "d1", "d2"],
+            "conf_id": ["c0"] * 3,
+        },
+    )
+    out = collapse_molecule_set(mset)
+    assert out.n_conformers == 2
+    assert out.molecule_value is not None
+    assert sorted(out.molecule_value.tolist()) == [0.0, 1.0]
+
+
+def test_a_collapsed_target_does_not_depend_on_atom_order():
+    """Renumbering a member must not move any target -- including in a
+    molecule whose canonical ranks cannot tell its nitrogens apart, where a
+    rank-based alignment could pair an aziridine N with a piperazine N."""
+    import numpy as np
+    from experiments.collapse import collapse_molecule_set
+
+    def charged(mol):
+        for atom in mol.GetAtoms():
+            ring = atom.GetOwningMol().GetRingInfo()
+            size = ring.MinAtomRingSize(atom.GetIdx()) if atom.IsInRing() else 0
+            atom.SetDoubleProp("MBIScharge", atom.GetAtomicNum() * 0.01 + size * 0.1)
+        return mol
+
+    base = charged(_mol(_AZIRIDINES))
+    expected = [
+        base.GetAtomWithIdx(i).GetDoubleProp("MBIScharge")
+        for i in range(base.GetNumAtoms())
+    ]
+    rng = np.random.default_rng(0)
+    for _ in range(8):
+        perm = [int(i) for i in rng.permutation(base.GetNumAtoms())]
+        other = charged(Chem.RenumberAtoms(base, perm))
+        rep = collapse_molecule_set(_floor_set_of([base, other])).mols[0]
+        got = [
+            rep.GetAtomWithIdx(i).GetDoubleProp("MBIScharge")
+            for i in range(rep.GetNumAtoms())
+        ]
+        # every atom's value is fixed by its element and ring size, which
+        # symmetry preserves, so a correct alignment changes nothing
+        np.testing.assert_allclose(got, expected)
+
+
+def test_the_floor_counts_symmetric_scatter_within_one_molecule():
+    """A lone conformer still has irreducible error: its two methyl carbons
+    differ, and every arm predicts them alike. A group of one used to count
+    nothing."""
+    import numpy as np
+    from experiments.collapse import held_out_floors
+
+    mol = _charged(_ISOPROPANOL, {0: 0.1, 2: -0.1})
+    expected = np.sqrt(2 * 0.1**2 / mol.GetNumAtoms())
+    floors = held_out_floors(_floor_set_of([mol]))
+    assert floors["floor/rmse"] == pytest.approx(expected)
+    assert floors["floor/rmse_stereo_blind"] == pytest.approx(expected)
+
+
+def test_the_floor_does_not_depend_on_atom_order():
+    """Renumbering a member must not move either floor. Paired by the
+    tie-broken order, one member's methyl meets whichever methyl of the other
+    the input order put first."""
+    import numpy as np
+    from experiments.collapse import held_out_floors
+
+    first = _charged(_ISOPROPANOL, {0: 0.1, 2: -0.1, 1: 0.2})
+    second = _charged(_ISOPROPANOL, {0: 0.3, 2: 0.0, 1: 0.25})
+    reference = held_out_floors(_floor_set_of([first, second]))
+    rng = np.random.default_rng(0)
+    for _ in range(12):
+        perm = [int(i) for i in rng.permutation(second.GetNumAtoms())]
+        renumbered = Chem.RenumberAtoms(second, perm)
+        got = held_out_floors(_floor_set_of([first, renumbered]))
+        for name, value in reference.items():
+            assert got[name] == pytest.approx(value, rel=1e-12), name
+
+
+def test_only_the_stereo_blind_floor_merges_stereo_distinct_atoms():
+    """The E and Z arms' methyls are different atoms to a model that reads
+    stereo, and the same atom to one that does not."""
+    import numpy as np
+    from experiments.collapse import held_out_floors
+
+    mol = _charged(_EZ_ARMS, {7: 0.2, 11: -0.2})
+    floors = held_out_floors(_floor_set_of([mol]))
+    assert floors["floor/rmse"] == pytest.approx(0.0)
+    assert floors["floor/rmse_stereo_blind"] == pytest.approx(
+        np.sqrt(2 * 0.2**2 / mol.GetNumAtoms())
+    )
+
+
+def _floor_set_of(mols):
+    from experiments.collapse import collapse_key
+    from experiments.data import MoleculeSet
+
+    return MoleculeSet(
+        mols=list(mols),
+        atom_property="MBIScharge",
+        ids={
+            "collapse_key": [collapse_key(m) for m in mols],
+            "dash_id": [f"d{i}" for i in range(len(mols))],
+            "conf_id": ["c0"] * len(mols),
+        },
+    )

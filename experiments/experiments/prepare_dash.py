@@ -178,6 +178,49 @@ def _clear_non_tetrahedral_tags(mol: Any) -> None:
             atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
 
 
+def _settleable_bonds(mol: Any) -> list[int]:
+    """Double bonds ``mol`` leaves unset whose configuration its own
+    coordinates settle -- the bonds perception exists to fill in.
+
+    Asked of the coordinates, on a throwaway copy, because the two cheaper
+    oracles each miss a different part of the answer. Both fail on
+    *pseudo-asymmetric* double bonds: a C=N or C=C whose ring end carries two
+    branches that differ only through stereocentres, as in oximes and
+    alkylidenes on tropanes, 9-azabicyclononanes and cis-2,6-disubstituted
+    piperidines. The rigorous CIP labeler gives them a lowercase ``e``/``z``;
+    they are stereogenic.
+
+    * The legacy ``FindPotentialStereoBonds`` never marks them, so the gate
+      built on it never read their coordinates: 225 store rows across 70
+      collapse groups. One group had merged two conformers of opposite
+      geometry; another molecule, arriving from two sources, had been kept
+      in two groups.
+    * ``FindPotentialStereo`` -- what the featurisation reads -- reports 108
+      of those 225 bonds as not stereogenic while they are unset, and as
+      ``Specified`` once they are flagged. A gate that asked it would miss
+      them for the same reason, one step removed.
+
+    ``AssignStereochemistryFrom3D`` declines to overrule an explicit
+    ``STEREOANY``, so the probe drops that flag first; otherwise a bond the
+    molblock declared "unknown" would read as unsettleable precisely when it
+    needs settling.
+    """
+    from rdkit import Chem
+
+    unset = {Chem.BondStereo.STEREONONE, Chem.BondStereo.STEREOANY}
+    probe = Chem.Mol(mol)
+    for bond in probe.GetBonds():
+        if bond.GetStereo() == Chem.BondStereo.STEREOANY:
+            bond.SetStereo(Chem.BondStereo.STEREONONE)
+    Chem.AssignStereochemistryFrom3D(probe)
+    return [
+        bond.GetIdx()
+        for bond in mol.GetBonds()
+        if bond.GetStereo() in unset
+        and probe.GetBondWithIdx(bond.GetIdx()).GetStereo() not in unset
+    ]
+
+
 def _assign_stereo_if_needed(mol: Any) -> None:
     """Fill in stereochemistry the molblock left unspecified, from the record's
     own 3D coordinates, without disturbing what it did specify.
@@ -225,31 +268,25 @@ def _assign_stereo_if_needed(mol: Any) -> None:
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
     needed = _needs_perception(mol)
 
-    # FindPotentialStereoBonds marks stereogenic-but-unassigned double bonds
-    # STEREOANY, which is how an unassigned one is recognised at all -- and it
-    # mutates the molecule, so the marks are rolled back below when nothing
-    # turns out to need perceiving.
-    # Bonds already carrying STEREOANY are deliberately excluded from the
-    # rollback. The rollback exists to undo marks FindPotentialStereoBonds
-    # *adds*; but the call also *removes* the flag from a bond that is not
-    # stereogenic at all, and that removal is its judgment, not damage.
-    # Restoring it put back a flag RDKit had just corrected: 731 bonds in
-    # 20,551 sampled rows, 98.9% of them with an end carrying two
-    # constitutionally identical substituents -- terminal alkenes such as
-    # OC=CH2, which have no E/Z to determine. A genuinely stereogenic bond
-    # marked STEREOANY by the molblock keeps the flag through this call,
-    # lands in `unassigned`, and is perceived from the coordinates below.
-    restore_marks = {
-        bond.GetIdx(): (bond.GetStereo(), tuple(bond.GetStereoAtoms()))
-        for bond in mol.GetBonds()
-        if bond.GetStereo() != Chem.BondStereo.STEREOANY
-    }
-    Chem.FindPotentialStereoBonds(mol, cleanIt=False)
-    unassigned = [
-        bond for bond in mol.GetBonds() if bond.GetStereo() == Chem.BondStereo.STEREOANY
-    ]
+    unassigned = _settleable_bonds(mol)
+
+    # A STEREOANY the coordinates cannot settle is dropped. Either the bond
+    # is not stereogenic at all -- a terminal alkene such as OC=CH2, whose
+    # =CH2 end carries two hydrogens: 731 flagged bonds in 20,551 sampled
+    # rows, 98.9% of them with an end like that -- or it is, and this
+    # conformer's geometry does not say which way, in which case "unknown"
+    # is all the flag says and neither the featurisation nor collapse_key
+    # can use it. The legacy FindPotentialStereoBonds used to clear the
+    # first kind as a side effect of marking; the probe does not mutate, so
+    # the rule is stated outright.
+    for bond in mol.GetBonds():
+        if (
+            bond.GetStereo() == Chem.BondStereo.STEREOANY
+            and bond.GetIdx() not in unassigned
+        ):
+            bond.SetStereo(Chem.BondStereo.STEREONONE)
+
     if not needed and not unassigned:
-        _restore_bond_stereo(mol, restore_marks)
         _clear_non_tetrahedral_tags(mol)
         return
 
@@ -257,8 +294,8 @@ def _assign_stereo_if_needed(mol: Any) -> None:
     # means "stereogenic, configuration unknown", which it declines to overrule
     # -- so the very bonds that need perceiving are the ones it would skip.
     # Clearing the mark first is what lets the coordinates speak.
-    for bond in unassigned:
-        bond.SetStereo(Chem.BondStereo.STEREONONE)
+    for idx in unassigned:
+        mol.GetBondWithIdx(idx).SetStereo(Chem.BondStereo.STEREONONE)
 
     Chem.AssignStereochemistryFrom3D(mol)
     _clear_non_tetrahedral_tags(mol)
@@ -266,6 +303,34 @@ def _assign_stereo_if_needed(mol: Any) -> None:
         mol.GetAtomWithIdx(idx).SetChiralTag(tag)
     _restore_bond_stereo(mol, declared_bonds)
     Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+
+
+def _finalise_stereo(mol: Any) -> None:
+    """Bring one record's stereochemistry to the form the store holds:
+    perception from the coordinates where the molblock left something
+    unspecified, then the rigorous CIP labels featurisation reads.
+
+    The one entry point for that state, so that building the store and
+    patching it cannot drift apart. Mutates ``mol`` in place.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import rdCIPLabeler
+
+    _assign_stereo_if_needed(mol)
+
+    # Unconditional, unlike _assign_stereo_if_needed's 3D-perception
+    # step: a record whose stereo was already fully specified by the
+    # molblock's own parity bits skips that conditional branch entirely,
+    # but _CIPCode is set by AssignStereochemistry/AssignCIPLabels, not by
+    # molblock parsing itself -- so it would be missing for that (common)
+    # case if this call were nested inside _assign_stereo_if_needed's
+    # "only if unassigned" branch. AssignCIPLabels needs
+    # AssignStereochemistry's own ChiralTag perception to already have run
+    # (it labels tagged centers, it doesn't discover them) -- cheap to
+    # call again here even when _assign_stereo_if_needed already ran it,
+    # since re-running is idempotent.
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    rdCIPLabeler.AssignCIPLabels(mol)
 
 
 def _parse_one_record(
@@ -352,24 +417,9 @@ def _parse_one_record(
     for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
         atom.SetDoubleProp("MBIScharge", charge)
 
-    _assign_stereo_if_needed(mol)
+    _finalise_stereo(mol)
 
     from rdkit import Chem
-    from rdkit.Chem import rdCIPLabeler
-
-    # Unconditional, unlike _assign_stereo_if_needed's own 3D-perception
-    # step: a record whose stereo was already fully specified by the
-    # molblock's own parity bits skips that conditional branch entirely,
-    # but _CIPCode is set by AssignStereochemistry/AssignCIPLabels, not by
-    # molblock parsing itself -- so it would be missing for that (common)
-    # case if this call were nested inside _assign_stereo_if_needed's own
-    # "only if unassigned" branch. AssignCIPLabels needs
-    # AssignStereochemistry's own ChiralTag perception to already have run
-    # (it labels tagged centers, it doesn't discover them) -- cheap to
-    # call again here even when _assign_stereo_if_needed already ran it,
-    # since re-running is idempotent.
-    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
-    rdCIPLabeler.AssignCIPLabels(mol)
 
     net_charge = float(Chem.GetFormalCharge(mol))
 
@@ -835,10 +885,11 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
     an atom ordering by construction, so under ``dash_id`` grouping the
     atom-count check was enough. Across deposits it is not: 3.75% of sampled
     multi-deposit groups hold the same atoms in a different order. Charges
-    are therefore stored in the key's own canonical order
-    (``collapse._canonical_order``), which is the alignment
-    ``collapse_molecule_set`` already uses to average charges over exactly
-    these groups.
+    are therefore aligned by ``collapse.aligned_values`` -- an explicit
+    isomorphism onto the group's first row, the alignment
+    ``collapse_molecule_set`` uses to average charges over exactly these
+    groups -- and sorted within each symmetry orbit, whose atoms have no
+    correct pairing to compare by.
 
     **Grouping is by structure, not by deposit.** ``dash_id`` is the only
     identity on every record -- 49.6% of the corpus has no ``CHEMBL_ID`` --
@@ -918,43 +969,20 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             actual,
         )
 
-    from experiments.collapse import _canonical_order, collapse_key
+    from experiments.collapse import aligned_values, collapse_key
 
     df = pd.read_parquet(molecules_path)
-    # Both the charges and the structure key come off each ``Mol`` in one
-    # pass, so no ``Mol`` outlives its iteration. The saving is modest and
-    # was measured rather than assumed: retaining all 40,000 mols of one row
-    # group costs 146 B/mol over dropping them, ~0.15 GB across the
-    # uncurated parse, because glibc keeps the freed arena rather than
-    # returning it and the peak is nearly the same either way. The reason to
-    # stream anyway is that the live set stays bounded instead of depending
-    # on allocator behaviour, which is the same caution
+    # One pass for the keys, and no Mol outlives its iteration. The saving
+    # is modest and was measured rather than assumed: retaining all 40,000
+    # mols of one row group costs 146 B/mol over dropping them, ~0.15 GB
+    # across the uncurated parse, because glibc keeps the freed arena rather
+    # than returning it and the peak is nearly the same either way. The
+    # reason to stream anyway is that the live set stays bounded instead of
+    # depending on allocator behaviour, which is the same caution
     # ``runner.load_molecule_set`` documents after a shard fit exhausted
-    # 503 GB by materializing rows no caller had asked for.
-    charges: list[np.ndarray] = []
-    keys: list[str] = []
-    for blob in df["mol"]:
-        mol = blob_to_mol(blob)
-        key = collapse_key(mol)
-        own = np.array(
-            [a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms()],
-            dtype=np.float64,
-        )
-        # Stored in the KEY's canonical order, not the record's own. The
-        # comparison below is index-wise, which was safe while a group was
-        # one deposit's conformers -- those share an atom ordering by
-        # construction -- and is not safe now that a group pools deposits
-        # and enantiomers. Measured on the store: of 400 sampled groups
-        # spanning more than one deposit, 15 (3.75%, ~670 of 17,890) carry
-        # the same atoms in a DIFFERENT order, which `a.shape != b.shape`
-        # cannot see. Comparing those by index pits one atom against
-        # another and fails both ways -- a spurious disagreement, or a
-        # spurious agreement certifying a record that should have failed.
-        # ``_canonical_order`` is the same alignment ``collapse_molecule_set``
-        # uses to average charges over one of these groups, so curation and
-        # the fit now mean the same thing by "the same atom".
-        charges.append(own[_canonical_order(mol, key)])
-        keys.append(key)
+    # 503 GB by materializing rows no caller had asked for. A group's own
+    # mols are rebuilt below, one group at a time.
+    keys = [collapse_key(blob_to_mol(blob)) for blob in df["mol"]]
 
     keep = np.zeros(len(df), dtype=bool)
     n_molecules_dropped = 0
@@ -968,18 +996,24 @@ def curate_conformers(store_dir: Path, *, threshold: float = CURATION_THRESHOLD)
             n_solo_structures += 1
             keep[rows[0]] = True
             continue
+        # Charges aligned atom for atom across the group, then sorted within
+        # each symmetry orbit. The rule is index-wise, which is only safe once
+        # "the same atom" means the same thing for every row: the rows of a
+        # group pool deposits and enantiomers, whose atoms arrive in
+        # different orders (3.75% of sampled multi-deposit groups), and the
+        # atoms of one orbit have no correct pairing at all -- a methyl's
+        # hydrogens, rotated. Sorting within the orbit pairs them the way that
+        # minimises the largest difference, so a mere relabelling of
+        # symmetric atoms cannot read as a disagreement.
+        values, orbit = aligned_values(
+            [blob_to_mol(df["mol"].iat[r]) for r in rows], "MBIScharge", stereo=True
+        )
+        arrange = [np.lexsort((row, orbit)) for row in values]
+        charges = [row[order] for row, order in zip(values, arrange, strict=True)]
         survivors: set[int] = set()
         for i in range(len(rows)):
             for j in range(i + 1, len(rows)):
-                a, b = charges[rows[i]], charges[rows[j]]
-                if a.shape != b.shape:
-                    # Defensive only: one canonical SMILES implies one atom
-                    # count, so this should be unreachable under structure
-                    # grouping (0 occurrences across the sampled
-                    # multi-deposit groups). Kept so a malformed record
-                    # cannot crash or silently broadcast.
-                    continue
-                if float(np.abs(a - b).max()) <= threshold:
+                if float(np.abs(charges[i] - charges[j]).max()) <= threshold:
                     survivors.update((rows[i], rows[j]))
         if not survivors:
             n_molecules_dropped += 1
