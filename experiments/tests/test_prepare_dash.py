@@ -1228,8 +1228,8 @@ def test_genuine_e_and_z_are_still_held_apart():
 
 
 def test_a_fully_specified_record_is_left_alone():
-    """Nothing to perceive means nothing is touched -- including the STEREOANY
-    marks FindPotentialStereoBonds leaves behind while looking."""
+    """Nothing to perceive means nothing is touched: deciding whether to act
+    must not itself leave a mark."""
     from experiments.prepare_dash import _assign_stereo_if_needed
 
     mol = _embedded("F[C@H](Cl)Br")
@@ -1450,10 +1450,12 @@ def test_a_spurious_stereoany_mark_is_not_restored(tmp_path):
     -- a terminal alkene such as OC=CH2, whose =CH2 end carries two
     hydrogens, so there is no E/Z to determine.
 
-    FindPotentialStereoBonds *clears* such a flag, and the rollback used to
-    put it straight back: the rollback exists to undo marks that call adds,
-    but it was also undoing a correction it made. 731 bonds in 20,551 sampled
-    store rows carried the flag for this reason, 3.34% of records.
+    The legacy FindPotentialStereoBonds gate used to clear such a flag as a
+    side effect, and its rollback once put it straight back: 731 bonds in
+    20,551 sampled store rows carried the flag for this reason, 3.34% of
+    records. The coordinate probe that replaced that gate does not mutate, so
+    the rule -- a flag the coordinates cannot settle is dropped -- is stated
+    outright, and this pins it.
     """
     from experiments.prepare_dash import _assign_stereo_if_needed
     from rdkit import Chem
@@ -1473,9 +1475,9 @@ def test_a_spurious_stereoany_mark_is_not_restored(tmp_path):
 )
 def test_a_genuine_stereoany_bond_is_perceived_not_dropped(smiles, expected):
     """The other half, and the one that makes the fix safe to make. A bond
-    that IS stereogenic keeps its STEREOANY through FindPotentialStereoBonds,
-    so it reaches the perception path and is read off the coordinates.
-    Dropping the flag must not become dropping the chemistry.
+    that IS stereogenic is settled by the coordinate probe, so it reaches the
+    perception path and is read off the coordinates. Dropping the flag must
+    not become dropping the chemistry.
     """
     from experiments.prepare_dash import _assign_stereo_if_needed
     from rdkit import Chem
@@ -1577,3 +1579,193 @@ def test_achiral_fingerprints_match_the_deprecated_api():
             want,
         )
         assert np.array_equal(got[i], want), f"fingerprint changed for {smiles[i]}"
+
+
+# ---------------------------------------------------------------------------
+# Stereo perception: pseudo-asymmetric double bonds.
+#
+# A C=N or C=C whose ring end carries two branches that differ only through
+# stereocentres -- oximes and alkylidenes on tropanes, 9-azabicyclononanes and
+# cis-2,6-disubstituted piperidines -- is stereogenic, and the rigorous CIP
+# labeler gives it a lowercase e/z. The legacy FindPotentialStereoBonds gate
+# never marked these, so their coordinates were never read: 225 store rows,
+# 70 collapse groups. Nor can FindPotentialStereo stand in as the gate: it
+# reports 108 of those 225 bonds as not stereogenic while they are unset, and
+# as Specified once they are flagged. The fixtures are the real records the
+# defect was measured on.
+# ---------------------------------------------------------------------------
+
+
+def _double_bonds(mol):
+    from rdkit import Chem
+
+    return [
+        b.GetIdx()
+        for b in mol.GetBonds()
+        if b.GetBondType() == Chem.BondType.DOUBLE and not b.GetIsAromatic()
+    ]
+
+
+def _oxime_bond(mol):
+    """The C=N bond of the record's oxime, the one bond these fixtures are about."""
+    return next(
+        i
+        for i in _double_bonds(mol)
+        if {
+            mol.GetBondWithIdx(i).GetBeginAtom().GetSymbol(),
+            mol.GetBondWithIdx(i).GetEndAtom().GetSymbol(),
+        }
+        == {"C", "N"}
+    )
+
+
+def _read_bonds(mol):
+    """Bond indices the stereo featurisation yields a row for."""
+    from sieve.io.rdkit_adapter import _stereo_bond_rows
+
+    return {
+        mol.GetBondBetweenAtoms(a, b).GetIdx() for a, b, *_ in _stereo_bond_rows(mol)
+    }
+
+
+def test_a_bond_findpotentialstereo_cannot_see_while_unset_is_perceived():
+    """``Rest_109172``: the oxime on a 9-azabicyclo[3.3.1]nonane.
+
+    The premise is pinned first, because it is why the gate may not be
+    ``FindPotentialStereo``: with the bond unset -- the state the store held
+    it in -- that call does not report it at all, so a gate asking it would
+    never read the coordinates.
+    """
+    from experiments.prepare_dash import _finalise_stereo
+    from rdkit import Chem
+
+    mol = _fixture_mol("oxime_bicyclic_pseudo_ez.mol")
+    bond = _oxime_bond(mol)
+    unset = Chem.Mol(mol)
+    unset.GetBondWithIdx(bond).SetStereo(Chem.BondStereo.STEREONONE)
+    reported = {
+        int(e.centeredOn)
+        for e in Chem.FindPotentialStereo(unset)
+        if e.type == Chem.StereoType.Bond_Double
+    }
+    assert bond not in reported, "premise: FindPotentialStereo is blind to it unset"
+
+    _finalise_stereo(mol)
+
+    assert mol.GetBondWithIdx(bond).GetStereo() in {
+        Chem.BondStereo.STEREOCIS,
+        Chem.BondStereo.STEREOTRANS,
+    }
+    assert bond in _read_bonds(mol)
+
+
+def test_conformers_of_opposite_geometry_are_held_apart():
+    """``Rest_137421`` conformers 1 and 2 carry opposite oxime geometry -- the
+    corpus never fixed it -- so they are two diastereomers, and the store had
+    averaged their charges into one group."""
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _finalise_stereo
+
+    a, b = _fixture_mol("oxime_conformer_a.mol"), _fixture_mol("oxime_conformer_b.mol")
+    for mol in (a, b):
+        _finalise_stereo(mol)
+
+    assert collapse_key(a) != collapse_key(b)
+
+
+def test_one_structure_from_two_sources_gets_one_key():
+    """``QMUGS500_57675`` leaves the oxime unset; ``Rest_109895``, the same
+    molecule from the other source, declares it. Perceiving the first must
+    land it in the second's group rather than a group of its own."""
+    from experiments.collapse import collapse_key
+    from experiments.prepare_dash import _finalise_stereo
+
+    undeclared = _fixture_mol("oxime_undeclared_source.mol")
+    declared = _fixture_mol("oxime_declared_source.mol")
+    for mol in (undeclared, declared):
+        _finalise_stereo(mol)
+
+    assert collapse_key(undeclared) == collapse_key(declared)
+
+
+_STEREO_FIXTURES = [
+    "dependent_stereocentres.mol",
+    "phosphorane_tb_tag.mol",
+    "oxime_bicyclic_pseudo_ez.mol",
+    "oxime_conformer_a.mol",
+    "oxime_conformer_b.mol",
+    "oxime_undeclared_source.mol",
+    "oxime_declared_source.mol",
+]
+
+
+@pytest.mark.parametrize("name", _STEREO_FIXTURES)
+def test_the_store_form_is_its_own_fixed_point(name):
+    """Finalising a stored ``Mol`` must reproduce it byte for byte.
+
+    This is what lets the store be patched instead of rebuilt: re-running the
+    finalisation over every stored row changes exactly the rows a fix
+    touches, so the rows that differ *are* the fix. It fails if any step
+    rewrites what an earlier pass wrote -- ``AssignStereochemistry`` turning
+    the stored ``STEREOCIS``/``STEREOTRANS`` into CIP-derived
+    ``STEREOE``/``STEREOZ`` and nothing turning them back, for one.
+    """
+    from experiments.data import blob_to_mol, mol_to_blob
+    from experiments.prepare_dash import _finalise_stereo
+
+    mol = _fixture_mol(name)
+    _finalise_stereo(mol)
+    once = mol_to_blob(mol)
+
+    again = blob_to_mol(once)
+    _finalise_stereo(again)
+    assert mol_to_blob(again) == once
+
+
+@pytest.mark.parametrize("name", _STEREO_FIXTURES)
+def test_the_store_carries_only_the_local_bond_form(name):
+    """``STEREOE``/``STEREOZ`` rank substituents arbitrarily far from the
+    bond; ``STEREOCIS``/``STEREOTRANS`` name two neighbours. A corpus for a
+    method built on locality stores the second."""
+    from experiments.prepare_dash import _finalise_stereo
+    from rdkit import Chem
+
+    mol = _fixture_mol(name)
+    _finalise_stereo(mol)
+
+    assert {mol.GetBondWithIdx(i).GetStereo() for i in _double_bonds(mol)} <= {
+        Chem.BondStereo.STEREONONE,
+        Chem.BondStereo.STEREOCIS,
+        Chem.BondStereo.STEREOTRANS,
+    }
+
+
+@pytest.mark.parametrize("name", _STEREO_FIXTURES)
+def test_every_bond_the_coordinates_settle_reaches_the_featurisation(name):
+    """The contract between the store and its reader.
+
+    Whatever the record's coordinates can settle -- asked of a copy stripped
+    of every bond flag, so the answer does not depend on what the molblock
+    happened to declare -- the stored ``Mol`` must declare, and the stereo
+    featurisation must read. The defect this closes lived in the gap between
+    two definitions of "a stereo double bond", one in each module, and only a
+    test spanning both can see such a gap.
+    """
+    from experiments.prepare_dash import _finalise_stereo
+    from rdkit import Chem
+
+    mol = _fixture_mol(name)
+    _finalise_stereo(mol)
+
+    probe = Chem.Mol(mol)
+    for bond in probe.GetBonds():
+        bond.SetStereo(Chem.BondStereo.STEREONONE)
+    Chem.AssignStereochemistryFrom3D(probe)
+    settled = {
+        i
+        for i in _double_bonds(probe)
+        if probe.GetBondWithIdx(i).GetStereo()
+        not in {Chem.BondStereo.STEREONONE, Chem.BondStereo.STEREOANY}
+    }
+
+    assert settled <= _read_bonds(mol)
