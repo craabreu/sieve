@@ -516,7 +516,24 @@ def annotate_collapse(store: str, *, stores_root: Path) -> dict[str, int]:
 
     In place, like ``prepare-store --n-shards`` adding ``cluster``/``shard``.
     Idempotent: a store already carrying the columns is recounted, not
-    rewritten differently.
+    rewritten differently. See ``collapse_columns`` for what is computed and
+    what is refused.
+    """
+    import pandas as pd
+
+    path = Path(stores_root) / store / "molecules.parquet"
+    df = collapse_columns(pd.read_parquet(path))
+    df.to_parquet(path)
+    return {"rows": len(df), "keys": int(df["collapse_key"].nunique())}
+
+
+def collapse_columns(df: Any) -> Any:
+    """``df`` with ``collapse_key``, ``n_collapsed``, ``n_molecules`` and
+    ``n_enantiomer_forms`` (re)computed from its ``mol`` blobs.
+
+    Separate from ``annotate_collapse`` so a store can be recomputed without
+    being rewritten -- which is how a patch is staged and checked before it
+    touches the store it patches.
 
     Refuses a key group that straddles a ``split``, ``cluster`` or ``shard``.
     On the real corpus none does -- identical molecules share a fingerprint,
@@ -524,13 +541,10 @@ def annotate_collapse(store: str, *, stores_root: Path) -> dict[str, int]:
     whole cluster -- and asserting it means a future corpus that breaks the
     property stops rather than silently averaging across a fold boundary.
     """
-    import pandas as pd
-
     from experiments.collapse import collapse_key
     from experiments.data import blob_to_mol
 
-    path = Path(stores_root) / store / "molecules.parquet"
-    df = pd.read_parquet(path)
+    df = df.copy()
     df["collapse_key"] = [collapse_key(blob_to_mol(b)) for b in df["mol"]]
 
     for column in ("split", "cluster", "shard"):
@@ -553,5 +567,4 @@ def annotate_collapse(store: str, *, stores_root: Path) -> dict[str, int]:
         .transform("nunique")
         .astype("int32")
     )
-    df.to_parquet(path)
-    return {"rows": len(df), "keys": int(df["collapse_key"].nunique())}
+    return df
