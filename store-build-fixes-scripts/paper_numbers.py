@@ -13,6 +13,7 @@ Run from the repository root.
 from __future__ import annotations
 
 import collections
+import multiprocessing as mp
 import sys
 
 import numpy as np
@@ -21,11 +22,12 @@ from rdkit import RDLogger
 from rdkit.Chem import Descriptors, inchi
 
 sys.path.insert(0, "experiments")
-from experiments.collapse import _canonical_order, collapse_key
+from experiments.collapse import aligned_values, collapse_key
 from experiments.data import blob_to_mol
+from experiments.prepare_dash import CURATION_THRESHOLD, _isolated_rows
 
 RDLogger.DisableLog("rdApp.*")
-THRESHOLD = 0.4
+THRESHOLD = CURATION_THRESHOLD
 
 
 def head(title: str) -> None:
@@ -119,61 +121,63 @@ def main(curated: str, uncurated: str) -> None:
 
     head("sec:curation of anomalous conformers")
     unc = pd.read_parquet(uncurated, columns=["dash_id", "conf_id", "mol"])
-    aligned: list[np.ndarray] = []
-    keys: list[str] = []
-    for blob in unc["mol"]:
-        mol = blob_to_mol(blob)
-        key = collapse_key(mol)
-        q = np.array(
-            [a.GetDoubleProp("MBIScharge") for a in mol.GetAtoms()], dtype=np.float64
-        )
-        aligned.append(q[_canonical_order(mol, key)])
-        keys.append(key)
+    with mp.Pool() as pool:
+        keys = pool.map(_key, unc["mol"], chunksize=2000)
+        groups = [list(rows) for rows in
+                  unc.assign(k=keys).groupby("k", sort=False).indices.values()]
+        judged = pool.map(_judge, [[unc["mol"].iat[r] for r in g] for g in groups],
+                          chunksize=200)
 
-    def agrees(i: int, j: int) -> bool:
-        a, b = aligned[i], aligned[j]
-        return a.shape == b.shape and float(np.abs(a - b).max()) <= THRESHOLD
-
-    violating = dropped_whole = partial = smooth = solo = 0
+    anomalous = dropped_whole = partial = continuum = solo = solo_removed = 0
     n_removed = 0
     sizes_kept: collections.Counter = collections.Counter()
-    for _, pos in unc.assign(k=keys).groupby("k", sort=False).groups.items():
-        rows = list(pos)
+    for rows, (isolated, spread) in zip(groups, judged, strict=True):
+        removed = sum(isolated)
+        n_removed += removed
+        sizes_kept[len(rows) - removed] += 1
         if len(rows) == 1:
             solo += 1
-            sizes_kept[1] += 1
-            continue
-        survivors: set[int] = set()
-        any_disagree = False
-        for i in range(len(rows)):
-            for j in range(i + 1, len(rows)):
-                if agrees(rows[i], rows[j]):
-                    survivors.update((rows[i], rows[j]))
-                else:
-                    any_disagree = True
-        removed = len(rows) - len(survivors)
-        n_removed += removed
-        sizes_kept[len(survivors)] += 1
-        if any_disagree:
-            violating += 1
-            if not survivors:
+            solo_removed += removed
+        if removed:
+            anomalous += 1
+            if removed == len(rows):
                 dropped_whole += 1
-            elif removed:
-                partial += 1
             else:
-                smooth += 1
+                partial += 1
+        elif spread:
+            continuum += 1
 
     print(f"uncurated conformers                : {len(unc):,}")
     print(f"removed                             : {n_removed:,} "
           f"({n_removed / len(unc):.3%})")
     print(f"remaining                           : {len(unc) - n_removed:,}")
-    print(f"structures with a disagreeing pair  : {violating:,}")
+    print(f"structures with an isolated atom    : {anomalous:,}")
     print(f"  resolved by removing some         : {partial:,}")
     print(f"  dropped entirely                  : {dropped_whole:,}")
-    print(f"  kept whole (smooth continuum)     : {smooth:,}")
-    print(f"structures deposited with one conformer (kept, unjudged): {solo:,}")
+    print(f"structures whose equivalents span >= {THRESHOLD} e, none isolated "
+          f"(kept whole): {continuum:,}")
+    print(f"structures deposited with one conformer: {solo:,}, of which "
+          f"{solo_removed:,} removed through their symmetric atoms")
     print("surviving conformers per structure  : "
           + ", ".join(f"{k}:{v:,}" for k, v in sorted(sizes_kept.items())))
+
+
+def _key(blob: bytes) -> str:
+    return collapse_key(blob_to_mol(blob))
+
+
+def _judge(blobs: list[bytes]) -> tuple[list[bool], bool]:
+    """The curation rule on one structure (prepare_dash.curate_conformers):
+    which rows carry an isolated atom, and whether any orbit's equivalents
+    span the threshold at all."""
+    values, orbit = aligned_values(
+        [blob_to_mol(b) for b in blobs], "MBIScharge", stereo=True
+    )
+    isolated = _isolated_rows(values, orbit, THRESHOLD)
+    spread = any(
+        float(np.ptp(values[:, orbit == o])) >= THRESHOLD for o in np.unique(orbit)
+    )
+    return isolated.tolist(), spread
 
 
 if __name__ == "__main__":
