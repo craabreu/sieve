@@ -40,11 +40,13 @@ class NodeBatch:
     y: np.ndarray | None = None  # (n_nodes, d) float64
     elements: np.ndarray | None = None  # (n_nodes,) int64, for the alignment guard
     stereo_bonds: np.ndarray | None = None  # (n_stereo, 7) int64
+    stereo_centres: np.ndarray | None = None  # (n_centres, 6) int64
 
     def __post_init__(self) -> None:
         self._check_shapes()
         self._check_edges()
         self._check_stereo_bonds()
+        self._check_stereo_centres()
 
     def _check_shapes(self) -> None:
         n = self.node_attrs.shape[0]
@@ -176,6 +178,50 @@ class NodeBatch:
             if have.any() and not present(end[have], sub[have]).all():
                 raise ValueError(f"stereo_bonds: {label} is not adjacent to its end")
 
+    def _check_stereo_centres(self) -> None:
+        """Validate the tetrahedral-centre table, if present.
+
+        Columns are ``[v, n0, n1, n2, n3, parity]``: the centre, its
+        neighbours in the order its chiral tag refers to, and +1 for CCW or
+        -1 for CW. ``n3 = -1`` marks a virtual fourth neighbour (an implicit
+        hydrogen or a lone pair). As for stereo_bonds, every check is a
+        corpus bug that would otherwise become a plausible wrong code.
+        """
+        sc = self.stereo_centres
+        if sc is None:
+            return
+        if sc.ndim != 2 or sc.shape[1] != 6:
+            raise ValueError(
+                f"stereo_centres must have shape (n_centres, 6), got {sc.shape}"
+            )
+        n = self.node_attrs.shape[0]
+        v, nb, parity = sc[:, 0], sc[:, 1:5], sc[:, 5]
+        if (nb[:, :3] < 0).any():
+            raise ValueError("stereo_centres: -1 is allowed only in n3")
+        for col, lo in ((v, 0), (nb[:, :3], 0), (nb[:, 3], -1)):
+            if ((col < lo) | (col >= n)).any():
+                raise ValueError(
+                    f"stereo_centres: an index is out of range [{lo}, {n})"
+                )
+        if not np.isin(parity, (-1, 1)).all():
+            raise ValueError("stereo_centres: parity must be -1 or +1")
+        if np.unique(v).size != v.size:
+            raise ValueError("stereo_centres: each centre may be listed once")
+        present = nb >= 0
+        degree = np.bincount(self.edge_src, minlength=n)
+        if not np.array_equal(present.sum(axis=1), degree[v]):
+            raise ValueError(
+                "stereo_centres: a row must name every neighbour, so the "
+                "number of present n_i must equal the centre's degree"
+            )
+        key = np.sort(self.edge_src * n + self.edge_dst)
+        want = (np.repeat(v, 4) * n + nb.ravel())[present.ravel()]
+        pos = np.clip(np.searchsorted(key, want), 0, max(key.size - 1, 0))
+        if key.size == 0 or not (key[pos] == want).all():
+            raise ValueError(
+                "stereo_centres: a neighbour is not adjacent to its centre"
+            )
+
     @property
     def n_nodes(self) -> int:
         return int(self.node_attrs.shape[0])
@@ -250,6 +296,22 @@ class NodeBatch:
                 [remapped[row_keep], sb[row_keep, 6:7]], axis=1
             )
 
+        stereo_centres = None
+        if self.stereo_centres is not None:
+            sc = self.stereo_centres
+            # Same all-or-nothing rule as stereo_bonds above: a centre's five
+            # atom columns must all be selected together, since -1 is already
+            # the sentinel for "virtual neighbour" and a half-selected row
+            # would make a real, dropped neighbour indistinguishable from one.
+            cols = sc[:, :5]
+            has = cols >= 0
+            selected = np.where(has, mask[np.where(has, cols, 0)], True)
+            row_keep = selected.all(axis=1)
+            remapped = np.where(has, remap[np.where(has, cols, 0)], -1)
+            stereo_centres = np.concatenate(
+                [remapped[row_keep], sc[row_keep, 5:6]], axis=1
+            )
+
         return NodeBatch._with_trusted_edges(
             node_attrs=self.node_attrs[sel],
             edge_src=remap[self.edge_src[keep]],
@@ -259,6 +321,7 @@ class NodeBatch:
             y=None if self.y is None else self.y[sel],
             elements=None if self.elements is None else self.elements[sel],
             stereo_bonds=stereo_bonds,
+            stereo_centres=stereo_centres,
         )
 
     def csr(self) -> CSRLayout:
@@ -323,6 +386,9 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
     has_stereo_bonds = {p.stereo_bonds is not None for p in parts}
     if len(has_stereo_bonds) > 1:
         raise ValueError("stereo_bonds is set on some but not all parts")
+    has_stereo_centres = {p.stereo_centres is not None for p in parts}
+    if len(has_stereo_centres) > 1:
+        raise ValueError("stereo_centres is set on some but not all parts")
 
     node_attrs = np.concatenate([p.node_attrs for p in parts], axis=0)
     y = np.concatenate([p.y for p in parts], axis=0) if has_y == {True} else None
@@ -332,7 +398,8 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         else None
     )
 
-    edge_src, edge_dst, edge_attrs, graph_id, stereo_bonds = [], [], [], [], []
+    edge_src, edge_dst, edge_attrs, graph_id = [], [], [], []
+    stereo_bonds, stereo_centres = [], []
     node_off = 0
     graph_off = 0
     for p in parts:
@@ -351,6 +418,15 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
             has = cols >= 0
             cols = np.where(has, cols + node_off, -1)
             stereo_bonds.append(np.concatenate([cols, sb[:, 6:7]], axis=1))
+        if p.stereo_centres is not None:
+            sc = p.stereo_centres.copy()
+            # Only the five atom columns move with the node offset; -1 (the
+            # virtual-neighbour sentinel) must stay -1, and the trailing
+            # `parity` column is +-1, not an index.
+            cols = sc[:, :5]
+            has = cols >= 0
+            cols = np.where(has, cols + node_off, -1)
+            stereo_centres.append(np.concatenate([cols, sc[:, 5:6]], axis=1))
         node_off += p.n_nodes
         graph_off += int(np.max(dense_gid)) + 1 if dense_gid.size else 0
 
@@ -370,6 +446,11 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
         elements=elements,
         stereo_bonds=(
             np.concatenate(stereo_bonds, axis=0) if has_stereo_bonds == {True} else None
+        ),
+        stereo_centres=(
+            np.concatenate(stereo_centres, axis=0)
+            if has_stereo_centres == {True}
+            else None
         ),
     )
 

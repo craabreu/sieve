@@ -75,3 +75,54 @@ def test_three_digests_and_cis_trans_unchanged():
     }
     assert len(digests) == 3
     assert _config(mols, stereo=BOTH).stereo_radices == (4, 4)
+
+
+from sieve.batch import NodeBatch, concat_batches
+
+
+def _star_batch(centres):
+    """Atom 0 bonded to atoms 1..4; two copies side by side."""
+    src = [0, 1, 0, 2, 0, 3, 0, 4]
+    dst = [1, 0, 2, 0, 3, 0, 4, 0]
+    src += [s + 5 for s in src]
+    dst += [d + 5 for d in dst]
+    return NodeBatch(
+        node_attrs=np.zeros((10, 1), np.int64),
+        edge_src=np.array(src),
+        edge_dst=np.array(dst),
+        edge_attrs=np.zeros((16, 1), np.int64),
+        graph_id=np.array([0] * 5 + [1] * 5),
+        stereo_centres=np.array(centres, np.int64).reshape(-1, 6),
+    )
+
+
+@pytest.mark.parametrize(
+    "row, message",
+    [
+        ([0, 1, 2, 3, 6, 1], "adjacent"),
+        ([0, 1, -1, 3, 4, 1], "only in n3"),
+        ([0, 1, 2, 3, -1, 1], "degree"),
+        ([0, 1, 2, 3, 4, 0], "parity"),
+        ([0, 1, 2, 3, 99, 1], "range"),
+    ],
+)
+def test_stereo_centres_are_validated(row, message):
+    with pytest.raises(ValueError, match=message):
+        _star_batch([row])
+
+
+def test_a_centre_listed_twice_is_refused():
+    with pytest.raises(ValueError, match="once"):
+        _star_batch([[0, 1, 2, 3, 4, 1], [0, 4, 3, 2, 1, 1]])
+
+
+def test_stereo_centres_follow_slicing_and_concat():
+    b = _star_batch([[0, 1, 2, 3, 4, 1], [5, 6, 7, 8, 9, -1]])
+    second = b[b.graph_id == 1]
+    np.testing.assert_array_equal(second.stereo_centres, [[0, 1, 2, 3, 4, -1]])
+    both = concat_batches([second, second])
+    np.testing.assert_array_equal(
+        both.stereo_centres, [[0, 1, 2, 3, 4, -1], [5, 6, 7, 8, 9, -1]]
+    )
+    with pytest.raises(ValueError, match="stereo_centres"):
+        concat_batches([second, dataclasses.replace(second, stereo_centres=None)])
