@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -11,7 +11,10 @@ from sieve.batch import NodeBatch
 from sieve.config import KIND_AWARE, KIND_BLIND, LEVEL_WL, STEREO_RADIX, SieveConfig
 from sieve.dedupe import dense_rows
 from sieve.stereo import (
+    CODE_NONE,
     FingerprintWindow,
+    Reach,
+    advance_reach,
     centre_positions,
     cis_trans_codes,
     content_ranks,
@@ -48,6 +51,11 @@ class LevelLabels:
     # vocabulary ``signatures``.
     mirror_labels: np.ndarray | None = None  # (n_nodes,) int64
     mirror_of: np.ndarray | None = None  # (n_classes,) int64
+    # Under the tetrahedral track only: per atom, whether its aware row at
+    # this level carries something the mirror quotient keeps (two or more
+    # distinct centres, or a cis/trans code). predict consults an atom's
+    # aware class only where this holds.
+    stereo_informative: np.ndarray | None = None  # (n_nodes,) bool
 
     @property
     def n_classes(self) -> int:
@@ -249,6 +257,7 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     stereo_centres: np.ndarray | None = None
     pos_ab = pos_ba = tet_pos = tet_row = None
     window: FingerprintWindow | None = None
+    reach: Reach | None = None
     if config.stereo:
         if cis_trans:
             if batch.stereo_bonds is None:
@@ -299,13 +308,15 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                 ct = np.zeros(e, np.int64)
                 tet = np.zeros(e, np.int64)
                 tet_mirror = np.zeros(e, np.int64)
+                tet_atoms = ez_atoms = np.zeros(0, np.int64)
                 if stereo_centres is not None:
                     assert tet_pos is not None and tet_row is not None
                     # The ranked neighbours sit one bond away, so radius
                     # k-1 is honest and the code can fire from round 1.
-                    codes = tetrahedral_codes(stereo_centres, window.at(wl_round - 1))
-                    tet[tet_pos] = codes[tet_row]
-                    tet_mirror[tet_pos] = mirror_codes(codes)[tet_row]
+                    tcodes = tetrahedral_codes(stereo_centres, window.at(wl_round - 1))
+                    tet[tet_pos] = tcodes[tet_row]
+                    tet_mirror[tet_pos] = mirror_codes(tcodes)[tet_row]
+                    tet_atoms = stereo_centres[tcodes != CODE_NONE, 0]
                 if stereo_bonds is not None and wl_round >= 2:
                     assert pos_ab is not None and pos_ba is not None
                     # The gather reaches distance 2, so an honest code needs
@@ -314,9 +325,11 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                     # a radius-1 neighborhood, so the feature stays silent
                     # rather than asserting something the level cannot
                     # support.
-                    codes = cis_trans_codes(stereo_bonds, window.at(wl_round - 2))
-                    ct[pos_ab] = codes
-                    ct[pos_ba] = codes
+                    ccodes = cis_trans_codes(stereo_bonds, window.at(wl_round - 2))
+                    ct[pos_ab] = ccodes
+                    ct[pos_ba] = ccodes
+                    fired = stereo_bonds[ccodes != CODE_NONE]
+                    ez_atoms = np.concatenate([fired[:, 0], fired[:, 1]])
                 # The trits refine the stereo-blind class rather than
                 # replacing it (spec 2026-09-23). The blind row is built
                 # recursively -- blind parent and neighbours, both trits 0 --
@@ -344,7 +357,15 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                     if stereo_centres is not None
                     else None
                 )
-                levels.append(_union_level(sig_aware, sig_blind, sig_mirror))
+                level = _union_level(sig_aware, sig_blind, sig_mirror)
+                if stereo_centres is not None:
+                    # Which codes have reached each atom's aware row by now
+                    # (tetrahedral-handedness spec, section 5): a lone
+                    # centre's sign is erased by the mirror quotient, so its
+                    # aware class is not consulted (predict).
+                    reach = advance_reach(reach, csr, n, tet_atoms, ez_atoms)
+                    level = replace(level, stereo_informative=reach.informative)
+                levels.append(level)
                 continue
             sig = _wl_rows(base, csr, edge_code, n, n_edge_types)
         else:  # LEVEL_WL_PAIR: the coarse chain's own class at this round is

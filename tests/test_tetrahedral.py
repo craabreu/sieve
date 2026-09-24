@@ -408,7 +408,10 @@ def test_predictions_are_mirror_invariant(rule):
 
 
 def test_an_unseen_enantiomer_is_answered_like_the_trained_one():
-    r, s = _mols(["N[C@@H](C)C(=O)O"]), _mols(["N[C@H](C)C(=O)O"])
+    # Threonine: two centres, so the aware class carries a relative
+    # configuration the mirror quotient keeps, and is actually consulted.
+    r = _mols(["C[C@@H](O)[C@H](N)C(=O)O"])
+    s = _mols(["C[C@H](O)[C@@H](N)C(=O)O"])
     cfg = _config(r + s)
     model = sieve.fit(_batch(r, cfg), cfg)
     pr, ps = _predict(model, r, cfg), _predict(model, s, cfg)
@@ -484,3 +487,81 @@ def test_predictions_do_not_depend_on_a_pentavalent_neighbour():
     alone = sieve.predict(model, from_rdkit(mols, config=cfg))
     beside = sieve.predict(model, from_rdkit(mols + p, config=cfg))
     np.testing.assert_array_equal(alone, beside[: alone.shape[0]])
+
+
+# --- single-centre aware classes are not consulted -----------------------
+
+
+def _path_csr(n):
+    src = np.concatenate([np.arange(n - 1), np.arange(1, n)])
+    dst = np.concatenate([np.arange(1, n), np.arange(n - 1)])
+    b = NodeBatch(
+        node_attrs=np.zeros((n, 1), np.int64),
+        edge_src=src,
+        edge_dst=dst,
+        edge_attrs=np.zeros((src.size, 1), np.int64),
+        graph_id=np.zeros(n, np.int64),
+    )
+    return b.csr()
+
+
+def test_signed_reach_needs_two_distinct_centres():
+    """Path 0-1-2-3-4 with centres 0 and 4 firing at round 1: the middle atom
+    sees both at round 3, its neighbours at round 4, the ends at round 5."""
+    from sieve.stereo import advance_reach
+
+    csr, none = _path_csr(5), np.zeros(0, np.int64)
+    centres = np.array([0, 4])
+    reach = advance_reach(None, csr, 5, centres, none)
+    many = []
+    for _ in range(4):
+        many.append(reach.many.tolist())
+        reach = advance_reach(reach, csr, 5, centres, none)
+    many.append(reach.many.tolist())
+    assert many[2] == [False, False, True, False, False]
+    assert many[3] == [False, True, True, True, False]
+    assert many[4] == [True] * 5
+
+
+def test_one_centre_seen_along_two_paths_is_still_one():
+    """In a ring, a single centre reaches the opposite atom twice; the
+    distinct-centre test must not count it twice."""
+    from sieve.stereo import advance_reach
+
+    n = 6
+    src = np.concatenate([np.arange(n), (np.arange(n) + 1) % n])
+    dst = np.concatenate([(np.arange(n) + 1) % n, np.arange(n)])
+    csr = NodeBatch(
+        node_attrs=np.zeros((n, 1), np.int64),
+        edge_src=src,
+        edge_dst=dst,
+        edge_attrs=np.zeros((src.size, 1), np.int64),
+        graph_id=np.zeros(n, np.int64),
+    ).csr()
+    reach = None
+    for _ in range(6):
+        reach = advance_reach(reach, csr, n, np.array([0]), np.zeros(0, np.int64))
+    assert reach is not None and not reach.many.any() and not reach.ez.any()
+
+
+def test_a_single_centre_molecule_gets_the_blind_answer():
+    mols = _mols(["N[C@@H](C)C(=O)O", "N[C@H](CC)C(=O)O", "F[C@H](Cl)Br"])
+    both, blind = _config(mols, **EB), _config(mols, stereo=(), **EB)
+    pb = _predict(sieve.fit(_batch(mols, both), both), mols, both)
+    p0 = _predict(sieve.fit(_batch(mols, blind), blind), mols, blind)
+    assert pb.stereo_refined is not None and not pb.stereo_refined.any()
+    np.testing.assert_allclose(pb.value, p0.value, rtol=1e-12, atol=1e-15)
+
+
+def test_two_centres_are_still_refined():
+    mols = _mols(["C[C@H](Br)[C@H](C)Br", "C[C@H](Br)[C@@H](C)Br"])
+    cfg = _config(mols)
+    p = _predict(sieve.fit(_batch(mols, cfg), cfg), mols, cfg)
+    assert p.stereo_refined is not None and p.stereo_refined.any()
+
+
+def test_one_centre_beside_an_e_z_bond_keeps_the_cis_trans_answer():
+    mols = _mols([r"C/C=C\[C@H](F)Cl", r"C/C=C/[C@H](F)Cl"])
+    cfg = _config(mols)
+    p = _predict(sieve.fit(_batch(mols, cfg), cfg), mols, cfg)
+    assert p.stereo_refined is not None and p.stereo_refined.any()

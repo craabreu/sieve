@@ -8,6 +8,7 @@ readable function; ``refine`` calls in and folds the result.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -232,3 +233,64 @@ class FingerprintWindow:
         raise ValueError(
             f"radius {radius} is no longer held (window at {self._radius})"
         )
+
+
+_EMPTY = np.iinfo(np.int64).max
+
+
+@dataclass(frozen=True)
+class Reach:
+    """Which stereo codes have reached each atom's aware row by some round.
+
+    Tracks, per atom, the smallest and largest id of the tetrahedral centres
+    whose codes have reached it, whether two or more distinct centres have,
+    and whether any cis/trans code has. Two ids suffice for the one question
+    asked -- one centre or several -- and make the union exact: a single
+    centre reached along two paths (a ring) stays one centre.
+    """
+
+    first: np.ndarray  # (n,) int64, smallest centre id reached; _EMPTY if none
+    last: np.ndarray  # (n,) int64, largest centre id reached; -1 if none
+    many: np.ndarray  # (n,) bool, two or more distinct centres reached
+    ez: np.ndarray  # (n,) bool, a cis/trans code reached
+
+    @property
+    def informative(self) -> np.ndarray:
+        """Where the aware row carries something the mirror quotient keeps:
+        the relative configuration of two centres, or a cis/trans code. A
+        single centre's sign alone is erased by the quotient, since the class
+        and its mirror are pooled."""
+        return self.many | self.ez
+
+
+def advance_reach(
+    prev: Reach | None,
+    csr: CSRLayout,
+    n_nodes: int,
+    tet_atoms: np.ndarray,
+    ez_atoms: np.ndarray,
+) -> Reach:
+    """The reach one WL round later.
+
+    An atom's aware row at round *k* holds its own row's codes of this round
+    (``tet_atoms``: centres whose code fired; ``ez_atoms``: ends of bonds
+    whose cis/trans code fired) plus its own and its neighbours' rows of
+    round *k* - 1, which is exactly the union taken here.
+    """
+    if prev is None:
+        first = np.full(n_nodes, _EMPTY, np.int64)
+        last = np.full(n_nodes, -1, np.int64)
+        many = np.zeros(n_nodes, bool)
+        ez = np.zeros(n_nodes, bool)
+    else:
+        first, last = prev.first.copy(), prev.last.copy()
+        many, ez = prev.many.copy(), prev.ez.copy()
+        np.minimum.at(first, csr.src, prev.first[csr.dst])
+        np.maximum.at(last, csr.src, prev.last[csr.dst])
+        np.logical_or.at(many, csr.src, prev.many[csr.dst])
+        np.logical_or.at(ez, csr.src, prev.ez[csr.dst])
+    first[tet_atoms] = np.minimum(first[tet_atoms], tet_atoms)
+    last[tet_atoms] = np.maximum(last[tet_atoms], tet_atoms)
+    ez[ez_atoms] = True
+    many |= (last >= 0) & (first != last)
+    return Reach(first, last, many, ez)

@@ -174,8 +174,31 @@ only, aware-only classes pooled and shrunk toward `blind_of`.
 
 ## 5. Prediction
 
-Unchanged from design D §6: the walk over blind labels to *k*\*, then one lookup of the
-query's aware class at *k*\*.
+As in design D §6, the walk runs over blind labels to *k*\*, followed by one lookup of the
+query's aware class at *k*\*, with one added condition.
+
+**A lone centre's sign does not earn an aware answer** (added 2026-09-25, after Study
+E). The aware class is consulted only where the query atom's aware row at *k*\* carries
+something the mirror quotient keeps: two or more distinct tetrahedral centres, or any
+cis/trans code. Otherwise the atom keeps the blind answer. With a single centre in
+reach, a class and its mirror differ only by that centre's sign and hold identical
+statistics, so the pair says nothing the blind class does not. It is the blind class's
+estimate on a subset of its atoms (the untagged and unresolved ones stay blind),
+answered with a pooled mean, so it costs support for no information.
+
+`refine` tracks, per atom and WL round, which codes have reached its aware row
+(`stereo.advance_reach`). An atom's row at round *k* holds its own codes of that round
+and its own and its neighbours' rows of round *k* − 1. Two centre ids, the smallest and
+the largest reached, decide "one or several" exactly, including a single centre
+reached along two paths of a ring. The refinement chain and the fit are unchanged: the
+relative configuration of two centres reaches an atom only through the aware labels of
+the atoms between them, so single-centre classes stay in the vocabulary and are only
+not consulted.
+
+Measured on Study E's repeat 0 (five folds, from the cached fold models): the rule
+removes 77% (continuation) and 84% (continuation + EB) of the loss within two bonds of a
+centre, leaving +1.5 and +1.7 × 10⁻⁵ e against the cis/trans arm. The E/Z subset is
+unaffected.
 
 **Mirror invariance, exactly.** An enantiomer query has aware class M(*a*) wherever the
 original has *a*. Every training atom minted both *a* and M(*a*) with identical
