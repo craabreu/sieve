@@ -106,3 +106,62 @@ def test_a_file_without_statistics_loads_and_saves_back_without_them(tmp_path):
     again = tmp_path / "again.npz"
     back.save(again)
     assert sorted(np.load(again).files) == sorted(np.load(path).files)
+
+
+# ------------------------------------------------------ predictive variance --
+
+
+def test_alpha_v_is_ten():
+    from sieve.uncertainty import ALPHA_T, ALPHA_V, SELECTION_WEIGHT
+
+    assert (ALPHA_V, ALPHA_T, SELECTION_WEIGHT) == (10.0, 1.0, 0.5)
+
+
+def test_predictive_variance_adds_the_within_variance_exactly():
+    from sieve.uncertainty import predictive_variance
+
+    m = _fitted(max_wl_depth=3)
+    w = m.with_within_structure(4.0e-2, 100)
+    for base, form_b in zip(
+        predictive_variance(m), predictive_variance(w), strict=True
+    ):
+        np.testing.assert_array_equal(form_b, base + 4.0e-4)
+
+
+def test_without_statistics_the_variance_is_the_three_terms():
+    """σ²_w = 0 adds nothing: bit-identical to an explicit zero."""
+    from sieve.uncertainty import predictive_variance
+
+    m = _fitted(max_wl_depth=3)
+    z = m.with_within_structure(0.0, 0)
+    for a, b in zip(predictive_variance(m), predictive_variance(z), strict=True):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_unmatched_nodes_fall_back_to_global_msd_plus_the_within_variance():
+    from sieve.batch import NodeBatch
+
+    cfg = simple_config(max_wl_depth=1, predictive_variance=True)
+    m = sieve.fit(chain_batch(10, graphs=2), cfg).with_within_structure(1.0, 10)
+    oov = NodeBatch(
+        node_attrs=np.array([[7]], np.int64),  # an element code never fitted
+        edge_src=np.zeros(0, np.int64),
+        edge_dst=np.zeros(0, np.int64),
+        edge_attrs=np.zeros((0, 1), np.int64),
+        graph_id=np.zeros(1, np.int64),
+    )
+    out = sieve.predict_detailed(m, oov)
+    assert out.matched_level[0] == -1
+    assert out.predictive_variance is not None
+    np.testing.assert_allclose(out.predictive_variance[0], m.global_msd + 0.1)
+
+
+def test_matched_nodes_read_form_b():
+    cfg = simple_config(max_wl_depth=2, predictive_variance=True)
+    batch = chain_batch(10, graphs=3)
+    m = sieve.fit(batch, cfg)
+    w = m.with_within_structure(2.0, 10)
+    base = sieve.predict_detailed(m, batch).predictive_variance
+    form_b = sieve.predict_detailed(w, batch).predictive_variance
+    assert base is not None and form_b is not None
+    np.testing.assert_allclose(form_b, base + 0.2, rtol=1e-12)
