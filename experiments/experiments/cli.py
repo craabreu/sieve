@@ -615,8 +615,19 @@ def _selection(specs: list[str]) -> dict[str, list[str]]:
 
 
 def _cmd_stereo_subset_masks(args: argparse.Namespace) -> int:
-    from experiments.stereo_subsets import build_mask_table
+    from experiments.stereo_subsets import MASKS_FILE, build_mask_table, load_mask_table
 
+    path = DEFAULT_STORES_ROOT / args.store / MASKS_FILE
+    if args.check:
+        # A workflow guard: exit 0 only if the file exists under the
+        # current SUBSETS list, so Study E's new tetrahedral subsets force
+        # a rebuild rather than being silently read from a Study D table.
+        try:
+            load_mask_table(path)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"stale: {exc}")
+            return 1
+        return 0
     out = build_mask_table(
         args.store, stores_root=DEFAULT_STORES_ROOT, n_jobs=args.n_jobs
     )
@@ -1529,6 +1540,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_masks.add_argument("store", nargs="?", default="dash-molecules")
     p_masks.add_argument("--n-jobs", type=int, default=None)
+    p_masks.add_argument(
+        "--check",
+        action="store_true",
+        help="build nothing; exit 1 if the mask file is absent or holds an "
+        "older SUBSETS list",
+    )
     p_masks.set_defaults(func=_cmd_stereo_subset_masks)
 
     p_score_sub = sub.add_parser(

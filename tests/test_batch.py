@@ -157,7 +157,13 @@ def test_trusted_constructor_rejects_unknown_fields():
     a stray attribute rather than rejected."""
     with pytest.raises(TypeError, match="unexpected"):
         NodeBatch._with_trusted_edges(
-            **{**ring(4), "elements": None, "stereo_bonds": None, "bogus": 1}
+            **{
+                **ring(4),
+                "elements": None,
+                "stereo_bonds": None,
+                "stereo_centres": None,
+                "bogus": 1,
+            }
         )
 
 
@@ -269,6 +275,13 @@ def test_slicing_carries_every_field():
     # Nodes 0 and 1 are adjacent in a ring of >= 3, and both fall inside the
     # slice below, so stereo_bonds has something real to carry through.
     kw["stereo_bonds"] = np.array([[0, 1, 1, -1, 0, -1, 1]], np.int64)
+    # An extra edge bumps node 10's degree to 3 (ring neighbours 9, 11, plus
+    # 15), all inside the slice below, giving stereo_centres a real,
+    # fully-selected row to carry through too.
+    kw["edge_src"] = np.concatenate([kw["edge_src"], [10, 15]])
+    kw["edge_dst"] = np.concatenate([kw["edge_dst"], [15, 10]])
+    kw["edge_attrs"] = np.concatenate([kw["edge_attrs"], np.ones((2, 1), np.int64)])
+    kw["stereo_centres"] = np.array([[10, 9, 11, 15, -1, 1]], np.int64)
     parent = NodeBatch(**kw)
     sub = parent[np.arange(25)]
 

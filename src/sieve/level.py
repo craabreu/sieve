@@ -30,6 +30,9 @@ class FrozenLevel:
     # each class is, and the blind class of the same atoms at this level.
     kind: np.ndarray | None = None  # (nc,) uint8
     blind_of: np.ndarray | None = None  # (nc,) int64
+    # Under the tetrahedral track only (see mirror_targets): the class of the
+    # same atoms in the molecule's enantiomer.
+    mirror_of: np.ndarray | None = None  # (nc,) int64
 
     @property
     def n_classes(self) -> int:
@@ -61,6 +64,13 @@ def blind_targets(level) -> np.ndarray:
     if level.blind_of is None:
         return np.arange(level.n_classes, dtype=np.int64)
     return level.blind_of
+
+
+def mirror_targets(level) -> np.ndarray:
+    """Per-class mirror image; a stored ``None`` means the identity."""
+    if level.mirror_of is None:
+        return np.arange(level.n_classes, dtype=np.int64)
+    return level.mirror_of
 
 
 def _reduce(
@@ -101,17 +111,40 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     so their statistics are bit-identical to it. An atom whose aware class
     differs from its blind one sits in an aware-only class, which therefore
     holds exactly those atoms.
+
+    Under the tetrahedral track, an atom also accrues to its class's mirror,
+    where that differs from its own class (tetrahedral-handedness spec,
+    section 4): a class and its mirror end up with identical statistics,
+    which is the fit on the corpus plus every molecule's enantiomer without
+    ever materialising one. A self-mirror class -- ``mirror_of[c] == c`` --
+    has ``mirror_labels[i] == labels[i]`` for every one of its atoms (the
+    mirror label is a function of the class alone), so it is excluded from
+    this second pass and never double-counted.
     """
     nc = level.n_classes
     count, mean, msd = _reduce(level.blind, y, nc)
     if level.kind is not None:
         differs = level.labels != level.blind
-        if differs.any():
-            c2, m2, s2 = _reduce(level.labels[differs], y[differs], nc)
+        extra_labels, extra_y = [level.labels[differs]], [y[differs]]
+        if level.mirror_labels is not None:
+            moved = level.mirror_labels != level.labels
+            extra_labels.append(level.mirror_labels[moved])
+            extra_y.append(y[moved])
+        lab = np.concatenate(extra_labels)
+        if lab.size:
+            yy = np.concatenate(extra_y)
+            c2, m2, s2 = _reduce(lab, yy, nc)
             only = level.kind == KIND_AWARE
             count[only], mean[only], msd[only] = c2[only], m2[only], s2[only]
     return FrozenLevel(
-        level.signatures, count, mean, msd, level.parent, level.kind, level.blind_of
+        level.signatures,
+        count,
+        mean,
+        msd,
+        level.parent,
+        level.kind,
+        level.blind_of,
+        level.mirror_of,
     )
 
 

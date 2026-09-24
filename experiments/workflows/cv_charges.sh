@@ -1723,7 +1723,6 @@ STUDY_D_METHODS=sieve-element-ct-continuation,sieve-element-ct-continuation-eb
 STUDY_D_INCUMBENTS=sieve-element-continuation,sieve-element-continuation-eb
 STUDY_D_SHARD_JOBS="${STUDY_D_SHARD_JOBS:-6}"
 STUDY_D_JOBS="${STUDY_D_JOBS:-3}"
-STUDY_D_MASKS="experiments/stores/$STORE/stereo-subset-masks.npz"
 
 fit_one_study_d_shard() {
   "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
@@ -1778,8 +1777,12 @@ step study-d-runs "study_d_runs_done" -- dispatch_study_d_repeats
 
 # The subset masks depend on the store alone, so they are built once and
 # every run -- Study B's incumbents included -- is scored from its saved
-# predictions into a subset_metrics.json sidecar that compare reads.
-step study-d-subset-masks "file_exists $STUDY_D_MASKS" -- \
+# predictions into a subset_metrics.json sidecar that compare reads. The
+# guard checks the stored SUBSETS list, not merely the file's existence, so
+# a table built before Study E added the tetrahedral subsets is rebuilt
+# rather than silently read as if it already had them.
+step study-d-subset-masks \
+  "'$PYTHON' -m experiments stereo-subset-masks '$STORE' --check" -- \
   "$PYTHON" -m experiments stereo-subset-masks "$STORE"
 
 STUDY_D_SELECT="--select $SIEVE_STUDY_B=$STUDY_D_INCUMBENTS --select $SIEVE_STUDY_D=$STUDY_D_METHODS"
@@ -1809,6 +1812,110 @@ run_study_d_report() {
 }
 
 step study-d-report "study_d_report_is_up_to_date" -- run_study_d_report
+
+# ===========================================================================
+# Study E: the tetrahedral track on top of cis/trans
+# ===========================================================================
+#
+# docs/superpowers/specs/2026-09-24-tetrahedral-handedness-design.md section 9.
+# Both tracks against Study D's cis/trans arm, reused and not re-run, at the
+# same depth, repeats and K, under both estimators. Primary metric: RMSE
+# within two bonds of a tagged tetrahedral centre. near_ez2 is the check on
+# the one-chain simplification (spec section 8).
+STUDY_E_CONFIG_LABEL=element-ctt-eb
+SIEVE_STUDY_E=sieve-cv-study-e
+STUDY_E_PARAMS=$(
+  echo "$SIEVE_PREDICTOR_PARAMS" | "$PYTHON" -c '
+import json, sys
+params = json.load(sys.stdin)
+params["stereo"] = ["cis_trans", "tetrahedral"]
+print(json.dumps(params))
+'
+)
+STUDY_E_VARIANTS='[
+  {"method": "sieve-element-ctt-continuation",    "class_estimator": "continuation", "shrinkage_weight": null},
+  {"method": "sieve-element-ctt-continuation-eb", "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
+]'
+STUDY_E_METHODS=sieve-element-ctt-continuation,sieve-element-ctt-continuation-eb
+
+fit_one_study_e_shard() {
+  "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
+    --n-shards "$N_SHARDS" --max-depth "$STUDY_D_DEPTH" --shard "$1" \
+    --codes-path "$CODES_PATH" --config-label "$STUDY_E_CONFIG_LABEL" \
+    --predictor-params "$STUDY_E_PARAMS" \
+    $COLLAPSE_FLAG
+}
+export -f fit_one_study_e_shard
+export STUDY_E_CONFIG_LABEL STUDY_E_PARAMS
+
+dispatch_study_e_shards() {
+  all_shard_ids | xargs -P "$STUDY_D_SHARD_JOBS" -n 1 \
+    bash -c 'fit_one_study_e_shard "$1"' --
+}
+
+step study-e-shard-fits \
+  "shard_fits_count_is fit-sieve-$STUDY_E_CONFIG_LABEL-w$STUDY_D_DEPTH-s $N_SHARDS" -- \
+  dispatch_study_e_shards
+
+run_study_e_repeat() {
+  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --depths "$STUDY_D_DEPTH" --repeats "$1" \
+    --codes-path "$CODES_PATH" --config-label "$STUDY_E_CONFIG_LABEL" \
+    --fit-depth "$STUDY_D_DEPTH" \
+    --predictor-params "$STUDY_E_PARAMS" \
+    --variants "$STUDY_E_VARIANTS" \
+    $MODEL_CACHE_FLAG \
+    --normalization equal_weighted --method sieve-element-ctt-continuation \
+    $COLLAPSE_FLAG \
+    --experiment "$SIEVE_STUDY_E" \
+    --save-predictions
+}
+export -f run_study_e_repeat
+export SIEVE_STUDY_E STUDY_E_VARIANTS
+
+study_e_runs_done() {
+  local m
+  for m in $(echo "$STUDY_E_METHODS" | tr ',' ' '); do
+    method_depth_runs_count_is "$SIEVE_STUDY_E" "$m" "$STUDY_D_DEPTH" \
+      "$((K * $(n_items "$STUDY_D_REPEATS")))" || return 1
+  done
+}
+
+dispatch_study_e_repeats() {
+  echo "$STUDY_D_REPEATS" | tr ',' '\n' \
+    | xargs -P "$STUDY_D_JOBS" -n 1 bash -c 'run_study_e_repeat "$1"' --
+}
+
+step study-e-runs "study_e_runs_done" -- dispatch_study_e_repeats
+
+STUDY_E_SELECT="--select $SIEVE_STUDY_D=$STUDY_D_METHODS --select $SIEVE_STUDY_E=$STUDY_E_METHODS"
+
+step study-e-subset-scores \
+  "'$PYTHON' -m experiments score-stereo-subsets '$STORE' $STUDY_E_SELECT --depth $STUDY_D_DEPTH --check" -- \
+  "$PYTHON" -m experiments score-stereo-subsets "$STORE" $STUDY_E_SELECT \
+    --depth "$STUDY_D_DEPTH"
+
+STUDY_E_REPORT="$FIGURES_DIR/study-e"
+STUDY_E_METRICS="near_tet2/rmse near_tet1/rmse has_tet/rmse near_tet2/mae near_ez2/rmse rmse mae"
+
+study_e_report_is_up_to_date() {
+  [ -f "$STUDY_E_REPORT.txt" ] || return 1
+  [ -z "$(find "experiments/runs/$SIEVE_STUDY_D" "experiments/runs/$SIEVE_STUDY_E" \
+            -name subset_metrics.json -newer "$STUDY_E_REPORT.txt" -print -quit)" ]
+}
+
+run_study_e_report() {
+  local metric_flags="" m
+  for m in $STUDY_E_METRICS; do metric_flags="$metric_flags --metric $m"; done
+  "$PYTHON" -m experiments stereo-report \
+    --pair "continuation=$SIEVE_STUDY_D:sieve-element-ct-continuation,$SIEVE_STUDY_E:sieve-element-ctt-continuation" \
+    --pair "cont+EB=$SIEVE_STUDY_D:sieve-element-ct-continuation-eb,$SIEVE_STUDY_E:sieve-element-ctt-continuation-eb" \
+    --depth "$STUDY_D_DEPTH" --k "$K" $metric_flags \
+    --out "$STUDY_E_REPORT"
+}
+
+step study-e-report "study_e_report_is_up_to_date" -- run_study_e_report
 
 # --- final held-out evaluation ---------------------------------------------
 #

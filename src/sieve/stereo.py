@@ -1,4 +1,5 @@
-"""Content-rank fingerprints and the cis/trans code built on them.
+"""Content-rank fingerprints and the cis/trans and tetrahedral codes built
+on them.
 
 Kept out of ``refine.py`` because it has its own tests and ``refine`` is one
 readable function; ``refine`` calls in and folds the result.
@@ -152,3 +153,82 @@ def directed_positions(
 
     a, b = stereo_bonds[:, 0], stereo_bonds[:, 1]
     return locate(a, b), locate(b, a)
+
+
+CODE_PLUS, CODE_MINUS = 1, 2  # tetrahedral: parity times the sorting sign
+
+
+def tetrahedral_codes(stereo_centres: np.ndarray, fp: np.ndarray) -> np.ndarray:
+    """One code in ``{none, plus, minus}`` per tetrahedral centre.
+
+    The sign is the tag's parity times the sign of the permutation that sorts
+    the present neighbours by fingerprint, counted as inversions in reference
+    order. An absent fourth position contributes no inversion: it sits last
+    in RDKit's reference order, and any fixed place would flip every such
+    sign alike. Two present neighbours with equal fingerprints make the
+    centre unresolvable at this radius, and the code defers to ``none``.
+    """
+    nb = stereo_centres[:, 1:5]
+    present = nb >= 0
+    f = np.where(present, fp[np.where(present, nb, 0)], np.uint64(0))
+    tie = np.zeros(nb.shape[0], bool)
+    odd = np.zeros(nb.shape[0], bool)
+    for i in range(4):
+        for j in range(i + 1, 4):
+            both = present[:, i] & present[:, j]
+            tie |= both & (f[:, i] == f[:, j])
+            odd ^= both & (f[:, i] > f[:, j])
+    sign = np.where(odd, -1, 1) * stereo_centres[:, 5]
+    return np.where(tie, CODE_NONE, np.where(sign > 0, CODE_PLUS, CODE_MINUS)).astype(
+        np.int64
+    )
+
+
+def mirror_codes(codes: np.ndarray) -> np.ndarray:
+    """The codes of the mirror image: plus and minus swap, none stays."""
+    out = codes.copy()
+    out[codes == CODE_PLUS] = CODE_MINUS
+    out[codes == CODE_MINUS] = CODE_PLUS
+    return out
+
+
+def centre_positions(
+    csr: CSRLayout, n_nodes: int, stereo_centres: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """CSR positions of every out-edge of a centre, and that centre's row.
+
+    The code rides on all of a centre's out-edges, so it enters the centre's
+    own signature row and no other; resolved once, before the round loop.
+    """
+    row_of = np.full(n_nodes, -1, np.int64)
+    row_of[stereo_centres[:, 0]] = np.arange(stereo_centres.shape[0])
+    pos = np.flatnonzero(row_of[csr.src] >= 0)
+    return pos, row_of[csr.src[pos]]
+
+
+class FingerprintWindow:
+    """Serves ``fp_r`` and ``fp_{r-1}`` from a generator consumed in order.
+
+    With both tracks on, round *k* reads ``fp_{k-1}`` (tetrahedral) and
+    ``fp_{k-2}`` (cis/trans). ``content_ranks`` yields strictly in order and
+    retaining every radius costs ~1.6 GB on the train split, so this keeps
+    one fingerprint of history and refuses anything older.
+    """
+
+    def __init__(self, fingerprints: Iterator[np.ndarray]) -> None:
+        self._it = fingerprints
+        self._radius = -1
+        self._cur: np.ndarray | None = None
+        self._prev: np.ndarray | None = None
+
+    def at(self, radius: int) -> np.ndarray:
+        while self._radius < radius:
+            self._prev, self._cur = self._cur, next(self._it)
+            self._radius += 1
+        if radius == self._radius and self._cur is not None:
+            return self._cur
+        if radius == self._radius - 1 and self._prev is not None:
+            return self._prev
+        raise ValueError(
+            f"radius {radius} is no longer held (window at {self._radius})"
+        )
