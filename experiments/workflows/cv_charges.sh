@@ -1808,6 +1808,7 @@ run_study_d_report() {
     --pair "continuation=$SIEVE_STUDY_B:sieve-element-continuation,$SIEVE_STUDY_D:sieve-element-ct-continuation" \
     --pair "cont+EB=$SIEVE_STUDY_B:sieve-element-continuation-eb,$SIEVE_STUDY_D:sieve-element-ct-continuation-eb" \
     --depth "$STUDY_D_DEPTH" --k "$K" $metric_flags \
+    --incumbent-label "stereo-blind" --arm-label "+ cis/trans" \
     --out "$STUDY_D_REPORT"
 }
 
@@ -1912,6 +1913,7 @@ run_study_e_report() {
     --pair "continuation=$SIEVE_STUDY_D:sieve-element-ct-continuation,$SIEVE_STUDY_E:sieve-element-ctt-continuation" \
     --pair "cont+EB=$SIEVE_STUDY_D:sieve-element-ct-continuation-eb,$SIEVE_STUDY_E:sieve-element-ctt-continuation-eb" \
     --depth "$STUDY_D_DEPTH" --k "$K" $metric_flags \
+    --incumbent-label "cis/trans" --arm-label "+ tetrahedral" \
     --out "$STUDY_E_REPORT"
 }
 

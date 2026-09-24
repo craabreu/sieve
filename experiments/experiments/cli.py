@@ -677,7 +677,9 @@ def _cmd_stereo_report(args: argparse.Namespace) -> int:
     rows = stereo_report(
         DEFAULT_RUNS_ROOT, pairs, depth=args.depth, metrics=args.metric, k=args.k
     )
-    text = format_report(rows)
+    text = format_report(
+        rows, incumbent_label=args.incumbent_label, arm_label=args.arm_label
+    )
     print(text, end="")
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -1585,6 +1587,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_sreport.add_argument("--depth", type=int, required=True)
     p_sreport.add_argument("--k", type=int, required=True)
     p_sreport.add_argument("--metric", action="append", required=True)
+    p_sreport.add_argument(
+        "--incumbent-label", default="incumbent", help="header of the incumbent column"
+    )
+    p_sreport.add_argument(
+        "--arm-label", default="arm", help="header of the arm column"
+    )
     p_sreport.add_argument(
         "--out", type=Path, default=None, help="stem; writes .txt and .json"
     )

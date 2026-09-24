@@ -365,18 +365,30 @@ def stereo_report(
     return rows
 
 
-def format_report(rows: Sequence[Mapping[str, Any]]) -> str:
-    """A plain-text table of ``stereo_report``'s rows."""
+def format_report(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    incumbent_label: str = "incumbent",
+    arm_label: str = "arm",
+) -> str:
+    """A plain-text table of ``stereo_report``'s rows.
+
+    The two value columns are named by the caller, since which arm is the
+    incumbent differs by study (Study D: stereo-blind vs + cis/trans; Study
+    E: cis/trans vs + tetrahedral). "better" counts samples where the arm's
+    value is lower, which reads correctly for the error metrics reported.
+    """
+    wi, wa = max(10, len(incumbent_label)), max(11, len(arm_label))
     head = (
-        f"{'estimator':<10} {'metric':<16} {'incumbent':>10} {'+ cis/trans':>11} "
+        f"{'estimator':<12} {'metric':<16} {incumbent_label:>{wi}} {arm_label:>{wa}} "
         f"{'change':>11} {'95% CI (NB-corrected)':>26} {'rel.':>7} {'better':>7}"
     )
     lines = [head, "-" * len(head)]
     for r in rows:
         ci = "[{:+.2e}, {:+.2e}]".format(r["lo"], r["hi"])
         lines.append(
-            f"{r['label']:<10} {r['metric']:<16} {r['incumbent']:>10.6f} "
-            f"{r['arm']:>11.6f} {r['diff']:>+11.2e} {ci:>26} "
+            f"{r['label']:<12} {r['metric']:<16} {r['incumbent']:>{wi}.6f} "
+            f"{r['arm']:>{wa}.6f} {r['diff']:>+11.2e} {ci:>26} "
             f"{100 * r['relative']:>+6.2f}% {r['n_better']:>3}/{r['n']:<3}"
         )
     return "\n".join(lines) + "\n"
