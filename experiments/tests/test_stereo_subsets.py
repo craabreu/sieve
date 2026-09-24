@@ -48,7 +48,8 @@ def test_a_molecule_without_e_z_has_empty_masks():
 
 
 def _store(tmp_path: Path, smiles: list[str]) -> Path:
-    import pandas as pd
+    # The store is parquet, and CI's lean environment has no pandas.
+    pd = pytest.importorskip("pandas")
     from experiments.data import mol_to_blob
 
     root = tmp_path / "stores"
