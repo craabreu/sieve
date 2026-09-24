@@ -70,8 +70,7 @@ def test_track_order_is_normalised_and_duplicates_refused():
 def test_three_digests_and_cis_trans_unchanged():
     mols = _mols(["CC"])
     digests = {
-        _config(mols, stereo=s).schema_version
-        for s in ((), ("cis_trans",), BOTH)
+        _config(mols, stereo=s).schema_version for s in ((), ("cis_trans",), BOTH)
     }
     assert len(digests) == 3
     assert _config(mols, stereo=BOTH).stereo_radices == (4, 4)
@@ -286,3 +285,83 @@ def test_mirror_rows_and_maps_are_consistent():
         np.testing.assert_array_equal(mt[lv.labels], lv.mirror)
         np.testing.assert_array_equal(bt[lv.mirror], lv.blind)
         assert np.all(class_kinds(lv)[lv.mirror] & KIND_AWARE)
+
+
+CORPUS = [
+    "N[C@@H](C)C(=O)O",
+    "C[C@H](Br)[C@H](C)Br",
+    "C[C@H](Br)[C@@H](C)Br",
+    "F[C@H](Cl)Br",
+    "C[S@](=O)CC",
+    r"C/C=C\[C@H](F)Cl",
+    "C/C=C/C",
+    "CCCC",
+]
+EB = {"class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}
+
+
+def test_a_class_and_its_mirror_hold_identical_statistics():
+    mols = _mols(CORPUS)
+    cfg = _config(mols)
+    model = sieve.fit(_batch(mols, cfg), cfg)
+    seen = 0
+    for lv in model.levels:
+        mt = mirror_targets(lv)
+        chiral = np.flatnonzero(mt != np.arange(lv.n_classes))
+        seen += chiral.size
+        np.testing.assert_array_equal(lv.count[chiral], lv.count[mt[chiral]])
+        # count (integer) is bit-exact; mean/msd sum the identical multiset
+        # of atoms via two different scatter-reduce orderings (the
+        # "differs" pass for one class, the "moved" pass for its mirror),
+        # so IEEE 754 non-associativity can move the last bit.
+        np.testing.assert_allclose(lv.mean[chiral], lv.mean[mt[chiral]], rtol=1e-12)
+        np.testing.assert_allclose(lv.msd[chiral], lv.msd[mt[chiral]], rtol=1e-12)
+    assert seen
+
+
+def test_self_mirror_classes_count_each_atom_once():
+    """meso-2,3-dibromobutane: rows naming a and M(a) are unchanged by
+    reflection, and must not be counted twice."""
+    mols = _mols(["C[C@H](Br)[C@@H](C)Br"])
+    cfg = _config(mols)
+    batch = _batch(mols, cfg)
+    model, labels = sieve.fit(batch, cfg), refine(batch, cfg)
+    for lv, fl in zip(labels, model.levels, strict=True):
+        mt = mirror_targets(fl)
+        for c in np.flatnonzero(
+            (class_kinds(fl) == KIND_AWARE) & (mt == np.arange(fl.n_classes))
+        ):
+            assert fl.count[c] == int((lv.labels == c).sum())
+
+
+def test_blind_classes_stay_the_stereo_blind_fit():
+    mols = _mols(CORPUS)
+    s_cfg, b_cfg = _config(mols, **EB), _config(mols, stereo=(), **EB)
+    s_batch, b_batch = _batch(mols, s_cfg), _batch(mols, b_cfg)
+    s, b = sieve.fit(s_batch, s_cfg), sieve.fit(b_batch, b_cfg)
+    for ls, lb, fs, fb in zip(
+        refine(s_batch, s_cfg), refine(b_batch, b_cfg), s.levels, b.levels, strict=True
+    ):
+        pairs = np.unique(np.stack([ls.blind, lb.labels], 1), axis=0)
+        ids = pairs[:, 0]
+        np.testing.assert_array_equal(fs.count[ids], fb.count[pairs[:, 1]])
+        np.testing.assert_array_equal(fs.mean[ids], fb.mean[pairs[:, 1]])
+
+
+def test_aware_variance_counts_each_mirror_orbit_once():
+    from sieve.continuation import _aware_members
+
+    mols = _mols(["N[C@@H](C)C(=O)O", "N[C@H](C)C(=O)O", "N[C@@H](CC)C(=O)O"])
+    cfg = _config(mols, **EB)
+    model = sieve.fit(_batch(mols, cfg), cfg)
+    chiral_seen = 0
+    for lv in model.levels:
+        aware = np.flatnonzero(class_kinds(lv) & KIND_AWARE)
+        mt = mirror_targets(lv)
+        members = _aware_members(lv)
+        # Exactly one member per orbit: every aware class or its mirror is
+        # present, never both unless it is its own mirror.
+        orbits = {min(int(c), int(mt[c])) for c in aware}
+        assert sorted(orbits) == sorted(int(c) for c in members)
+        chiral_seen += int((mt[aware] != aware).sum())
+    assert chiral_seen

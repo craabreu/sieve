@@ -29,7 +29,7 @@ from sieve.config import (
     KIND_AWARE,
     KIND_BLIND,
 )
-from sieve.level import blind_targets, class_kinds
+from sieve.level import blind_targets, class_kinds, mirror_targets
 
 
 def _child_of_level(cfg) -> list[int]:
@@ -300,6 +300,20 @@ def atom_variance(model) -> list[float]:
     return out
 
 
+def _aware_members(lvl) -> np.ndarray:
+    """Aware-flagged classes, one per mirror orbit.
+
+    A class and its mirror hold identical statistics (tetrahedral-handedness
+    spec, section 4), so counting both here would add a zero-variance
+    sibling and bias tau^2_aware downward. Either member of a pair would do;
+    the smaller id is kept so the choice is deterministic. A class that is
+    its own mirror (achiral, or no tetrahedral track at all) is its own only
+    member.
+    """
+    aware = np.flatnonzero(class_kinds(lvl) & KIND_AWARE)
+    return aware[aware <= mirror_targets(lvl)[aware]]
+
+
 def aware_variance(model) -> list[float]:
     r"""Per-level $\hat\tau^2_{\mathrm{aware},k}$: how much the aware
     refinements of one blind class differ, debiased for sampling noise like
@@ -311,12 +325,16 @@ def aware_variance(model) -> list[float]:
     ANOVA ``sibling_variance`` computes. It sets how far an aware-only class
     is shrunk toward its blind counterpart under ``empirical_bayes``.
 
+    Under the tetrahedral track, each mirror orbit -- a class and its
+    identical-statistics mirror -- enters once (``_aware_members``), or a
+    chiral refinement would be counted as two siblings that never differ.
+
     ``nan`` where no group qualifies, which includes every level of a
     stereo-blind model.
     """
     out: list[float] = []
     for lvl in model.levels:
-        aware = np.flatnonzero(class_kinds(lvl) & KIND_AWARE)
+        aware = _aware_members(lvl)
         group = blind_targets(lvl)[aware]
         size = np.bincount(group, minlength=lvl.n_classes).astype(np.float64)
         keep = size >= 2
