@@ -163,3 +163,48 @@ def test_parallel_featurisation_carries_centres():
     seq = from_rdkit(mols, config=cfg)
     par = from_rdkit(mols, config=cfg, n_jobs=2)
     np.testing.assert_array_equal(seq.stereo_centres, par.stereo_centres)
+
+
+from sieve.stereo import (
+    CODE_MINUS,
+    CODE_NONE,
+    CODE_PLUS,
+    FingerprintWindow,
+    mirror_codes,
+    tetrahedral_codes,
+)
+
+
+def _row(n3, parity):
+    return np.array([[0, 1, 2, 3, n3, parity]], np.int64)
+
+
+@pytest.mark.parametrize(
+    "fp, n3, parity, expected",
+    [
+        ([0, 10, 20, 30, 40], 4, 1, CODE_PLUS),  # already sorted: even
+        ([0, 20, 10, 30, 40], 4, 1, CODE_MINUS),  # one inversion
+        ([0, 20, 10, 30, 40], 4, -1, CODE_PLUS),  # CW flips it back
+        ([0, 40, 30, 20, 10], 4, 1, CODE_PLUS),  # six inversions: even
+        ([0, 10, 20, 30, 0], -1, 1, CODE_PLUS),  # virtual n3 adds none
+        ([0, 20, 10, 30, 0], -1, 1, CODE_MINUS),
+        ([0, 10, 10, 30, 40], 4, 1, CODE_NONE),  # a tie defers
+        ([0, 10, 20, 30, 10], -1, 1, CODE_PLUS),  # a virtual n3 never ties
+    ],
+)
+def test_the_code_is_parity_times_the_sorting_sign(fp, n3, parity, expected):
+    got = tetrahedral_codes(_row(n3, parity), np.array(fp, np.uint64))
+    assert got.tolist() == [expected]
+
+
+def test_mirror_codes_swap_plus_and_minus_only():
+    codes = np.array([CODE_NONE, CODE_PLUS, CODE_MINUS])
+    assert mirror_codes(codes).tolist() == [CODE_NONE, CODE_MINUS, CODE_PLUS]
+
+
+def test_the_window_serves_two_consecutive_radii():
+    w = FingerprintWindow(iter([np.array([r]) for r in range(5)]))
+    assert w.at(1).tolist() == [1] and w.at(0).tolist() == [0]
+    assert w.at(3).tolist() == [3] and w.at(2).tolist() == [2]
+    with pytest.raises(ValueError, match="radius"):
+        w.at(0)
