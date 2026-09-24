@@ -65,6 +65,7 @@ def test_merge_with_a_model_without_statistics_keeps_the_other_side():
     a = _fitted().with_within_structure(2.0, 10)
     b = _fitted()
     for merged in (a.merge(b), b.merge(a)):
+        assert merged.within_sse is not None
         np.testing.assert_allclose(merged.within_sse, [2.0])
         assert merged.within_n == 10.0
 
@@ -79,6 +80,7 @@ def test_the_empty_model_is_still_the_merge_identity():
     a = _fitted().with_within_structure(2.0, 10)
     e = SieveModel.empty(a.config)
     for merged in (a.merge(e), e.merge(a)):
+        assert merged.within_sse is not None
         np.testing.assert_allclose(merged.within_sse, [2.0])
         assert merged.within_n == 10.0
 
@@ -91,6 +93,7 @@ def test_save_load_round_trips_the_sums(tmp_path):
     path = tmp_path / "m.npz"
     m.save(path)
     back = SieveModel.load(path)
+    assert back.within_sse is not None and m.within_sse is not None
     np.testing.assert_array_equal(back.within_sse, m.within_sse)
     assert back.within_n == m.within_n
 
@@ -270,6 +273,7 @@ def test_merge_of_two_fits_equals_the_fit_of_their_union():
         sieve.fit(split_batch(b, ~mask), cfg)
     )
     whole = sieve.fit(b, cfg)
+    assert merged.within_sse is not None and whole.within_sse is not None
     np.testing.assert_allclose(merged.within_sse, whole.within_sse, rtol=1e-12)
     assert merged.within_n == pytest.approx(whole.within_n, rel=1e-12)
 
@@ -278,6 +282,7 @@ def test_chunked_fit_sums_the_within_statistics():
     b = _within_batch(graphs=6)
     whole = sieve.fit(b, simple_config(max_wl_depth=2))
     chunked = sieve.fit(b, simple_config(max_wl_depth=2, chunk_size=12))
+    assert chunked.within_sse is not None and whole.within_sse is not None
     np.testing.assert_allclose(chunked.within_sse, whole.within_sse, rtol=1e-12)
     assert chunked.within_n == pytest.approx(whole.within_n, rel=1e-12)
 
@@ -364,8 +369,11 @@ def test_within_properties_survive_parallel_featurisation():
 
     mols = _labelled_mols(["CCO", "CCN", "CCC", "OCO", "NCN", "CC=O"])
     cfg = _adapter_config(mols)
-    kw = {"config": cfg, "y_from_atom_prop": "q", "within_from_atom_prop": "q"}
-    seq = from_rdkit(mols, **kw)
-    par = from_rdkit(mols, n_jobs=2, **kw)
+    seq = from_rdkit(mols, config=cfg, y_from_atom_prop="q", within_from_atom_prop="q")
+    par = from_rdkit(
+        mols, config=cfg, y_from_atom_prop="q", within_from_atom_prop="q", n_jobs=2
+    )
+    assert par.within_sse is not None and seq.within_sse is not None
+    assert par.within_n is not None and seq.within_n is not None
     np.testing.assert_array_equal(par.within_sse, seq.within_sse)
     np.testing.assert_array_equal(par.within_n, seq.within_n)

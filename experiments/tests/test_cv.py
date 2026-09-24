@@ -1398,3 +1398,81 @@ def test_a_cache_entry_from_another_store_is_refused(tmp_path):
             side,
             {**store_identity("new", stores_root=tmp_path), "train_shards": ["s00"]},
         )
+
+
+def test_truncate_model_carries_the_within_structure_statistics():
+    from experiments.cv import truncate_model
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=12, seed=0)
+    p = SievePredictor(attributes=("element",), edge_attributes=(), max_wl_depth=3)
+    p.fit(train, train, rng=np.random.default_rng(0))
+    deep = p._model.with_within_structure(2.0e-3, 20)
+    shallow = truncate_model(deep, 1)
+    np.testing.assert_array_equal(shallow.within_sse, deep.within_sse)
+    assert shallow.within_n == deep.within_n
+
+
+def _floor_cache(tmp_path, entries):
+    import json
+
+    from experiments.cv import floor_cache_path
+
+    path = floor_cache_path("st", stores_root=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries))
+
+
+def _small_model():
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.helpers import synthetic_molecule_set
+
+    train = synthetic_molecule_set(n_mol=8, seed=0)
+    p = SievePredictor(attributes=("element",), edge_attributes=(), max_wl_depth=1)
+    p.fit(train, train, rng=np.random.default_rng(0))
+    return p._model
+
+
+def test_training_floor_is_the_pooled_sum_over_the_training_shards(tmp_path):
+    from experiments.cv import _with_training_floor
+
+    _floor_cache(
+        tmp_path,
+        {
+            "s00": {"sse": 1.0, "sse_stereo_blind": 1.5, "n_atoms": 10.0},
+            "s01": {"sse": 3.0, "sse_stereo_blind": 3.5, "n_atoms": 30.0},
+            "s02": {"sse": 99.0, "sse_stereo_blind": 99.0, "n_atoms": 1.0},
+        },
+    )
+    m = _with_training_floor(_small_model(), "st", ["s00", "s01"], stores_root=tmp_path)
+    np.testing.assert_allclose(m.within_sse, [4.0])
+    assert m.within_n == 40.0
+
+
+def test_training_floor_needs_every_training_shard(tmp_path, caplog):
+    from experiments.cv import _with_training_floor
+
+    _floor_cache(
+        tmp_path, {"s00": {"sse": 1.0, "sse_stereo_blind": 1.0, "n_atoms": 10.0}}
+    )
+    with caplog.at_level("WARNING"):
+        m = _with_training_floor(
+            _small_model(), "st", ["s00", "s01"], stores_root=tmp_path
+        )
+    assert m.within_n == 0.0
+    assert "s01" in caplog.text
+
+
+def test_training_floor_leaves_a_model_that_already_has_sums(tmp_path):
+    from experiments.cv import _with_training_floor
+
+    _floor_cache(
+        tmp_path, {"s00": {"sse": 1.0, "sse_stereo_blind": 1.0, "n_atoms": 10.0}}
+    )
+    own = _small_model().with_within_structure(7.0, 70)
+    m = _with_training_floor(own, "st", ["s00"], stores_root=tmp_path)
+    np.testing.assert_allclose(m.within_sse, [7.0])
+    assert m.within_n == 70.0
