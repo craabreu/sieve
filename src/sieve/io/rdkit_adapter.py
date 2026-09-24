@@ -11,7 +11,6 @@ from joblib import Parallel, delayed, effective_n_jobs
 from sieve.batch import NodeBatch, concat_batches
 from sieve.config import SieveConfig
 
-
 # Companion atom properties written by conformer collapse beside the target
 # (within-structure-variance spec 3.1): `<target>__within_sse` and
 # `<target>__within_n`.
