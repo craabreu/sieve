@@ -87,6 +87,13 @@ Radius *k* − 1 is honest: the ranked neighbours sit one bond away, so their ra
 environments lie inside the centre's radius-*k* one. The code can therefore fire from
 round 1, unlike cis/trans, whose far substituents need *k* − 2.
 
+**Two radii per round.** With both tracks on, round *k* reads `fp_{k-1}` (tetrahedral) and
+`fp_{k-2}` (cis/trans). `content_ranks` is a generator consumed strictly in order and is
+asked today for `max(n_wl - 2, 0)` rounds. With the tetrahedral track it must yield
+`n_wl - 1`, and `refine` keeps one fingerprint of history. Otherwise the cis/trans code
+silently shifts by one radius whenever both tracks are on; test 1 (Embedding), which
+compares predictions and not only partitions, is what catches it.
+
 The fingerprint folds only the static edge code, never a stereo code (as for cis/trans).
 So the ranking is identical in a molecule and its mirror image, and mirroring negates
 exactly the handedness codes.
@@ -213,8 +220,12 @@ each track's effect without a second code path:
    an atom's M row is counted onto the same class twice.
 5. **Enantiomers pool.** (*R*)- and (*S*)-alanine share statistics: the class and its
    mirror hold identical count, mean and variance.
-6. **The radius rule.** CHFClBr resolves at round 1; alanine, whose two carbon
-   neighbours tie at radius 0, resolves at round 2 and not before.
+6. **The radius rule**, under an **element-only** attribute config, stated in the test:
+   `fp_0` hashes the whole attribute row, so with ring, aromatic or degree-like attributes
+   alanine's methyl and carboxyl carbons already differ at radius 0 and the test would
+   pass or fail for a reason unrelated to the rule. CHFClBr resolves at round 1;
+   alanine, whose two carbon neighbours tie at radius 0, resolves at round 2 and not
+   before.
 7. **Virtual neighbour, pinned.** A centre written with implicit H gives the same code
    across the five SMILES orderings of §2.1. Hand-checked cases, a sulfoxide and an
    implicit-H carbon, assert the specific code (`CODE_PLUS` or `CODE_MINUS`), not only
