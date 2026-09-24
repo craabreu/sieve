@@ -115,6 +115,14 @@ def test_a_centre_listed_twice_is_refused():
         _star_batch([[0, 1, 2, 3, 4, 1], [0, 4, 3, 2, 1, 1]])
 
 
+def test_an_edgeless_batch_with_no_centres_is_accepted():
+    """A single heavy atom has no edges and no centres; the adjacency check
+    must not fire on an empty lookup (found in review of PR #43)."""
+    mols = [Chem.MolFromSmiles("[Na+]"), Chem.MolFromSmiles("[Cl-]")]
+    b = from_rdkit(mols, config=_config(mols))
+    assert b.stereo_centres is not None and b.stereo_centres.shape == (0, 6)
+
+
 def test_stereo_centres_follow_slicing_and_concat():
     b = _star_batch([[0, 1, 2, 3, 4, 1], [5, 6, 7, 8, 9, -1]])
     second = b[b.graph_id == 1]

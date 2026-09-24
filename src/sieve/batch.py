@@ -217,7 +217,9 @@ class NodeBatch:
         key = np.sort(self.edge_src * n + self.edge_dst)
         want = (np.repeat(v, 4) * n + nb.ravel())[present.ravel()]
         pos = np.clip(np.searchsorted(key, want), 0, max(key.size - 1, 0))
-        if key.size == 0 or not (key[pos] == want).all():
+        # Vacuously true with nothing to look up: an edgeless batch (single
+        # heavy atoms) legitimately has zero edges and zero centres.
+        if want.size and (key.size == 0 or not (key[pos] == want).all()):
             raise ValueError(
                 "stereo_centres: a neighbour is not adjacent to its centre"
             )
