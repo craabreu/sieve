@@ -282,3 +282,26 @@ def test_a_sidecar_missing_a_subset_is_stale(tmp_path):
     (d / "predictions.npz").write_bytes(b"x")
     (d / METRICS_FILE).write_text(json.dumps({"has_ez/rmse": 1.0}))
     assert missing_scores(runs, {"e": ["a"]}, depth=5) == [d]
+
+
+def test_the_report_header_names_the_two_arms():
+    from experiments.stereo_subsets import format_report
+
+    row = {
+        "label": "cont",
+        "metric": "near_tet2/rmse",
+        "incumbent": 0.02,
+        "arm": 0.019,
+        "diff": -0.001,
+        "lo": -0.002,
+        "hi": 0.0,
+        "relative": -0.05,
+        "n": 25,
+        "n_better": 25,
+    }
+    text = format_report([row], incumbent_label="cis/trans", arm_label="+ tetrahedral")
+    head = text.splitlines()[0]
+    assert "cis/trans" in head and "+ tetrahedral" in head
+    assert "+ cis/trans" not in head
+    # Defaults name neither study.
+    assert "cis/trans" not in format_report([row]).splitlines()[0]
