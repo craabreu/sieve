@@ -1476,3 +1476,32 @@ def test_training_floor_leaves_a_model_that_already_has_sums(tmp_path):
     m = _with_training_floor(own, "st", ["s00"], stores_root=tmp_path)
     np.testing.assert_allclose(m.within_sse, [7.0])
     assert m.within_n == 70.0
+
+
+def test_training_floors_are_attached_only_to_collapsed_fits(tmp_path):
+    """An uncollapsed fit already holds the conformer scatter in every class;
+    adding sigma2_w on top would count it twice (final review, Important 1)."""
+    from types import SimpleNamespace
+
+    from experiments.cv import _attach_training_floors
+
+    _floor_cache(
+        tmp_path,
+        {
+            "s00": {"sse": 1.0, "sse_stereo_blind": 1.0, "n_atoms": 10.0},
+            "s01": {"sse": 3.0, "sse_stereo_blind": 3.0, "n_atoms": 30.0},
+        },
+    )
+    plan = SimpleNamespace(groups=[["s00"], ["s01"]])
+    models = [_small_model(), _small_model()]
+
+    plain = _attach_training_floors(
+        models, plan, "st", collapse=False, stores_root=tmp_path
+    )
+    assert [m.within_n for m in plain] == [0.0, 0.0]
+
+    collapsed = _attach_training_floors(
+        models, plan, "st", collapse=True, stores_root=tmp_path
+    )
+    # fold 0 trains on s01, fold 1 on s00
+    assert [m.within_n for m in collapsed] == [30.0, 10.0]

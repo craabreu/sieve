@@ -1035,6 +1035,34 @@ def _with_training_floor(
     return model.with_within_structure(sse, n)
 
 
+def _attach_training_floors(
+    train_models: Sequence[Any],
+    plan: Any,
+    store: str,
+    *,
+    collapse: bool,
+    stores_root: Path | None = None,
+) -> list[Any]:
+    """Every fold model, given its training shards' within-structure sums
+    (``_with_training_floor``) -- but only for collapsed fits.
+
+    An uncollapsed fit trained on every conformer, so each class's own spread
+    already holds the scatter these sums describe; adding sigma2_w on top would
+    count it twice.
+    """
+    if not collapse:
+        return list(train_models)
+    return [
+        _with_training_floor(
+            m,
+            store,
+            [s for g in _other_groups(plan, f) for s in g],
+            stores_root=stores_root,
+        )
+        for f, m in enumerate(train_models)
+    ]
+
+
 def _collapse_for_train_scoring(train_set: MoleculeSet, collapse: bool) -> MoleculeSet:
     """The training population a ``train/`` metric should describe.
 
@@ -1784,15 +1812,9 @@ def run_sieve_cv(
                     sidecar_extra=sidecar,
                 )
         # After the cache is written, so cached files stay as they were.
-        train_models = [
-            _with_training_floor(
-                m,
-                store,
-                [s for g in _other_groups(plan, f) for s in g],
-                stores_root=stores_root,
-            )
-            for f, m in enumerate(train_models)
-        ]
+        train_models = _attach_training_floors(
+            train_models, plan, store, collapse=collapse, stores_root=stores_root
+        )
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])

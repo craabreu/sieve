@@ -764,3 +764,23 @@ def test_an_uncollapsed_training_set_fits_without_them():
     p.fit(mset, mset, rng=np.random.default_rng(0))
     assert p._model.within_sse is None
     assert p._model.within_n == 0.0
+
+
+@pytest.mark.parametrize("collapsed_first", [True, False])
+def test_a_partly_collapsed_training_set_is_refused(collapsed_first):
+    """Either order must fail loudly, not fit a partial or absent sigma2_w
+    (final review, Important 2)."""
+    import numpy as np
+    from experiments.collapse import collapse_molecule_set
+    from experiments.data import concat_molecule_sets
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.test_collapse import _keyed_like, _multi_conformer_set
+
+    raw = _keyed_like(_multi_conformer_set())
+    parts = [collapse_molecule_set(raw), raw]
+    if not collapsed_first:
+        parts.reverse()
+    p = SievePredictor(attributes=("element",), edge_attributes=(), max_wl_depth=1)
+    with pytest.raises(ValueError, match="within-structure"):
+        p.fit(concat_molecule_sets(parts), raw, rng=np.random.default_rng(0))
