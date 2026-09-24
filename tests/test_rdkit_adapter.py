@@ -1028,3 +1028,30 @@ def test_the_cis_flag_matches_known_geometry_not_merely_itself():
         rows = np.array([row], np.int64)
         fp = np.zeros(Chem.MolFromSmiles(smiles).GetNumAtoms(), np.uint64)
         assert cis_trans_codes(rows, fp).tolist() == [expected_code]
+
+
+def test_cis_trans_codes_do_not_depend_on_a_pentavalent_neighbour():
+    """The degree-5 phosphorus that exposed the batch-dependent fingerprint
+    width: batching it beside a stereo molecule once flipped that molecule's
+    cis/trans codes at radius 1, and so moved its atoms between classes."""
+    from dataclasses import replace
+
+    from sieve.stereo import cis_trans_codes, content_ranks
+
+    stereo = r"C/C(F)=C(Cl)/CC(O)=O"
+    phosphorus = "COP12(OC)NC(=O)O[C@]1(C(F)(F)F)c1ccccc1O2"
+    cfg = replace(
+        cfg_for([stereo, phosphorus], attrs=(("element",),)), stereo=("cis_trans",)
+    )
+
+    def codes(smiles):
+        b = from_rdkit([Chem.MolFromSmiles(s) for s in smiles], config=cfg)
+        assert b.stereo_bonds is not None
+        csr = b.csr()
+        edge_code = np.zeros(csr.dst.shape[0], np.int64)
+        return [
+            cis_trans_codes(b.stereo_bonds, fp)[0]
+            for fp in content_ranks(b.node_attrs, csr, edge_code, 3)
+        ]
+
+    assert codes([stereo]) == codes([stereo, phosphorus])
