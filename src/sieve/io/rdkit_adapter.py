@@ -12,6 +12,13 @@ from sieve.batch import NodeBatch, concat_batches
 from sieve.config import SieveConfig
 
 
+# Companion atom properties written by conformer collapse beside the target
+# (within-structure-variance spec 3.1): `<target>__within_sse` and
+# `<target>__within_n`.
+WITHIN_SSE_SUFFIX = "__within_sse"
+WITHIN_N_SUFFIX = "__within_n"
+
+
 @functools.lru_cache(maxsize=1)
 def _periodic_table():
     from rdkit import Chem
@@ -599,6 +606,7 @@ def _from_rdkit_sequential(
     config: SieveConfig,
     node_order,
     y_from_atom_prop: str | None,
+    within_from_atom_prop: str | None = None,
 ) -> NodeBatch:
     """The actual per-molecule featurization loop, unchanged by ``n_jobs``.
 
@@ -611,6 +619,13 @@ def _from_rdkit_sequential(
     elements = np.zeros(n, np.int64)
     graph_id = np.zeros(n, np.int64)
     y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
+    w_sse = w_n = None
+    sse_prop = n_prop = ""
+    if within_from_atom_prop is not None:
+        w_sse = np.zeros((n, 1), np.float64)
+        w_n = np.zeros(n, np.float64)
+        sse_prop = within_from_atom_prop + WITHIN_SSE_SUFFIX
+        n_prop = within_from_atom_prop + WITHIN_N_SUFFIX
     src, dst, attr = [], [], []
     stereo_rows: list[tuple[int, int, int, int, int, int, int]] = []
     centre_rows: list[tuple[int, int, int, int, int, int]] = []
@@ -711,6 +726,9 @@ def _from_rdkit_sequential(
             graph_id[g] = gi
             if y_out is not None:
                 y_out[g, 0] = a.GetDoubleProp(y_from_atom_prop)
+            if w_sse is not None and w_n is not None:
+                w_sse[g, 0] = a.GetDoubleProp(sse_prop)
+                w_n[g] = a.GetDoubleProp(n_prop)
         for b in mol.GetBonds():
             u = off + int(inv[b.GetBeginAtomIdx()])
             v = off + int(inv[b.GetEndAtomIdx()])
@@ -744,6 +762,8 @@ def _from_rdkit_sequential(
             if "tetrahedral" in config.stereo
             else None
         ),
+        within_sse=w_sse,
+        within_n=w_n,
     )
 
 
@@ -753,6 +773,7 @@ def _from_rdkit_worker(
     config: SieveConfig,
     node_order_chunk,
     y_from_atom_prop: str | None,
+    within_from_atom_prop: str | None = None,
 ) -> NodeBatch:
     mols = [_deserialize_mol(b) for b in blobs]
     return _from_rdkit_sequential(
@@ -761,6 +782,7 @@ def _from_rdkit_worker(
         config=config,
         node_order=node_order_chunk,
         y_from_atom_prop=y_from_atom_prop,
+        within_from_atom_prop=within_from_atom_prop,
     )
 
 
@@ -771,6 +793,7 @@ def from_rdkit(
     config: SieveConfig,
     node_order=None,
     y_from_atom_prop: str | None = None,
+    within_from_atom_prop: str | None = None,
     n_jobs: int | None = None,
 ) -> NodeBatch:
     """Featurize a corpus of RDKit ``Mol``s into one ``NodeBatch``.
@@ -787,6 +810,11 @@ def from_rdkit(
     blobs (``_serialize_mol``/``_deserialize_mol``), never as naively-pickled
     live ``Mol`` objects -- see ``_serialize_mol``'s own docstring for why
     that distinction is a correctness requirement, not an optimization.
+
+    ``within_from_atom_prop`` names the target property whose collapse
+    companions (``WITHIN_SSE_SUFFIX``, ``WITHIN_N_SUFFIX``) are read into
+    ``within_sse``/``within_n``; every atom must carry both, or RDKit's
+    ``GetDoubleProp`` raises ``KeyError``.
     """
     if y is not None and y_from_atom_prop is not None:
         raise ValueError("pass either y or y_from_atom_prop, not both")
@@ -798,6 +826,7 @@ def from_rdkit(
             config=config,
             node_order=node_order,
             y_from_atom_prop=y_from_atom_prop,
+            within_from_atom_prop=within_from_atom_prop,
         )
 
     n_chunks = 4 * effective_n_jobs(n_jobs)
@@ -825,7 +854,12 @@ def from_rdkit(
 
     parts = Parallel(n_jobs=n_jobs)(
         delayed(_from_rdkit_worker)(
-            blobs, y_chunk, config, order_chunk, y_from_atom_prop
+            blobs,
+            y_chunk,
+            config,
+            order_chunk,
+            y_from_atom_prop,
+            within_from_atom_prop,
         )
         for blobs, y_chunk, order_chunk in zip(
             blob_chunks, y_chunks, order_chunks, strict=True

@@ -284,7 +284,11 @@ def fit(batch: NodeBatch, config: SieveConfig) -> SieveModel:
     levels_lbl = refine(batch, config)
     levels = tuple(fit_level(lv, batch.y) for lv in levels_lbl)
     n, mean, msd = global_stats(batch.y)
-    return SieveModel(config, levels, n, mean, msd)
+    within_sse, within_n = None, 0.0
+    if batch.within_sse is not None and batch.within_n is not None:
+        within_sse = batch.within_sse.sum(axis=0)
+        within_n = float(batch.within_n.sum())
+    return SieveModel(config, levels, n, mean, msd, within_sse, within_n)
 
 
 def _sub_batch(batch: NodeBatch, mask: np.ndarray) -> NodeBatch:

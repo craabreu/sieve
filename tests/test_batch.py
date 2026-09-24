@@ -162,6 +162,8 @@ def test_trusted_constructor_rejects_unknown_fields():
                 "elements": None,
                 "stereo_bonds": None,
                 "stereo_centres": None,
+                "within_sse": None,
+                "within_n": None,
                 "bogus": 1,
             }
         )
@@ -282,6 +284,8 @@ def test_slicing_carries_every_field():
     kw["edge_dst"] = np.concatenate([kw["edge_dst"], [15, 10]])
     kw["edge_attrs"] = np.concatenate([kw["edge_attrs"], np.ones((2, 1), np.int64)])
     kw["stereo_centres"] = np.array([[10, 9, 11, 15, -1, 1]], np.int64)
+    kw["within_sse"] = np.full((40, 1), 1e-4)
+    kw["within_n"] = np.full(40, 2.0)
     parent = NodeBatch(**kw)
     sub = parent[np.arange(25)]
 
