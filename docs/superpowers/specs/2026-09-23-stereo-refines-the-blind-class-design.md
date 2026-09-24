@@ -1,7 +1,7 @@
 # Stereo Refines the Stereo-Blind Class
 
 **Date:** 2026-09-23
-**Status:** design; not implemented
+**Status:** design, awaiting review; not implemented
 **Revises:** `2026-09-22-cis-trans-featurisation-design.md`. §5.4 there (the fold of the
 stereo code into every WL level) is replaced by §3–§6 here. §3–§5.3 there (the batch
 array, the adapter, the content rank, the resolution rule, the radius rule) are kept
@@ -40,12 +40,14 @@ radius 4–5, and the fraction of near-bond atoms matched to radius 5 falls from
 39.3%. The code itself is canonical: 300 molecules renumbered three times each change
 no atom's class at any radius.
 
-Note on the figures above: they carry the batch-dependence defect of §4.1. Fold 0's
-held-out batch contains a molecule with a five-coordinate atom, so its fingerprints were
-computed at a different width; recomputed in batches without one, fold 0's near-bond RMSE
-is 0.032745, not 0.034721. The training shards carry the same defect, so the fused
-models' codes are partly inconsistent across shards, and every figure in §1 and §2 was
-measured on a track whose codes are scrambled in part of its training data.
+Note on the figures above: they were measured before the fix of §4.1. Fold 0's held-out
+batch contains a molecule with a five-coordinate atom, so its fingerprints were computed
+at a different width; recomputed in batches without one, fold 0's near-bond RMSE is
+0.032745, not 0.034721. The training shards carried the same defect, so the fused models'
+codes were partly inconsistent across shards. The defect touches the six molecules with a
+degree-5 atom and whichever batches contain them, and the §2 emulation improves every
+fold, including the four whose held-out batches had none; the figures are therefore kept
+as measured rather than repeated, and Study D (§11) measures the fixed track.
 
 ## 2. What replaces it
 
@@ -110,10 +112,10 @@ Each atom's sufficient statistics accrue to its aware class and, when different,
 blind class. A blind class's statistics are therefore exactly those a stereo-blind fit
 would compute, and the model need never be re-fitted blind.
 
-### 4.1 The content rank must be batch-invariant
+### 4.1 The content rank is batch-invariant (fixed on `main`, PR #39)
 
-`stereo.content_ranks` builds `fp_j` by mixing the atom's padded, sorted neighbour row as
-`width = max(csr.max_deg, 1)` separate columns. `max_deg` is the largest degree anywhere in
+Before PR #39, `stereo.content_ranks` built `fp_j` by mixing the atom's padded, sorted
+neighbour row as `width = max(csr.max_deg, 1)` separate columns. `max_deg` is the largest degree anywhere in
 the batch, so the number of values mixed into every fingerprint depends on the batch, and
 its docstring's claim that adding molecules cannot change a fingerprint fails whenever the
 added molecule raises that maximum. Fingerprint order can then change, the winning
@@ -123,15 +125,15 @@ Measured: `QMUGS500_27594`'s prediction changes by 0.055 e when a single molecul
 five-coordinate phosphorus, `COP12(OC)NC(=O)O[C@]1(C(F)(F)F)c1ccccc1O2`, joins its batch.
 Six molecules of the store have a degree-5 atom and none a higher one, which is why the
 defect was confined to fold 0 and escaped the batch-composition test, whose companions all
-had degree 4. It is present on `main` and must be fixed independently of this design.
+had degree 4.
 
-The fix is a mixed representation whose width is a property of the method, not of the
-batch: pad every neighbour row to a fixed `CONTENT_RANK_WIDTH` of at least the largest
-degree the adapter accepts, and have the adapter refuse a molecule that exceeds it. An
-order-independent aggregate, the degree mixed with a wrapping sum of the neighbours' mixed
-hashes, would remove the cap but changes the mixer; the fixed width is the smaller change
-and keeps the kept §5.1 of the revised spec otherwise intact. Every fused model fitted
-before the fix, `element-ct-eb` included, must be refitted.
+The fix makes the width a property of the method, not of the batch: every neighbour row
+pads to `CONTENT_RANK_WIDTH = 8`, and `content_ranks` refuses a batch with an atom of
+higher degree rather than truncating it. An order-independent aggregate, the degree mixed
+with a wrapping sum of the neighbours' mixed hashes, would remove the cap but changes the
+mixer; the fixed width is the smaller change and keeps the kept §5.1 of the revised spec
+otherwise intact. The fused `element-ct-eb` shards and cache entries fitted before the fix
+have been deleted. This design inherits the fixed content rank unchanged.
 
 ## 5. Estimation
 
@@ -174,8 +176,8 @@ absent, receives exactly the incumbent's prediction.
 ## 7. Configuration and schema
 
 `SieveConfig.stereo` keeps its meaning. `schema_version` gains a construction marker,
-`"stereo_construction": "refines_blind"`, whenever `stereo` is non-empty. Fused models
-already on disk (`element-ct-eb`) carry no marker and hash differently, so
+`"stereo_construction": "refines_blind"`, whenever `stereo` is non-empty. Fused models,
+which anyone can still fit from `main`, carry no marker and hash differently, so
 `check_mergeable` refuses to merge them with models built under this design; with
 `stereo=()` the digest is byte-identical to today's.
 
@@ -199,11 +201,12 @@ Written before the code.
 4. **Recursive blinding.** An atom one bond from a stereogenic bond has a blind label at
    *k* = 3 equal to the stereo-blind model's, which fails if only the current round's
    trit is dropped.
-5. **Batch invariance, with a degree above the batch's own.** A molecule's codes and
-   predictions are identical alone and beside a molecule with a five-coordinate atom, and
-   beside one at `CONTENT_RANK_WIDTH`. The shard-level form of the same test: two shards
-   that share a molecule give it the same codes although only one of them contains a
-   higher-degree molecule.
+5. **Batch invariance, with a degree above the batch's own.** PR #39 added the
+   fingerprint and code forms (a path beside a degree-5 star; the adapter's codes beside
+   the five-coordinate phosphorus; a degree above `CONTENT_RANK_WIDTH` refused). This
+   design adds the prediction form, `predict` identical alone and beside that molecule,
+   and the shard form: two shards that share a molecule give it the same aware and blind
+   labels although only one of them contains a higher-degree molecule.
 6. **Kept from the revised spec:** mirror invariance; the merge monoid
    `fit(A ∪ B) == merge(fit(A), fit(B))` over 2 and 3 shards, now also on `kind` and
    `blind_of`; batch-composition invariance; renumbering invariance; the adapter tests.
@@ -221,10 +224,9 @@ equivalence test to both tracks at once.
 
 ## 10. Open items
 
-1. **Re-measure after the §4.1 fix.** §1's proof of principle and §2's emulation were both
-   run on fused models whose codes are inconsistent across the shards that contained a
-   degree-5 molecule. Both should be repeated on refitted shards before Study D, and §11's
-   target updated from the repeat.
+1. **No re-measurement before Study D.** §1's proof of principle and §2's emulation ran
+   before the §4.1 fix and are not repeated (see the note in §1); Study D measures the
+   fixed track directly.
 2. **Storage.** The aware-only fraction per level should be measured on the full training
    split once implemented; §3 predicts it tracks the ~12% of atoms in conformers with an
    E/Z bond, shrinking with radius as reach grows only as *k* − 2.
@@ -242,5 +244,6 @@ equivalence test to both tracks at once.
 Two arms, element continuation with and without the cis/trans track under this design, at
 radius 5, five repeats of five folds, paired. Primary metric: RMSE within two bonds of a
 stereogenic double bond. Secondary: corpus-wide RMSE and MAE, as the no-regression check.
-The target is §2's emulated effect as re-measured after the §4.1 fix; a result materially below it would mean §5's
-estimator or the reach rule costs more than the emulation assumed.
+The target is §2's emulated effect, measured before the §4.1 fix; a result materially
+below it would mean §5's estimator or the reach rule costs more than the emulation
+assumed.
