@@ -735,3 +735,32 @@ def test_the_predictor_defaults_to_no_stereo_track():
     from experiments.predictors.sieve_predictor import SievePredictor
 
     assert SievePredictor().stereo == ()
+
+
+def test_a_collapsed_training_set_fits_the_within_structure_sums():
+    import numpy as np
+    from experiments.collapse import collapse_molecule_set, floor_components
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.test_collapse import _keyed_like, _multi_conformer_set
+
+    mset = _keyed_like(_multi_conformer_set())
+    p = SievePredictor(attributes=("element",), edge_attributes=(), max_wl_depth=1)
+    p.fit(collapse_molecule_set(mset), mset, rng=np.random.default_rng(0))
+    parts = floor_components(mset)
+    assert p._model.within_sse is not None
+    assert float(p._model.within_sse[0]) == pytest.approx(parts["sse"], rel=1e-12)
+    assert p._model.within_n == pytest.approx(parts["n_atoms"], rel=1e-12)
+
+
+def test_an_uncollapsed_training_set_fits_without_them():
+    import numpy as np
+    from experiments.predictors.sieve_predictor import SievePredictor
+
+    from experiments.tests.test_collapse import _multi_conformer_set
+
+    mset = _multi_conformer_set()
+    p = SievePredictor(attributes=("element",), edge_attributes=(), max_wl_depth=1)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    assert p._model.within_sse is None
+    assert p._model.within_n == 0.0
