@@ -365,3 +365,109 @@ def test_aware_variance_counts_each_mirror_orbit_once():
         assert sorted(orbits) == sorted(int(c) for c in members)
         chiral_seen += int((mt[aware] != aware).sum())
     assert chiral_seen
+
+
+def _predict(model, mols, cfg):
+    return sieve.predict_detailed(model, from_rdkit(mols, config=cfg))
+
+
+@pytest.mark.parametrize("rule", [{}, EB], ids=["none", "eb"])
+def test_embedding_without_chiral_tags_is_the_cis_trans_model(rule):
+    mols = _stripped(_mols(CORPUS))
+    both, ct = _config(mols, **rule), _config(mols, stereo=("cis_trans",), **rule)
+    pb = _predict(sieve.fit(_batch(mols, both), both), mols, both)
+    pc = _predict(sieve.fit(_batch(mols, ct), ct), mols, ct)
+    np.testing.assert_allclose(pb.value, pc.value, rtol=1e-12, atol=1e-15)
+    np.testing.assert_array_equal(pb.stereo_refined, pc.stereo_refined)
+
+
+@pytest.mark.parametrize("rule", [{}, EB], ids=["none", "eb"])
+def test_predictions_are_mirror_invariant(rule):
+    mols = _mols(CORPUS)
+    cfg = _config(mols, **rule)
+    model = sieve.fit(_batch(mols, cfg), cfg)
+    np.testing.assert_allclose(
+        _predict(model, _inverted(mols), cfg).value,
+        _predict(model, mols, cfg).value,
+        rtol=1e-12,
+        atol=1e-15,
+    )
+
+
+def test_an_unseen_enantiomer_is_answered_like_the_trained_one():
+    r, s = _mols(["N[C@@H](C)C(=O)O"]), _mols(["N[C@H](C)C(=O)O"])
+    cfg = _config(r + s)
+    model = sieve.fit(_batch(r, cfg), cfg)
+    pr, ps = _predict(model, r, cfg), _predict(model, s, cfg)
+    np.testing.assert_allclose(pr.value, ps.value, rtol=1e-12, atol=1e-15)
+    assert ps.stereo_refined.any()
+
+
+def test_diastereomers_separate():
+    a, meso = _mols(["C[C@H](Br)[C@H](C)Br"]), _mols(["C[C@H](Br)[C@@H](C)Br"])
+    cfg = _config(a + meso, depth=4)
+    lv = refine(from_rdkit(a + meso, config=cfg), cfg)[-1]
+    c = _stereo_centre_rows(a[0])[0][0]
+    assert lv.labels[c] != lv.labels[c + a[0].GetNumAtoms()]
+
+
+def test_a_fit_on_the_mirrored_corpus_predicts_the_same():
+    mols = _mols(CORPUS)
+    cfg = _config(mols, **EB)
+    orig = sieve.fit(_batch(mols, cfg), cfg)
+    mirr = sieve.fit(_batch(_inverted(mols), cfg), cfg)
+    np.testing.assert_allclose(
+        _predict(orig, mols, cfg).value,
+        _predict(mirr, mols, cfg).value,
+        rtol=1e-12,
+        atol=1e-15,
+    )
+
+
+@pytest.mark.parametrize("cuts", [(3,), (2, 5)], ids=["two", "three"])
+def test_merge_monoid_with_enantiomers_split(cuts):
+    import itertools
+
+    mols = _mols(
+        CORPUS + ["N[C@H](C)C(=O)O"]
+    )  # alanine's two hands in different shards
+    cfg = _config(mols, **EB)
+    batch = _batch(mols, cfg)
+    edges = [0, *cuts, len(mols)]
+    merged = None
+    for lo, hi in itertools.pairwise(edges):
+        part = sieve.fit(batch[(batch.graph_id >= lo) & (batch.graph_id < hi)], cfg)
+        merged = part if merged is None else merged.merge(part)
+    whole = sieve.fit(batch, cfg)
+    assert [lv.n_classes for lv in merged.levels] == [
+        lv.n_classes for lv in whole.levels
+    ]
+    np.testing.assert_allclose(
+        sieve.predict(merged, batch),
+        sieve.predict(whole, batch),
+        rtol=1e-12,
+        atol=1e-15,
+    )
+    for lm in merged.levels:
+        mt = mirror_targets(lm)
+        np.testing.assert_array_equal(mt[mt], np.arange(lm.n_classes))
+
+
+def test_save_and_load_keep_mirror_of(tmp_path):
+    mols = _mols(CORPUS)
+    cfg = _config(mols)
+    model = sieve.fit(_batch(mols, cfg), cfg)
+    model.save(tmp_path / "m.npz")
+    loaded = sieve.SieveModel.load(tmp_path / "m.npz")
+    for a, b in zip(model.levels, loaded.levels, strict=True):
+        np.testing.assert_array_equal(mirror_targets(a), mirror_targets(b))
+
+
+def test_predictions_do_not_depend_on_a_pentavalent_neighbour():
+    mols = _mols(CORPUS)
+    p = _mols(["COP12(OC)NC(=O)O[C@]1(C(F)(F)F)c1ccccc1O2"])
+    cfg = _config(mols + p, **EB)
+    model = sieve.fit(_batch(mols + p, cfg), cfg)
+    alone = sieve.predict(model, from_rdkit(mols, config=cfg))
+    beside = sieve.predict(model, from_rdkit(mols + p, config=cfg))
+    np.testing.assert_array_equal(alone, beside[: alone.shape[0]])

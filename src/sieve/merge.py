@@ -12,7 +12,7 @@ import numpy as np
 
 from sieve.config import LEVEL_WL, LEVEL_WL_PAIR, SieveConfig, check_mergeable
 from sieve.dedupe import _row_keys, dense_rows
-from sieve.level import FrozenLevel, blind_targets, class_kinds
+from sieve.level import FrozenLevel, blind_targets, class_kinds, mirror_targets
 
 _OOV_NEIGHBOR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
 
@@ -255,7 +255,23 @@ def merge_level(
                 "blind_of disagreement: a class changed its blind twin"
             )
         blind_of[i] = np.where(nA > 0, blind_of[i], b_blind_of)
-    return FrozenLevel(uniq, count, mean, msd, parent, class_kind, blind_of), remap
+
+    mirror_of = None
+    if a.mirror_of is not None or b.mirror_of is not None:
+        # Under the tetrahedral track (tetrahedral-handedness spec, section
+        # 6): remapped like blind_of, within this level. A side with no
+        # array (a stereo-blind or cis/trans-only model, or the empty model)
+        # reads as the identity.
+        mirror_of = np.arange(n_new, dtype=np.int64)
+        mirror_of[:m] = mirror_targets(a)
+        b_mirror_of = remap[mirror_targets(b)].astype(np.int64)
+        if np.any(both) and not np.array_equal(mirror_of[i][both], b_mirror_of[both]):
+            raise AssertionError("mirror_of disagreement: a class changed its mirror")
+        mirror_of[i] = np.where(nA > 0, mirror_of[i], b_mirror_of)
+    return (
+        FrozenLevel(uniq, count, mean, msd, parent, class_kind, blind_of, mirror_of),
+        remap,
+    )
 
 
 def merge_models(a, b):
