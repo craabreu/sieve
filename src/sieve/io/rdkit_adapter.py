@@ -283,6 +283,40 @@ def _stereo_bond_rows(mol) -> list[tuple[int, int, int, int, int, int, int]]:
     return rows
 
 
+def _stereo_centre_rows(mol) -> list[tuple[int, int, int, int, int, int]]:
+    """Tagged tetrahedral centres as ``[v, n0, n1, n2, n3, parity]``, in raw
+    RDKit atom-index order (callers apply ``inv[]``, as for stereo bonds).
+
+    Read from the local chiral tag, never CIP and never
+    ``FindPotentialStereo``, whose stereogenicity test uses the
+    whole-molecule ranking: a tagged atom that is not stereogenic at some
+    radius simply gets ``none`` there. The tag is a parity in the order of
+    ``atom.GetBonds()``, which is written into the row explicitly so nothing
+    depends on the CSR order matching it. A centre with three bonds has a
+    virtual fourth neighbour (an implicit H or a lone pair), which RDKit's
+    tag places last (measured 2026-09-24); any other bond count is skipped.
+    """
+    from rdkit import Chem
+
+    parity_of = {
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW: 1,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW: -1,
+    }
+    rows = []
+    for atom in mol.GetAtoms():
+        parity = parity_of.get(atom.GetChiralTag())
+        if parity is None:
+            continue
+        v = atom.GetIdx()
+        nbrs = [b.GetOtherAtomIdx(v) for b in atom.GetBonds()]
+        if len(nbrs) == 3:
+            nbrs.append(-1)
+        elif len(nbrs) != 4:
+            continue
+        rows.append((v, nbrs[0], nbrs[1], nbrs[2], nbrs[3], parity))
+    return rows
+
+
 def _min_ring_size(mol) -> list[str]:
     """Size of the smallest SSSR ring each atom belongs to, ``"none"`` when
     the atom is acyclic (the same sentinel ``group``/``chirality`` use).
@@ -579,6 +613,7 @@ def _from_rdkit_sequential(
     y_out = np.zeros((n, 1), np.float64) if y_from_atom_prop is not None else None
     src, dst, attr = [], [], []
     stereo_rows: list[tuple[int, int, int, int, int, int, int]] = []
+    centre_rows: list[tuple[int, int, int, int, int, int]] = []
     off = 0
     # Hoisted out of the per-atom loop below: all three are loop-invariant,
     # and the loop runs once per atom *per attribute* -- at 1.69M atoms and 5
@@ -633,7 +668,7 @@ def _from_rdkit_sequential(
         )
         inv = np.empty(mol.GetNumAtoms(), np.int64)
         inv[order] = np.arange(mol.GetNumAtoms())
-        if config.stereo:
+        if "cis_trans" in config.stereo:
             # Every atom column must go through the same inv[] permutation
             # the per-atom loop below uses, or a custom node_order would
             # silently point a stereo bond at the wrong atoms. -1 (an absent
@@ -649,6 +684,20 @@ def _from_rdkit_sequential(
                         off + int(inv[b1]),
                         -1 if b2 < 0 else off + int(inv[b2]),
                         cis,
+                    )
+                )
+        if "tetrahedral" in config.stereo:
+            # Same inv[] permutation rule as above; -1 (the virtual fourth
+            # neighbour) is never a real index and must not be remapped.
+            for v, n0, n1, n2, n3, parity in _stereo_centre_rows(mol):
+                centre_rows.append(
+                    (
+                        off + int(inv[v]),
+                        off + int(inv[n0]),
+                        off + int(inv[n1]),
+                        off + int(inv[n2]),
+                        -1 if n3 < 0 else off + int(inv[n3]),
+                        parity,
                     )
                 )
         for local, idx in enumerate(order):
@@ -686,7 +735,14 @@ def _from_rdkit_sequential(
         y=y if y is not None else y_out,
         elements=elements,
         stereo_bonds=(
-            np.array(stereo_rows, np.int64).reshape(-1, 7) if config.stereo else None
+            np.array(stereo_rows, np.int64).reshape(-1, 7)
+            if "cis_trans" in config.stereo
+            else None
+        ),
+        stereo_centres=(
+            np.array(centre_rows, np.int64).reshape(-1, 6)
+            if "tetrahedral" in config.stereo
+            else None
         ),
     )
 

@@ -126,3 +126,40 @@ def test_stereo_centres_follow_slicing_and_concat():
     )
     with pytest.raises(ValueError, match="stereo_centres"):
         concat_batches([second, dataclasses.replace(second, stereo_centres=None)])
+
+
+from sieve.io.rdkit_adapter import _stereo_centre_rows
+
+
+def test_enantiomers_give_opposite_parity_on_identical_rows():
+    (r,) = _stereo_centre_rows(_mols(["F[C@H](Cl)Br"])[0])
+    (s,) = _stereo_centre_rows(_mols(["F[C@@H](Cl)Br"])[0])
+    assert r[:5] == s[:5] and r[5] == -s[5]
+
+
+def test_a_sulfoxide_has_a_virtual_fourth_neighbour():
+    (row,) = _stereo_centre_rows(_mols(["C[S@](=O)CC"])[0])
+    assert row[4] == -1
+
+
+def test_untagged_and_two_neighbour_centres_give_no_row():
+    assert _stereo_centre_rows(_mols(["CC(C)CC"])[0]) == []
+    assert _stereo_centre_rows(Chem.MolFromSmiles("C[P@H]CC")) == []
+
+
+def test_the_batch_carries_centres_only_under_the_track():
+    mols = _mols(["F[C@H](Cl)Br", "C/C=C/C"])
+    both = from_rdkit(mols, config=_config(mols))
+    ct = from_rdkit(mols, config=_config(mols, stereo=("cis_trans",)))
+    tet = from_rdkit(mols, config=_config(mols, stereo=("tetrahedral",)))
+    assert both.stereo_centres.shape == (1, 6) and both.stereo_bonds.shape == (1, 7)
+    assert ct.stereo_centres is None
+    assert tet.stereo_bonds is None and tet.stereo_centres.shape == (1, 6)
+
+
+def test_parallel_featurisation_carries_centres():
+    mols = _mols(["F[C@H](Cl)Br", "N[C@@H](C)C(=O)O"] * 4)
+    cfg = _config(mols)
+    seq = from_rdkit(mols, config=cfg)
+    par = from_rdkit(mols, config=cfg, n_jobs=2)
+    np.testing.assert_array_equal(seq.stereo_centres, par.stereo_centres)
