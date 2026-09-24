@@ -12,7 +12,7 @@ import numpy as np
 
 from sieve.config import LEVEL_WL, LEVEL_WL_PAIR, SieveConfig, check_mergeable
 from sieve.dedupe import _row_keys, dense_rows
-from sieve.level import FrozenLevel
+from sieve.level import FrozenLevel, blind_targets, class_kinds
 
 _OOV_NEIGHBOR = -2  # distinct from both a real code (>=0) and the pad sentinel (-1)
 
@@ -236,7 +236,26 @@ def merge_level(
     if np.any(both) and not np.array_equal(parent[i][both], b_parent[both]):
         raise AssertionError("parent disagreement: the nesting invariant is broken")
     parent[i] = np.where(nA > 0, parent[i], b_parent)
-    return FrozenLevel(uniq, count, mean, msd, parent), remap
+
+    class_kind = blind_of = None
+    if a.kind is not None or b.kind is not None:
+        # Under a stereo track (stereo-refines-blind spec, section 7): kinds
+        # combine by OR, since one shard can see a class only as blind and
+        # another also as aware; blind_of is remapped like parent, but within
+        # this level. A side with no arrays (the empty model) reads as
+        # all-both and the identity.
+        class_kind = np.zeros(n_new, np.uint8)
+        class_kind[:m] = class_kinds(a)
+        class_kind[i] |= class_kinds(b)
+        blind_of = np.arange(n_new, dtype=np.int64)
+        blind_of[:m] = blind_targets(a)
+        b_blind_of = remap[blind_targets(b)].astype(np.int64)
+        if np.any(both) and not np.array_equal(blind_of[i][both], b_blind_of[both]):
+            raise AssertionError(
+                "blind_of disagreement: a class changed its blind twin"
+            )
+        blind_of[i] = np.where(nA > 0, blind_of[i], b_blind_of)
+    return FrozenLevel(uniq, count, mean, msd, parent, class_kind, blind_of), remap
 
 
 def merge_models(a, b):

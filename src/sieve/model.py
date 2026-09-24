@@ -131,6 +131,11 @@ class SieveModel:
             arrays[f"level_{k}_mean"] = lvl.mean
             arrays[f"level_{k}_msd"] = lvl.msd
             arrays[f"level_{k}_parent"] = lvl.parent
+            if lvl.kind is not None:
+                # Only under a stereo track, so a stereo-blind file keeps
+                # exactly the keys it always had.
+                arrays[f"level_{k}_kind"] = lvl.kind
+                arrays[f"level_{k}_blind_of"] = lvl.blind_of
         np.savez(path, **arrays)
 
     @classmethod
@@ -182,6 +187,10 @@ class SieveModel:
                 data[f"level_{k}_mean"],
                 data[f"level_{k}_msd"],
                 data[f"level_{k}_parent"],
+                data[f"level_{k}_kind"] if f"level_{k}_kind" in data.files else None,
+                data[f"level_{k}_blind_of"]
+                if f"level_{k}_blind_of" in data.files
+                else None,
             )
             for k in range(cfg.n_levels)
         )

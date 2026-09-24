@@ -1,7 +1,8 @@
 # Cis/Trans Geometry as a Refinement-Time Edge Code
 
 **Date:** 2026-09-22
-**Status:** design, approved in conversation; not implemented
+**Status:** implemented, then revised: §5.4 (the fold of the stereo code into every WL
+level) is replaced by `2026-09-23-stereo-refines-the-blind-class-design.md` §3–§6.
 **Scope:** the E/Z half of stereo-aware featurisation, and only that. The tetrahedral
 half is deliberately deferred; see §9.
 **Supersedes, in part:** `cis-trans-geometry.md`, which states the construction without

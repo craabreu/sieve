@@ -144,6 +144,14 @@ def sieve_train_stats(
     estimators ``sieve.predict_loo`` itself refuses, for the same reason --
     the correction needs a child class identity this walk does not carry.
     """
+    if model.config.stereo:
+        # An atom accrues to its blind and to its aware class at the same
+        # level (stereo-refines-blind spec, section 4), so the stored counts
+        # no longer partition the training atoms and the identity fails.
+        raise NotImplementedError(
+            "analytic training statistics do not support a stereo track: an "
+            "atom contributes to its blind and its aware class at one level"
+        )
     from sieve.shrinkage import shrunk_means
 
     cfg = model.config
@@ -220,6 +228,15 @@ def _loo_scale(count: NDArray) -> NDArray:
     return (n / (n - 1.0))[:, None] ** 2
 
 
+def supports_train_stats(cfg: Any) -> bool:
+    """Whether the analytic training statistics exist for this model at all.
+
+    Not under a stereo track: an atom accrues to its blind and its aware class
+    at the same level, so the stored counts no longer partition the atoms.
+    """
+    return not cfg.stereo
+
+
 def supports_loo(cfg: Any) -> bool:
     """Whether the analytic LOO is exact for this reading of the tables.
 
@@ -228,7 +245,11 @@ def supports_loo(cfg: Any) -> bool:
     """
     from sieve.config import CLASS_ESTIMATOR_POOLED
 
-    return cfg.class_estimator == CLASS_ESTIMATOR_POOLED and not cfg.applies_shrinkage
+    return (
+        supports_train_stats(cfg)
+        and cfg.class_estimator == CLASS_ESTIMATOR_POOLED
+        and not cfg.applies_shrinkage
+    )
 
 
 def _refuse_loo_unsupported(cfg: Any) -> None:

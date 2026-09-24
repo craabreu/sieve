@@ -5,16 +5,19 @@ from __future__ import annotations
 import numpy as np
 
 from sieve.config import (
+    KIND_AWARE,
     SHRINKAGE_WEIGHT_DIVERSITY,
     SHRINKAGE_WEIGHT_EMPIRICAL_BAYES,
 )
 from sieve.continuation import (
     atom_variance,
+    aware_variance,
     child_counts,
     class_means,
     root_variance,
     sibling_variance,
 )
+from sieve.level import blind_targets, class_kinds
 
 
 def shrunk_means(model) -> list[np.ndarray]:
@@ -104,9 +107,9 @@ def shrunk_means(model) -> list[np.ndarray]:
             # is no "off" setting to check for here.
             assert eb_w is not None  # set iff `eb`; the checker cannot see that
             w = eb_w[k][:, None]
-            out.append(np.where(n > 0, w * raw + (1.0 - w) * parent_est, parent_est))
+            est = np.where(n > 0, w * raw + (1.0 - w) * parent_est, parent_est)
         elif not applies:
-            out.append(np.where(n > 0, raw, parent_est))
+            est = np.where(n > 0, raw, parent_est)
         elif diversity:
             # KN's lambda: weight on the parent grows with the number of
             # distinct children per atom. Clipped at 1 -- C > N/alpha is
@@ -116,13 +119,23 @@ def shrunk_means(model) -> list[np.ndarray]:
             lam = np.minimum(
                 shrinkage_strength * counts[k][:, None] / np.maximum(n, 1.0), 1.0
             )
-            out.append(
-                np.where(n > 0, (1.0 - lam) * raw + lam * parent_est, parent_est)
-            )
+            est = np.where(n > 0, (1.0 - lam) * raw + lam * parent_est, parent_est)
         else:
-            out.append(
-                (n * raw + shrinkage_strength * parent_est) / (n + shrinkage_strength)
-            )
+            est = (n * raw + shrinkage_strength * parent_est) / (n + shrinkage_strength)
+        only = class_kinds(lvl) == KIND_AWARE
+        if only.any() and (eb or (applies and not diversity)):
+            # An aware-only class refines its blind counterpart at the same
+            # radius, so that is what it is shrunk toward, not its parent
+            # (stereo-refines-blind spec, section 5). Diversity keeps its
+            # literal rule: an aware-only class has no children, so lambda = 0.
+            if eb:
+                assert eb_w is not None
+                w_only = eb_w[k][only][:, None]
+            else:
+                w_only = n[only] / (n[only] + shrinkage_strength)
+            target = est[blind_targets(lvl)[only]]
+            est[only] = w_only * raw[only] + (1.0 - w_only) * target
+        out.append(est)
     return out
 
 
@@ -151,6 +164,7 @@ def empirical_bayes_weights(model) -> list[np.ndarray]:
     sigma = atom_variance(model)
     counts = child_counts(model)
     root = root_variance(model)
+    tau_aware = aware_variance(model)
 
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
@@ -163,11 +177,24 @@ def empirical_bayes_weights(model) -> list[np.ndarray]:
         num = np.where(c > 0, tau[k] if tau[k] == tau[k] else np.nan, sigma[k])
         size = np.where(c > 0, c, n)
         if tau_parent != tau_parent:  # nan: nothing to shrink toward
-            out.append(np.ones(len(n)))
-            continue
-        if tau_parent <= 0.0:
-            out.append(np.zeros(len(n)))  # alpha -> inf: shrink fully
-            continue
-        alpha = np.where(num == num, num / tau_parent, 0.0)
-        out.append(size / (size + alpha))
+            w = np.ones(len(n))
+        elif tau_parent <= 0.0:
+            w = np.zeros(len(n))  # alpha -> inf: shrink fully
+        else:
+            alpha = np.where(num == num, num / tau_parent, 0.0)
+            w = size / (size + alpha)
+        # An aware-only class is shrunk toward its blind counterpart, not its
+        # parent, and the spread it is measured against is how much aware
+        # refinements of one blind class differ (stereo-refines-blind spec,
+        # section 5). It has no children, so atom-level EB applies.
+        only = class_kinds(lvl) == KIND_AWARE
+        if only.any():
+            t = tau_aware[k]
+            if t != t:
+                w[only] = 1.0
+            elif t <= 0.0:
+                w[only] = 0.0
+            else:
+                w[only] = n[only] / (n[only] + sigma[k] / t)
+        out.append(w)
     return out

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from sieve.batch import NodeBatch
-from sieve.config import LEVEL_WL, SieveConfig
+from sieve.config import KIND_AWARE, KIND_BLIND, LEVEL_WL, SieveConfig
 from sieve.dedupe import dense_rows
 from sieve.stereo import cis_trans_codes, content_ranks, directed_positions
 
@@ -27,10 +27,63 @@ class LevelLabels:
     labels: np.ndarray  # (n_nodes,) int64
     signatures: np.ndarray  # (n_classes, width) int64
     parent: np.ndarray  # (n_classes,) int32; -1 at level 0
+    # Set only on the WL levels of a stereo-aware chain (docs/superpowers/
+    # specs/2026-09-23-stereo-refines-the-blind-class-design.md, section 3):
+    # ``labels`` is then each atom's aware class and ``blind_labels`` its
+    # stereo-blind class, both ids in the one vocabulary ``signatures``.
+    blind_labels: np.ndarray | None = None  # (n_nodes,) int64
+    kind: np.ndarray | None = None  # (n_classes,) uint8, KIND_* bits
+    blind_of: np.ndarray | None = None  # (n_classes,) int64
 
     @property
     def n_classes(self) -> int:
         return int(self.signatures.shape[0])
+
+    @property
+    def blind(self) -> np.ndarray:
+        """Each atom's stereo-blind class: its own class when no track is on."""
+        return self.labels if self.blind_labels is None else self.blind_labels
+
+
+def _wl_rows(
+    base: np.ndarray, csr, full: np.ndarray, n: int, n_edge_types: int
+) -> np.ndarray:
+    """One WL signature row per atom: its own class, then the sorted multiset
+    of (neighbor class, edge code) pairs."""
+    # Encode (neighbor label, bond) as one integer so a row of neighbors is a
+    # plain integer vector.
+    pair = base[csr.dst] * n_edge_types + full
+    pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
+    pad[csr.src, csr.slot] = pair
+    # Sorting canonicalizes the multiset; -1 pads sort first, and because a
+    # node's pad count is fixed, degree stays encoded.
+    pad.sort(axis=1)
+    return np.concatenate([base[:, None], pad], axis=1)
+
+
+def _union_level(sig_aware: np.ndarray, sig_blind: np.ndarray) -> LevelLabels:
+    """One vocabulary holding every atom's aware and blind rows (spec section 3).
+
+    Rows are deduplicated together, so an aware row equal to a blind row is
+    the same class, flagged both -- the case for every atom with no stereo
+    bond within reach. Only the rows that differ are stacked: the rest would
+    deduplicate onto their blind twin anyway.
+    """
+    n = sig_blind.shape[0]
+    differs = np.flatnonzero((sig_aware != sig_blind).any(axis=1))
+    labels, uniq = dense_rows(np.concatenate([sig_blind, sig_aware[differs]]))
+    blind = labels[:n]
+    aware = blind.copy()
+    aware[differs] = labels[n:]
+    kind = np.zeros(uniq.shape[0], np.uint8)
+    kind[blind] |= KIND_BLIND
+    kind[aware] |= KIND_AWARE
+    # Well defined: an atom's aware class determines its blind one, since the
+    # aware row names the aware classes one level down, whose blind classes
+    # are themselves determined, and the trit only adds to the edge code.
+    blind_of = np.arange(uniq.shape[0], dtype=np.int64)
+    blind_of[aware] = blind
+    return LevelLabels(aware, uniq, uniq[:, 0].astype(np.int32), blind, kind, blind_of)
 
 
 def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
@@ -119,7 +172,9 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
         edge_code = edge_code * radix + csr.attr[:, j]
 
     # --- stereo codes (docs/superpowers/specs/2026-09-22-cis-trans-
-    # featurisation-design.md) --------------------------------------------
+    # featurisation-design.md; since 2026-09-23-stereo-refines-the-blind-
+    # class-design.md the code refines the blind class of each WL level
+    # instead of replacing it, see _union_level) ----------------------------
     # Recomputed every WL round from the content-rank fingerprint, never
     # stored: what reaches a signature row is the pair encoding below, which
     # merge can remap freely. The fingerprint itself folds the *static*
@@ -152,7 +207,6 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
         base = levels[parents[offset]].labels
         if kind == LEVEL_WL:
             wl_round += 1
-            full = edge_code
             if stereo_bonds is not None:
                 # The gather reaches distance 2, so an honest code needs
                 # radius-(k-2) identities. At k = 1 there is no such radius:
@@ -164,16 +218,25 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
                     codes = cis_trans_codes(stereo_bonds, next(fingerprints))
                     stereo_code[pos_ab] = codes
                     stereo_code[pos_ba] = codes
-                full = edge_code * stereo_radix + stereo_code
-            # Encode (neighbor label, bond) as one integer so a row of
-            # neighbors is a plain integer vector.
-            pair = base[csr.dst] * n_edge_types + full
-            pad = np.full((n, max(csr.max_deg, 1)), -1, np.int64)
-            pad[csr.src, csr.slot] = pair
-            # Sorting canonicalizes the multiset; -1 pads sort first, and
-            # because a node's pad count is fixed, degree stays encoded.
-            pad.sort(axis=1)
-            sig = np.concatenate([base[:, None], pad], axis=1)
+                # The trit refines the stereo-blind class rather than
+                # replacing it (spec 2026-09-23). The blind row is built
+                # recursively -- blind parent and neighbours, trit 0 -- or
+                # stereo inherited through the ids one level down would
+                # survive in it. Both share the modulus, so a trit of 0 makes
+                # the two rows coincide exactly when they should.
+                sig_aware = _wl_rows(
+                    base, csr, edge_code * stereo_radix + stereo_code, n, n_edge_types
+                )
+                sig_blind = _wl_rows(
+                    levels[parents[offset]].blind,
+                    csr,
+                    edge_code * stereo_radix,
+                    n,
+                    n_edge_types,
+                )
+                levels.append(_union_level(sig_aware, sig_blind))
+                continue
+            sig = _wl_rows(base, csr, edge_code, n, n_edge_types)
         else:  # LEVEL_WL_PAIR: the coarse chain's own class at this round is
             # already aggregated over its neighbors, so no separate multiset
             # is needed here -- just the pair (self, coarse neighbor state).

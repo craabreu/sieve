@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import sparse
 
+from sieve.config import KIND_AWARE, KIND_BOTH
 from sieve.refine import LevelLabels
 
 
@@ -25,6 +26,10 @@ class FrozenLevel:
     mean: np.ndarray  # (nc, d) float64
     msd: np.ndarray  # (nc, d) float64 -- population variance
     parent: np.ndarray  # (nc,) int32
+    # Under a stereo track only (see class_kinds / blind_targets): which kind
+    # each class is, and the blind class of the same atoms at this level.
+    kind: np.ndarray | None = None  # (nc,) uint8
+    blind_of: np.ndarray | None = None  # (nc,) int64
 
     @property
     def n_classes(self) -> int:
@@ -44,16 +49,31 @@ class FrozenLevel:
         return s2
 
 
-def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
-    """Reduce one chunk to per-class statistics with a sparse membership operator.
+def class_kinds(level) -> np.ndarray:
+    """Per-class kind bits; a stored ``None`` means every class is both."""
+    if level.kind is None:
+        return np.full(level.n_classes, KIND_BOTH, np.uint8)
+    return level.kind
+
+
+def blind_targets(level) -> np.ndarray:
+    """Per-class blind counterpart; a stored ``None`` means the identity."""
+    if level.blind_of is None:
+        return np.arange(level.n_classes, dtype=np.int64)
+    return level.blind_of
+
+
+def _reduce(
+    labels: np.ndarray, y: np.ndarray, nc: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-class count, mean and population variance, by a sparse membership
+    operator.
 
     Two passes, centering before reducing. Never ``sum(y**2)/N - mean**2``: on
     targets with mean 1e6 and spread 3 that form errs by 1.3e+02 relative and
     produces negative variances, against 5.4e-08 for this one.
     """
-    labels = level.labels
-    nc = level.n_classes
-    n, _d = y.shape
+    n = y.shape[0]
 
     # Built once, reused across both passes and all d dimensions. bincount is
     # scalar-only and would need a loop over dimensions.
@@ -69,7 +89,30 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     empty = count == 0
     mean[empty] = 0.0
     msd[empty] = 0.0
-    return FrozenLevel(level.signatures, count, mean, msd, level.parent)
+    return count, mean, msd
+
+
+def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
+    """Reduce one chunk to per-class statistics.
+
+    Under a stereo track each atom accrues to its blind class and, where it
+    differs, to its aware class (spec 2026-09-23, section 4). Blind classes
+    reduce over every atom in atom order, exactly as a stereo-blind fit does,
+    so their statistics are bit-identical to it. An atom whose aware class
+    differs from its blind one sits in an aware-only class, which therefore
+    holds exactly those atoms.
+    """
+    nc = level.n_classes
+    count, mean, msd = _reduce(level.blind, y, nc)
+    if level.kind is not None:
+        differs = level.labels != level.blind
+        if differs.any():
+            c2, m2, s2 = _reduce(level.labels[differs], y[differs], nc)
+            only = level.kind == KIND_AWARE
+            count[only], mean[only], msd[only] = c2[only], m2[only], s2[only]
+    return FrozenLevel(
+        level.signatures, count, mean, msd, level.parent, level.kind, level.blind_of
+    )
 
 
 def global_stats(y: np.ndarray) -> tuple[int, np.ndarray, np.ndarray]:

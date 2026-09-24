@@ -49,13 +49,16 @@ from __future__ import annotations
 
 import numpy as np
 
+from sieve.config import KIND_AWARE
 from sieve.continuation import (
     atom_variance,
+    aware_variance,
     child_counts,
     class_sibling_variance,
     root_variance,
     sibling_variance,
 )
+from sieve.level import class_kinds
 from sieve.shrinkage import empirical_bayes_weights
 
 # Selected on the val split of dash-molecules-10fold-1 by Gaussian NLL over a
@@ -106,6 +109,7 @@ def predictive_variance(
     counts = child_counts(model)
     weights = empirical_bayes_weights(model)
     root = root_variance(model)
+    tau_aware = aware_variance(model)
 
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
@@ -135,6 +139,13 @@ def predictive_variance(
         if not np.isfinite(tau_parent):
             tau_parent = 0.0
         estimation = tau_parent * (1.0 - weights[k][:, None])
+        # An aware-only class is shrunk toward its blind counterpart, so the
+        # prior spread of its mean is the aware one (stereo-refines-blind
+        # spec, section 5), not its parent's.
+        only = class_kinds(lvl) == KIND_AWARE
+        if only.any():
+            t = tau_aware[k] if np.isfinite(tau_aware[k]) else 0.0
+            estimation[only] = t * (1.0 - weights[k][only][:, None])
 
         out.append(within + selection_weight * selection + estimation)
     return out

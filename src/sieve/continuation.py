@@ -26,7 +26,10 @@ import numpy as np
 from sieve.config import (
     CLASS_ESTIMATOR_CONTINUATION_RECURSIVE,
     CLASS_ESTIMATOR_POOLED,
+    KIND_AWARE,
+    KIND_BLIND,
 )
+from sieve.level import blind_targets, class_kinds
 
 
 def _child_of_level(cfg) -> list[int]:
@@ -47,6 +50,21 @@ def _child_of_level(cfg) -> list[int]:
     return child
 
 
+def _blind_children(model, c: int):
+    """Level ``c`` and a mask of its blind classes, the only ones that count
+    as children (stereo-refines-blind spec, section 5).
+
+    Where the aware and blind chains diverge, one training atom sits in two
+    children of a common parent, its aware class and its blind class, and
+    counting both would count it twice. Blind children of blind parents are
+    exactly the stereo-blind fit's tree, so every blind estimate and every
+    tau^2 on the backoff path is that fit's. An aware-only class has no blind
+    child and keeps its pooled mean. All-true on a stereo-blind model.
+    """
+    child = model.levels[c]
+    return child, (class_kinds(child) & KIND_BLIND) != 0
+
+
 def child_counts(model) -> list[np.ndarray]:
     """Per-level ``C``: how many children each class has on the backoff path.
 
@@ -64,8 +82,9 @@ def child_counts(model) -> list[np.ndarray]:
         if c < 0:
             out.append(np.zeros(len(lvl.mean), np.float64))
         else:
+            child, blind = _blind_children(model, c)
             out.append(
-                np.bincount(model.levels[c].parent, minlength=len(lvl.mean)).astype(
+                np.bincount(child.parent[blind], minlength=len(lvl.mean)).astype(
                     np.float64
                 )
             )
@@ -107,8 +126,9 @@ def class_means(model) -> list[np.ndarray]:
         c = child_of[k]
         if c < 0:
             continue  # no children: keep the stored pooled mean
-        source = out[c] if recursive else model.levels[c].mean
-        parent_of_child = model.levels[c].parent
+        child, blind = _blind_children(model, c)
+        source = (out[c] if recursive else child.mean)[blind]
+        parent_of_child = child.parent[blind]
         d = lvl.mean.shape[1]
         tot = np.empty((len(lvl.mean), d))
         for j in range(d):
@@ -162,25 +182,25 @@ def sibling_variance(model) -> list[float]:
         if c < 0:
             out.append(float("nan"))
             continue
-        child = model.levels[c]
+        child, blind = _blind_children(model, c)
         npar = len(lvl.mean)
-        par = child.parent
+        par = child.parent[blind]
         C = np.bincount(par, minlength=npar).astype(np.float64)
         keep = C >= 2
         dof = (C[keep] - 1).sum()
         if dof <= 0:
             out.append(float("nan"))
             continue
-        inv_n = 1.0 / np.maximum(child.count, 1)
+        inv_n = 1.0 / np.maximum(child.count[blind], 1)
         total = 0.0
         for j in range(lvl.mean.shape[1]):
-            cm = child.mean[:, j]
+            cm = child.mean[blind, j]
             s1 = np.bincount(par, weights=cm, minlength=npar)
             s2 = np.bincount(par, weights=cm * cm, minlength=npar)
             with np.errstate(invalid="ignore", divide="ignore"):
                 ss = s2 - s1 * s1 / np.maximum(C, 1)
             msw = ss[keep].sum() / dof
-            noise = float(np.mean(child.msd[:, j] * inv_n))
+            noise = float(np.mean(child.msd[blind, j] * inv_n))
             total += max(0.0, msw - noise)
         out.append(float(total))
     return out
@@ -216,20 +236,20 @@ def class_sibling_variance(model) -> list[np.ndarray]:
         if c < 0:
             out.append(np.full(npar, np.nan))
             continue
-        child = model.levels[c]
-        par = child.parent
+        child, blind = _blind_children(model, c)
+        par = child.parent[blind]
         C = np.bincount(par, minlength=npar).astype(np.float64)
-        inv_n = 1.0 / np.maximum(child.count, 1)
+        inv_n = 1.0 / np.maximum(child.count[blind], 1)
         total = np.zeros(npar)
         for j in range(lvl.mean.shape[1]):
-            cm = child.mean[:, j]
+            cm = child.mean[blind, j]
             s1 = np.bincount(par, weights=cm, minlength=npar)
             s2 = np.bincount(par, weights=cm * cm, minlength=npar)
             with np.errstate(invalid="ignore", divide="ignore"):
                 ss = s2 - s1 * s1 / np.maximum(C, 1)
                 msw = ss / np.maximum(C - 1, 1)
             noise = np.bincount(
-                par, weights=child.msd[:, j] * inv_n, minlength=npar
+                par, weights=child.msd[blind, j] * inv_n, minlength=npar
             ) / np.maximum(C, 1)
             total += np.maximum(0.0, msw - noise)
         out.append(np.where(C >= 2, total, np.nan))
@@ -262,10 +282,12 @@ def atom_variance(model) -> list[float]:
     variance, summed over target dimensions to match ``sibling_variance``'s
     scale. The atom-level noise term for the deepest level, which has no
     children and so estimates its own pooled mean rather than a typical
-    child's."""
+    child's. Over blind classes only, so an atom in an aware-only class is
+    not counted twice and the value is the stereo-blind fit's."""
     out: list[float] = []
     for lvl in model.levels:
-        n = lvl.count.astype(np.float64)
+        blind = (class_kinds(lvl) & KIND_BLIND) != 0
+        n = lvl.count.astype(np.float64) * blind
         tot = n.sum()
         if tot <= 0:
             out.append(float("nan"))
@@ -275,4 +297,44 @@ def atom_variance(model) -> list[float]:
                 sum((lvl.msd[:, j] * n).sum() / tot for j in range(lvl.mean.shape[1]))
             )
         )
+    return out
+
+
+def aware_variance(model) -> list[float]:
+    r"""Per-level $\hat\tau^2_{\mathrm{aware},k}$: how much the aware
+    refinements of one blind class differ, debiased for sampling noise like
+    ``sibling_variance`` (stereo-refines-blind spec, section 5).
+
+    The groups are the aware-flagged classes sharing a ``blind_of``, which
+    includes the blind class itself when some of its atoms have no stereo
+    bond within reach. Only groups of two or more enter, as in the one-way
+    ANOVA ``sibling_variance`` computes. It sets how far an aware-only class
+    is shrunk toward its blind counterpart under ``empirical_bayes``.
+
+    ``nan`` where no group qualifies, which includes every level of a
+    stereo-blind model.
+    """
+    out: list[float] = []
+    for lvl in model.levels:
+        aware = np.flatnonzero(class_kinds(lvl) & KIND_AWARE)
+        group = blind_targets(lvl)[aware]
+        size = np.bincount(group, minlength=lvl.n_classes).astype(np.float64)
+        keep = size >= 2
+        dof = (size[keep] - 1).sum()
+        if lvl.kind is None or dof <= 0:
+            out.append(float("nan"))
+            continue
+        members = keep[group]
+        inv_n = 1.0 / np.maximum(lvl.count[aware], 1)
+        total = 0.0
+        for j in range(lvl.mean.shape[1]):
+            cm = lvl.mean[aware, j]
+            s1 = np.bincount(group, weights=cm, minlength=lvl.n_classes)
+            s2 = np.bincount(group, weights=cm * cm, minlength=lvl.n_classes)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ss = s2 - s1 * s1 / np.maximum(size, 1)
+            msw = ss[keep].sum() / dof
+            noise = float(np.mean(lvl.msd[aware, j][members] * inv_n[members]))
+            total += max(0.0, msw - noise)
+        out.append(float(total))
     return out
