@@ -52,6 +52,12 @@ class Predictions:
     # as it was: a diagnostic reporting the matched class's own stored s^2.
     # Like `variance`, it is *not* LOO-adjusted under predict_loo.
     predictive_variance: np.ndarray | None = None
+    # (n,) bool, present only under a stereo track: True where the atom was
+    # answered by its stereo-aware class at the matched level rather than by
+    # the stereo-blind class there (stereo-refines-blind spec, section 6).
+    # `matched_level` is the position on the blind path either way; `class_id`,
+    # `support` and `variance` describe whichever class answered.
+    stereo_refined: np.ndarray | None = None
 
 
 def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predictions:
@@ -86,6 +92,13 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         raise NotImplementedError(
             f"predict_loo does not yet support class_estimator={cfg.class_estimator!r}"
         )
+    if loo_y is not None and cfg.stereo:
+        # A training atom accrues to both its blind and its aware class, so
+        # removing it needs both corrected, and the walk only carries one.
+        raise NotImplementedError(
+            "predict_loo does not yet support a stereo track: an atom "
+            "contributes to its blind and its aware class at the same level"
+        )
     if loo_y is not None and cfg.effective_shrinkage_weight != SHRINKAGE_WEIGHT_COUNT:
         # lambda is built from the matched class's own C and N, both of which
         # the held-out node contributes to; correcting it needs the same child
@@ -115,6 +128,10 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     threshold = np.zeros(n, bool)
 
     remaps: list[np.ndarray] = []  # query class ids -> model class ids, per level
+    # Under a stereo track the walk runs over blind labels, which makes it the
+    # stereo-blind model's walk; each atom's aware class is recorded alongside,
+    # and the last write, at k*, is the one looked up after the loop.
+    aware_cid = np.full(n, -1, np.int64)
     alive = np.ones(n, bool)
     for k in range(cfg.n_levels):
         if not alive.any():
@@ -133,7 +150,7 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         remaps.append(found)
         if not on_backoff[k]:
             continue  # coarse-chain scaffolding: never a backoff target itself
-        cid = found[q.labels]
+        cid = found[q.blind]
         ok = alive & (cid >= 0)
         enough = np.zeros(n, bool)
         est = np.zeros((n, d))
@@ -168,7 +185,30 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         class_id[hit] = cid[hit]
         support[hit] = eff_n_full[hit].astype(np.int64)
         variance[hit] = lvl.variance[cid[hit]]
+        aware_cid[hit] = found[q.labels][hit]
         alive = hit  # prefix property (2.2)
+
+    # One aware lookup at the blind path's k* (stereo-refines-blind spec,
+    # section 6). An aware class different from the blind one is aware-only,
+    # and it can exist only if every class its signature names does, so a
+    # miss anywhere below already reads -1 here. Anything else keeps exactly
+    # the stereo-blind answer.
+    refined = np.zeros(n, bool)
+    if cfg.stereo:
+        for k in backoff_path:
+            lvl = model.levels[k]
+            idx = np.flatnonzero(
+                (matched == k) & (aware_cid >= 0) & (aware_cid != class_id)
+            )
+            a = aware_cid[idx]
+            enough = lvl.count[a] >= cfg.minimum_support
+            idx, a = idx[enough], a[enough]
+            refined[idx] = True
+            class_id[idx] = a
+            support[idx] = lvl.count[a]
+            variance[idx] = lvl.variance[a]
+            value[idx] = means[k][a]
+    stereo_refined = refined if cfg.stereo else None
 
     # `matched` stays the raw level index for the shrinkage loop below (it
     # indexes model.levels/shrunk, both raw-indexed); only the value handed
@@ -253,6 +293,21 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
                         nn[:, None] * raw[sel] + cfg.shrinkage_strength * parent_est
                     ) / (nn[:, None] + cfg.shrinkage_strength)
                     weight[sel] = nn / (nn + cfg.shrinkage_strength)
+                # A refined atom is answered by its aware-only class, whose
+                # shrunk value already blends toward its blind counterpart;
+                # LOO is refused under stereo, so reading it directly is safe.
+                ref = sel & refined
+                if ref.any():
+                    cid_ref = class_id[ref]
+                    value[ref] = shrunk[k][cid_ref]
+                    if eb:
+                        assert eb_w is not None
+                        weight[ref] = eb_w[k][cid_ref]
+                    elif diversity:
+                        weight[ref] = 1.0
+                    else:
+                        nr = support[ref].astype(np.float64)
+                        weight[ref] = nr / (nr + cfg.shrinkage_strength)
         return Predictions(
             value,
             _matched_out(matched),
@@ -263,6 +318,7 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
             raw_value=raw,
             shrinkage_weight=weight,
             predictive_variance=pred_var,
+            stereo_refined=stereo_refined,
         )
 
     return Predictions(
@@ -273,6 +329,7 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         variance,
         threshold,
         predictive_variance=pred_var,
+        stereo_refined=stereo_refined,
     )
 
 

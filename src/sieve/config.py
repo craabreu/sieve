@@ -55,6 +55,13 @@ CLASS_ESTIMATORS = (
 STEREO_RADIX = 4
 STEREO_TRACKS = ("cis_trans",)
 
+# Class kinds under a stereo track (docs/superpowers/specs/2026-09-23-stereo-
+# refines-the-blind-class-design.md, section 3): a bitmask, so a class that is
+# both the blind and the aware class of its atoms is KIND_BOTH.
+KIND_BLIND = 1
+KIND_AWARE = 2
+KIND_BOTH = KIND_BLIND | KIND_AWARE
+
 # How shrinkage weights a class's own estimate against its shrunk parent
 # (design.md 4.2, 4.4).
 #
@@ -424,6 +431,13 @@ class SieveConfig:
         -- the classes themselves, and every count and mean in them, are
         identical either way.
         """
+        blob = json.dumps(
+            self._schema_payload(), sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(blob).hexdigest()
+
+    def _schema_payload(self) -> dict:
+        """What ``schema_version`` digests; split out so tests can see it."""
         payload = {
             "target_dim": self.target_dim,
             "attribute_levels": [list(g) for g in self.attribute_levels],
@@ -445,8 +459,12 @@ class SieveConfig:
             # would move every existing digest and silently invalidate every
             # fitted model on disk.
             payload["stereo"] = list(self.stereo)
-        blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(blob).hexdigest()
+            # The construction, so a model whose trit was fused into every
+            # WL level (before docs/superpowers/specs/2026-09-23-stereo-
+            # refines-the-blind-class-design.md) hashes differently from one
+            # whose trit refines the blind class, and the two never merge.
+            payload["stereo_construction"] = "refines_blind"
+        return payload
 
 
 def check_mergeable(a: SieveConfig, b: SieveConfig) -> None:

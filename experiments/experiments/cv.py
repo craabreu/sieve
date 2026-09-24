@@ -1805,9 +1805,14 @@ def run_sieve_cv(
                     from experiments.analytic import (
                         sieve_train_stats,
                         supports_loo,
+                        supports_train_stats,
                     )
 
-                    analytic_stats = sieve_train_stats(model_for_run)
+                    analytic_stats = (
+                        sieve_train_stats(model_for_run)
+                        if supports_train_stats(model_for_run.config)
+                        else None
+                    )
                     # Only where the estimator admits an exact LOO: a
                     # continuation class estimates its children's mean, so
                     # removing one atom needs a child identity this walk does

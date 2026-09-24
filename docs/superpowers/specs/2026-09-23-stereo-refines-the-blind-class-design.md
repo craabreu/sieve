@@ -1,7 +1,7 @@
 # Stereo Refines the Stereo-Blind Class
 
 **Date:** 2026-09-23
-**Status:** design, awaiting review; not implemented
+**Status:** implemented (plan: `docs/superpowers/plans/2026-09-23-stereo-refines-the-blind-class.md`)
 **Revises:** `2026-09-22-cis-trans-featurisation-design.md`. §5.4 there (the fold of the
 stereo code into every WL level) is replaced by §3–§6 here. §3–§5.3 there (the batch
 array, the adapter, the content rank, the resolution rule, the radius rule) are kept

@@ -429,3 +429,32 @@ def test_hose_analytic_loo_backs_off_rather_than_falling_to_the_global_mean():
     plain = hose_train_stats(state, radius=3)
     assert loo.sse >= plain.sse  # LOO can only be worse
     assert loo.matched_fraction > 0.9  # the chain answers nearly everything
+
+
+def test_analytic_refuses_a_stereo_model():
+    """Under a stereo track an atom accrues to its blind and its aware class
+    at the same level, so the stored counts no longer partition the atoms."""
+    from experiments.analytic import sieve_train_stats
+    from rdkit import Chem
+
+    import sieve
+    from sieve.config import SieveConfig
+    from sieve.io.rdkit_adapter import build_codes, from_rdkit
+
+    mols = [Chem.MolFromSmiles(s) for s in ("C/C=C/C", r"C/C=C\C")]
+    codes, edges = build_codes(mols, ["element"])
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edges,
+        max_wl_depth=3,
+        stereo=("cis_trans",),
+    )
+    batch = from_rdkit(mols, y=np.zeros((8, 1)), config=cfg)
+    from experiments.analytic import supports_loo, supports_train_stats
+
+    assert not supports_train_stats(cfg)
+    assert not supports_loo(cfg)
+    with pytest.raises(NotImplementedError, match="stereo"):
+        sieve_train_stats(sieve.fit(batch, cfg))
