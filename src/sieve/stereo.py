@@ -13,6 +13,11 @@ import numpy as np
 from sieve.batch import CSRLayout
 from sieve.dedupe import _row_keys
 
+#: Neighbor slots hashed into every fingerprint, whatever the batch holds.
+#: Twice the valence of any atom in the DASH store (its maximum is 5, a
+#: handful of pentavalent phosphorus), and above every common coordination.
+CONTENT_RANK_WIDTH = 8
+
 
 def _mix(*columns: np.ndarray) -> np.ndarray:
     """Mix several int64/uint64 columns into one uint64 per row.
@@ -58,6 +63,15 @@ def content_ranks(
     degree still yields more leading zeros than a higher one and the two
     remain distinguishable, matching the reason ``refine.py`` pads with -1.
 
+    **Every row pads to ``CONTENT_RANK_WIDTH``, not to the batch's maximum
+    degree.** The padded row is hashed as a whole, so every slot, zeros
+    included, enters the fingerprint. Padding to ``csr.max_deg`` once let one
+    pentavalent phosphorus change the fingerprints, and hence the cis/trans
+    codes, of every molecule batched beside it. ``refine.py`` can pad its own
+    rows to the batch maximum because ``merge._widen`` left-pads them to a
+    common width before comparing; nothing re-pads a hash. A batch holding an
+    atom of higher degree is refused rather than truncated.
+
     **Yields rather than returning a list.** ``refine`` reads ``fp_j`` at WL
     round ``j + 2``, so ``j`` rises by exactly one per round: the
     fingerprints are consumed strictly in order, one at a time, and nothing
@@ -66,10 +80,17 @@ def content_ranks(
     actually in use. A caller that genuinely wants them all can still say
     ``list(content_ranks(...))``.
     """
+    width = CONTENT_RANK_WIDTH
+    if n_rounds > 0 and csr.max_deg > width:
+        raise ValueError(
+            f"an atom has degree {int(csr.max_deg)}, above the "
+            f"{width} neighbor slots every content fingerprint hashes; "
+            "raise sieve.stereo.CONTENT_RANK_WIDTH, which changes every "
+            "fingerprint and so invalidates every stereo-aware model"
+        )
     n = node_attrs.shape[0]
     fp = _row_keys(node_attrs)
     yield fp
-    width = max(int(csr.max_deg), 1)
     for _ in range(n_rounds):
         nb = _mix(fp[csr.dst], edge_code)
         pad = np.zeros((n, width), np.uint64)

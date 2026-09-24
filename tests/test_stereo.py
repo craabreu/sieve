@@ -135,3 +135,55 @@ def test_content_ranks_yields_incrementally_without_retaining_every_radius():
     got = content_ranks(batch.node_attrs, csr, np.zeros(csr.dst.shape[0], np.int64), 3)
     assert isinstance(got, types.GeneratorType), "must not build the whole list"
     assert sum(1 for _ in got) == 4  # fp_0 .. fp_3
+
+
+def _star(degree):
+    """A centre bonded to ``degree`` leaves, edges in both directions."""
+    leaves = np.arange(1, degree + 1)
+    return NodeBatch(
+        node_attrs=np.array([[1]] + [[0]] * degree, np.int64),
+        edge_src=np.concatenate([np.zeros(degree, np.int64), leaves]),
+        edge_dst=np.concatenate([leaves, np.zeros(degree, np.int64)]),
+        edge_attrs=np.zeros((2 * degree, 1), np.int64),
+        graph_id=np.zeros(degree + 1, np.int64),
+    )
+
+
+def _concat(first, second):
+    n = first.node_attrs.shape[0]
+    src = np.concatenate([first.edge_src, second.edge_src + n])
+    return NodeBatch(
+        node_attrs=np.concatenate([first.node_attrs, second.node_attrs]),
+        edge_src=src,
+        edge_dst=np.concatenate([first.edge_dst, second.edge_dst + n]),
+        edge_attrs=np.zeros((src.shape[0], 1), np.int64),
+        graph_id=np.concatenate([first.graph_id, second.graph_id + 1]),
+    )
+
+
+def _fingerprints(batch, n_rounds):
+    from sieve.stereo import content_ranks
+
+    csr = batch.csr()
+    edge_code = np.zeros(csr.dst.shape[0], np.int64)
+    return list(content_ranks(batch.node_attrs, csr, edge_code, n_rounds))
+
+
+def test_fingerprints_do_not_depend_on_the_batch_maximum_degree():
+    """A high-degree atom elsewhere in the batch must not change a molecule's
+    fingerprints: a pentavalent phosphorus once changed the cis/trans codes,
+    and hence the predictions, of every molecule batched beside it."""
+    path = _chain(4, [[0], [1], [1], [0]])
+    alone = _fingerprints(path, 2)
+    beside = _fingerprints(_concat(path, _star(5)), 2)
+    for fp_alone, fp_beside in zip(alone, beside, strict=True):
+        np.testing.assert_array_equal(fp_alone, fp_beside[:4])
+
+
+def test_content_ranks_refuses_a_degree_above_its_width():
+    import pytest
+
+    from sieve.stereo import CONTENT_RANK_WIDTH
+
+    with pytest.raises(ValueError, match="degree"):
+        _fingerprints(_star(CONTENT_RANK_WIDTH + 1), 1)
