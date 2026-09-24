@@ -1,27 +1,39 @@
-"""Study D's stereo-affected subsets of a CV run's held-out atoms.
+"""Studies D and E's stereo-affected subsets of a CV run's held-out atoms.
 
 Study D asks whether the cis/trans track improves the atoms stereo can
 actually reach, not the corpus as a whole (docs/superpowers/specs/2026-09-23-
-stereo-refines-the-blind-class-design.md, section 11). Three subsets, each a
-per-atom mask of a stored conformer:
+stereo-refines-the-blind-class-design.md, section 11). Study E asks the same
+of the tetrahedral track (docs/superpowers/specs/2026-09-24-tetrahedral-
+handedness-design.md, section 9). Six subsets, each a per-atom mask of a
+stored conformer:
 
 - ``has_ez``: every atom of a conformer with at least one stereogenic double
   bond;
-- ``near_ez2``: atoms within two bonds of such a bond's atoms, the primary
+- ``near_ez2``: atoms within two bonds of such a bond's atoms, Study D's
+  primary metric's subset;
+- ``near_ez1``: atoms within one bond;
+- ``has_tet``: every atom of a conformer with at least one tagged tetrahedral
+  centre;
+- ``near_tet2``: atoms within two bonds of such a centre, Study E's primary
   metric's subset;
-- ``near_ez1``: atoms within one bond.
+- ``near_tet1``: atoms within one bond.
 
 A bond counts when the stored molecule marks it E/Z (``GetStereo`` in cis,
-trans, E or Z), which is what the adapter's cis/trans rows are read from.
+trans, E or Z), which is what the adapter's cis/trans rows are read from. A
+centre counts when RDKit tags it ``CHI_TETRAHEDRAL_CW``/``CCW``, which is
+what the adapter's tetrahedral rows are read from (``near_ez2`` is also kept
+in Study E's report, as the check on design D's one-chain simplification --
+tetrahedral-handedness spec, section 8).
 
 The masks depend only on the stored molecule, so they are computed once per
 store (``build_mask_table``) and every run is scored from its saved
 ``predictions.npz`` (``score_runs``). Scoring saved predictions rather than
-inside the CV loop is what lets Study B's incumbent runs, already on disk and
-holding out the same molecules, serve as the paired arm without being redone.
-Each run's scores go to a sidecar, ``subset_metrics.json``, which
-``aggregate.read_runs_from_dirs`` merges into the run's metrics, so
-``compare`` and everything else read them like any other metric.
+inside the CV loop is what lets Study B's and Study D's incumbent runs,
+already on disk and holding out the same molecules, serve as the paired arm
+without being redone. Each run's scores go to a sidecar,
+``subset_metrics.json``, which ``aggregate.read_runs_from_dirs`` merges into
+the run's metrics, so ``compare`` and everything else read them like any
+other metric.
 """
 
 from __future__ import annotations
@@ -35,14 +47,23 @@ from typing import Any
 import numpy as np
 
 HAS_EZ, NEAR_2, NEAR_1 = 0, 1, 2
-SUBSETS = ("has_ez", "near_ez2", "near_ez1")  # indexed by the constants above
+HAS_TET, NEAR_TET2, NEAR_TET1 = 3, 4, 5
+SUBSETS = (
+    "has_ez",
+    "near_ez2",
+    "near_ez1",
+    "has_tet",
+    "near_tet2",
+    "near_tet1",
+)  # indexed by the constants above
 MASKS_FILE = "stereo-subset-masks.npz"
 METRICS_FILE = "subset_metrics.json"
 
 
 def subset_masks(mol: Any) -> np.ndarray:
-    """``(3, n_atoms)`` bool: the three subsets for one molecule, rows
-    indexed by ``HAS_EZ``, ``NEAR_2``, ``NEAR_1``."""
+    """``(6, n_atoms)`` bool: the six subsets for one molecule, rows indexed
+    by ``HAS_EZ``, ``NEAR_2``, ``NEAR_1``, ``HAS_TET``, ``NEAR_TET2``,
+    ``NEAR_TET1``."""
     from rdkit import Chem
 
     stereo = {
@@ -51,7 +72,7 @@ def subset_masks(mol: Any) -> np.ndarray:
         Chem.BondStereo.STEREOE,
         Chem.BondStereo.STEREOZ,
     }
-    ends = sorted(
+    ez_ends = sorted(
         {
             a
             for b in mol.GetBonds()
@@ -59,14 +80,23 @@ def subset_masks(mol: Any) -> np.ndarray:
             for a in (b.GetBeginAtomIdx(), b.GetEndAtomIdx())
         }
     )
+    tet_tags = {
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    }
+    centres = sorted(a.GetIdx() for a in mol.GetAtoms() if a.GetChiralTag() in tet_tags)
     n = mol.GetNumAtoms()
-    out = np.zeros((3, n), bool)
-    if not ends:
-        return out
-    near = Chem.GetDistanceMatrix(mol)[:, ends].min(axis=1)
-    out[HAS_EZ] = True
-    out[NEAR_2] = near <= 2
-    out[NEAR_1] = near <= 1
+    out = np.zeros((6, n), bool)
+    if ez_ends:
+        near = Chem.GetDistanceMatrix(mol)[:, ez_ends].min(axis=1)
+        out[HAS_EZ] = True
+        out[NEAR_2] = near <= 2
+        out[NEAR_1] = near <= 1
+    if centres:
+        near = Chem.GetDistanceMatrix(mol)[:, centres].min(axis=1)
+        out[HAS_TET] = True
+        out[NEAR_TET2] = near <= 2
+        out[NEAR_TET1] = near <= 1
     return out
 
 
@@ -75,7 +105,10 @@ def _packed(blob: bytes) -> np.ndarray:
     from experiments.data import blob_to_mol
 
     m = subset_masks(blob_to_mol(blob))
-    return (m[HAS_EZ] | (m[NEAR_2] << 1) | (m[NEAR_1] << 2)).astype(np.uint8)
+    bits = np.zeros(m.shape[1], np.uint8)
+    for s in range(len(SUBSETS)):
+        bits |= m[s].astype(np.uint8) << s
+    return bits
 
 
 def build_mask_table(
@@ -108,6 +141,10 @@ def build_mask_table(
         conf_id=df["conf_id"].to_numpy().astype(str),
         offsets=np.concatenate([[0], np.cumsum(counts)]),
         bits=np.concatenate(packed) if packed else np.zeros(0, np.uint8),
+        # Which subset each packed bit names, and in what order, so a table
+        # built under an older SUBSETS list is refused rather than silently
+        # misread (load_mask_table).
+        subsets=np.array(SUBSETS),
     )
     return out
 
@@ -139,6 +176,12 @@ class MaskTable:
 
 def load_mask_table(path: Path) -> MaskTable:
     z = np.load(path)
+    stored = tuple(z["subsets"].tolist()) if "subsets" in z.files else ()
+    if stored != SUBSETS:
+        raise ValueError(
+            f"{path} holds subsets {list(stored)}, not {list(SUBSETS)}; "
+            "rebuild it with stereo-subset-masks"
+        )
     keys = zip(z["dash_id"].tolist(), z["conf_id"].tolist(), strict=True)
     return MaskTable(
         {(str(d), str(c)): i for i, (d, c) in enumerate(keys)},
@@ -183,17 +226,25 @@ def _selected_runs(
 def missing_scores(
     runs_root: Path, selection: Mapping[str, Sequence[str]], *, depth: int
 ) -> list[Path]:
-    """Selected runs whose sidecar is absent or older than their predictions.
+    """Selected runs whose sidecar is absent, stale, or missing a subset.
 
     A selected run with no predictions at all is reported too: it can never
-    be scored, and silently passing over it would drop a paired sample.
+    be scored, and silently passing over it would drop a paired sample. A
+    sidecar written under an older ``SUBSETS`` list (Study D's, before Study
+    E added the tetrahedral subsets) is missing every new subset's keys and
+    is reported the same way, so ``score_runs --force`` extends it.
     """
     stale = []
     for run in _selected_runs(runs_root, selection, depth):
         pred, side = run / "predictions.npz", run / METRICS_FILE
         if not pred.exists() or not side.exists():
             stale.append(run)
-        elif side.stat().st_mtime < pred.stat().st_mtime:
+            continue
+        if side.stat().st_mtime < pred.stat().st_mtime:
+            stale.append(run)
+            continue
+        scored = json.loads(side.read_text())
+        if any(f"{name}/rmse" not in scored for name in SUBSETS):
             stale.append(run)
     return stale
 

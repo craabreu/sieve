@@ -23,7 +23,7 @@ def test_masks_mark_distance_to_the_nearest_stereogenic_double_bond():
 
     mol = _mol("C/C=C/CCO")  # heavy atoms 0..5; the double bond is 1=2
     masks = subset_masks(mol)
-    assert masks.shape == (3, mol.GetNumAtoms())
+    assert masks.shape == (6, mol.GetNumAtoms())
     assert masks[HAS_EZ].all()
     np.testing.assert_array_equal(
         masks[NEAR_1, :6], [True, True, True, True, False, False]
@@ -249,3 +249,36 @@ def test_the_report_pairs_each_arm_with_its_incumbent(tmp_path):
     assert by_metric["near_ez2/rmse"]["n_better"] == 6
     assert by_metric["rmse"]["diff"] == pytest.approx(0.0)
     assert all(r["label"] == "cont" and r["n"] == 6 for r in rows)
+
+
+def test_tetrahedral_subsets_mark_distance_to_a_tagged_centre():
+    from experiments.stereo_subsets import HAS_TET, NEAR_TET1, subset_masks
+
+    mol = _mol("N[C@@H](C)CCO")  # heavy atoms 0..5, centre 1
+    m = subset_masks(mol)
+    assert m.shape == (6, mol.GetNumAtoms()) and m[HAS_TET].all()
+    np.testing.assert_array_equal(
+        m[NEAR_TET1, :6], [True, True, True, True, False, False]
+    )
+
+
+def test_a_mask_table_from_an_older_subset_list_is_refused(tmp_path):
+    from experiments.stereo_subsets import build_mask_table, load_mask_table
+
+    root = _store(tmp_path, SMILES)
+    path = build_mask_table("s", stores_root=root, n_jobs=1)
+    z = dict(np.load(path))
+    z["subsets"] = z["subsets"][:3]
+    np.savez(path, **z)
+    with pytest.raises(ValueError, match="rebuild"):
+        load_mask_table(path)
+
+
+def test_a_sidecar_missing_a_subset_is_stale(tmp_path):
+    from experiments.stereo_subsets import METRICS_FILE, missing_scores
+
+    runs = tmp_path / "runs"
+    d = _cv_run(runs, "e", repeat=0, fold=0, method="a", depth=5, metrics={})
+    (d / "predictions.npz").write_bytes(b"x")
+    (d / METRICS_FILE).write_text(json.dumps({"has_ez/rmse": 1.0}))
+    assert missing_scores(runs, {"e": ["a"]}, depth=5) == [d]
