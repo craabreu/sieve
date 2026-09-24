@@ -18,8 +18,16 @@ every stereo code at once. There are two chains, aware and blind, as today, plus
 row set **M**, each atom's aware row in the enantiomer of its molecule, which makes the
 model exactly mirror-invariant.
 
+**The assumption it encodes.** Mirror invariance is correct only for an achiral
+observable. MBIS partial charges are one; optical rotation would not be. Enabling
+`"tetrahedral"` therefore implies the quotient, with no switch, because no target in this
+repository needs one.
+
 Configuration: `stereo=("cis_trans", "tetrahedral")`. A track list without
-`"tetrahedral"` behaves exactly as today.
+`"tetrahedral"` behaves exactly as today. `SieveConfig.__post_init__` normalises `stereo`
+to `STEREO_TRACKS` order and rejects duplicates, so `("tetrahedral", "cis_trans")` and
+`("cis_trans", "tetrahedral")` are one configuration with one digest; `("cis_trans",)`
+keeps a digest byte-identical to `main`'s.
 
 Simplicity is the design criterion. An intermediate chain, cis/trans-aware but
 handedness-blind, was considered and dropped (§8).
@@ -53,7 +61,16 @@ rest are P (6,044), three-coordinate S (5,208, sulfoxides and sulfinyl groups, w
 virtual neighbour is the lone pair), four-coordinate S (683), N (309) and B (59). None
 has fewer than three or more than four neighbours.
 
-No coordinates are read.
+No coordinates are read. Centres come from local tags, not from `FindPotentialStereo`,
+whose stereogenicity test uses RDKit's whole-molecule ranking; a tagged atom that is not
+stereogenic at some radius simply gets `none` there (§2.2).
+
+**Validated in `NodeBatch.__post_init__`**, vectorised, beside `_check_stereo_bonds`:
+indices in range; `-1` only in `n3`; every present `n_i` adjacent to the centre; the
+number of present `n_i` equal to the centre's degree, so every graph neighbour is named;
+each centre listed at most once; `parity ∈ {−1, +1}`. **Carried through
+`NodeBatch.__getitem__` and `concat_batches`** as `stereo_bonds` is: filtered and
+reindexed on slicing, offset and all-or-none on concat.
 
 ### 2.2 The code at WL round k
 
@@ -119,6 +136,16 @@ a blind class, since `M(a) = b` would force `a = M(b) = b`. Each level gains
 It is well defined for the inductive reason `blind_of` is, it is an involution, and it
 commutes with blinding: `blind_of[M(c)] = blind_of[c]`.
 
+**Rejected quotients**, for the record:
+
+| alternative | why not |
+|---|---|
+| post-fit pooling of *c* and M(*c*) where both exist, predict falling back to M(*c*) | breaks the monoid: a pair split across shards is never pooled, and re-pooling after merge double-counts |
+| the same, pooled at prediction time | sound, but needs a mirrored translation chain in `predict` and pooled views in shrinkage and continuation |
+| half-hits, weight ½ per hand | same means, half the support: chiral classes shrink harder, fall below `minimum_support` early, and `count` turns float |
+| fitting on a materialised mirror batch (`sieve-openff`'s 2026-09-24 spec) | the same classes and statistics as M, but refines every chiral molecule twice and still needs `mirror_of` for τ² (§4) |
+| mirror-invariant at source, via products of signs | an atom that is not itself a centre has no reference sign |
+
 ## 4. Statistics
 
 - **Blind classes** reduce over every atom in atom order, as now, so they stay
@@ -180,21 +207,34 @@ each track's effect without a second code path:
 3. **Diastereomers separate, enantiomers do not.** In 2,3-dibromobutane, (*R*,*R*) and
    meso (*R*,*S*) separate once both centres are within reach; (*R*,*R*) and (*S*,*S*)
    pool; the meso form equals its own mirror.
-4. **Enantiomers pool.** (*R*)- and (*S*)-alanine share statistics: the class and its
+4. **Self-mirror classes count once.** In meso-2,3-dibromobutane, an atom whose row names
+   the two centres' classes *a* and M(*a*) is unchanged by reflection. Every class with
+   `mirror_of[c] == c` has a count equal to its number of training atoms, which fails if
+   an atom's M row is counted onto the same class twice.
+5. **Enantiomers pool.** (*R*)- and (*S*)-alanine share statistics: the class and its
    mirror hold identical count, mean and variance.
-5. **The radius rule.** CHFClBr resolves at round 1; alanine, whose two carbon
+6. **The radius rule.** CHFClBr resolves at round 1; alanine, whose two carbon
    neighbours tie at radius 0, resolves at round 2 and not before.
-6. **Virtual neighbour.** A centre written with implicit H gives the same code across the
-   five SMILES orderings of §2.1, and a sulfoxide's aware class and its mirror's are
-   distinct classes holding identical statistics.
-7. **Ties defer.** A tagged atom with two identical substituents gets `none` at every
+7. **Virtual neighbour, pinned.** A centre written with implicit H gives the same code
+   across the five SMILES orderings of §2.1. Hand-checked cases, a sulfoxide and an
+   implicit-H carbon, assert the specific code (`CODE_PLUS` or `CODE_MINUS`), not only
+   invariance, which pins the virtual neighbour's convention. A sulfoxide's aware class
+   and its mirror's are distinct classes holding identical statistics.
+8. **Renumbering.** Refining a molecule under a permuted `node_order` leaves its codes
+   and classes unchanged; this fails if `parity` does not follow the stored `n0..n3` order
+   after the adapter's `inv[]` permutation.
+9. **Validation.** `stereo_centres` rejects a non-adjacent neighbour, `-1` outside `n3`, a
+   repeated centre, a row naming fewer neighbours than the degree, and a parity outside
+   {−1, +1}; slicing and `concat_batches` carry it.
+10. **Ties defer.** A tagged atom with two identical substituents gets `none` at every
    radius.
-8. **Blind equivalence** (design D §8.1) and **the merge monoid**, now also on
+11. **Blind equivalence** (design D §8.1) and **the merge monoid**, now also on
    `mirror_of`, over two and three shards.
-9. **Batch invariance.** Codes and predictions are identical beside the five-coordinate
+12. **Batch invariance.** Codes and predictions are identical beside the five-coordinate
    phosphorus molecule.
-10. **Schema.** cis/trans-only, both-tracks and stereo-blind models have three distinct
-    digests; save/load round-trips `mirror_of`.
+13. **Schema.** cis/trans-only, both-tracks and stereo-blind models have three distinct
+    digests; both spellings of the two-track config share one; save/load round-trips
+    `mirror_of`.
 
 ## 8. Rejected: an intermediate chain
 
