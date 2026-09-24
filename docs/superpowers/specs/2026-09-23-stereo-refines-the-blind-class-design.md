@@ -230,9 +230,13 @@ equivalence test to both tracks at once.
 2. **Storage.** The aware-only fraction per level should be measured on the full training
    split once implemented; §3 predicts it tracks the ~12% of atoms in conformers with an
    E/Z bond, shrinking with radius as reach grows only as *k* − 2.
-3. **The subset metric.** Study D's primary metric, RMSE on atoms within two bonds of a
-   stereogenic double bond, belongs in the CV scorer rather than in post-hoc scripts, and
-   predictions are saved today only at each study's selected depth.
+3. **The subset metric.** Implemented in `experiments/experiments/stereo_subsets.py`
+   as a post-hoc score of each run's saved predictions rather than inside the CV
+   scorer: per-atom masks are built once per store (`stereo-subset-masks`), each run
+   is scored into a `subset_metrics.json` sidecar (`score-stereo-subsets`), and
+   `aggregate` merges the sidecar into the run's metrics. Scoring saved predictions is
+   what lets Study B's incumbent runs serve as the paired arm without being redone;
+   it reproduces the figures of §1 exactly.
 4. **The floor-derived "ceilings" are not bounds.** They measure only the scatter between
    stereoisomers of one structure present in the corpus. §2's emulation exceeds them
    because a stereo-aware model also transfers what it learns about cis and trans

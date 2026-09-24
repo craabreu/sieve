@@ -603,6 +603,79 @@ def _cmd_depth_curve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _selection(specs: list[str]) -> dict[str, list[str]]:
+    """``EXPERIMENT=METHOD[,METHOD...]`` specs, merged per experiment."""
+    out: dict[str, list[str]] = {}
+    for spec in specs:
+        experiment, _, methods = spec.partition("=")
+        if not experiment or not methods:
+            raise SystemExit(f"--select wants EXPERIMENT=METHOD[,METHOD], got {spec!r}")
+        out.setdefault(experiment, []).extend(methods.split(","))
+    return out
+
+
+def _cmd_stereo_subset_masks(args: argparse.Namespace) -> int:
+    from experiments.stereo_subsets import build_mask_table
+
+    out = build_mask_table(
+        args.store, stores_root=DEFAULT_STORES_ROOT, n_jobs=args.n_jobs
+    )
+    print(f"wrote {out}")
+    return 0
+
+
+def _cmd_score_stereo_subsets(args: argparse.Namespace) -> int:
+    from experiments.stereo_subsets import (
+        MASKS_FILE,
+        load_mask_table,
+        missing_scores,
+        score_runs,
+    )
+
+    selection = _selection(args.select)
+    if args.check:
+        missing = missing_scores(DEFAULT_RUNS_ROOT, selection, depth=args.depth)
+        for run in missing:
+            print(f"unscored: {run}")
+        return 1 if missing else 0
+    table = load_mask_table(DEFAULT_STORES_ROOT / args.store / MASKS_FILE)
+    written = score_runs(
+        DEFAULT_RUNS_ROOT, selection, table, depth=args.depth, force=args.force
+    )
+    print(f"scored {len(written)} run(s)")
+    return 0
+
+
+def _cmd_stereo_report(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.stereo_subsets import Pair, format_report, stereo_report
+
+    pairs = []
+    for spec in args.pair:
+        label, _, rest = spec.partition("=")
+        inc, _, arm = rest.partition(",")
+        inc_exp, _, inc_method = inc.partition(":")
+        exp, _, method = arm.partition(":")
+        if not all((label, inc_exp, inc_method, exp, method)):
+            raise SystemExit(
+                "--pair wants LABEL=INC_EXPERIMENT:INC_METHOD,EXPERIMENT:METHOD, "
+                f"got {spec!r}"
+            )
+        pairs.append(Pair(inc_exp, inc_method, exp, method, label))
+    rows = stereo_report(
+        DEFAULT_RUNS_ROOT, pairs, depth=args.depth, metrics=args.metric, k=args.k
+    )
+    text = format_report(rows)
+    print(text, end="")
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.with_suffix(".txt").write_text(text)
+        args.out.with_suffix(".json").write_text(_json.dumps(rows, indent=1))
+        print(f"wrote {args.out.with_suffix('.txt')} and .json")
+    return 0
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     import json as _json
 
@@ -1447,6 +1520,58 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference best",
     )
     p_compare.set_defaults(func=_cmd_compare)
+
+    p_masks = sub.add_parser(
+        "stereo-subset-masks",
+        help="Study D: per-atom masks of the stereo-affected subsets (E/Z "
+        "conformers, within 1 and 2 bonds of a stereogenic double bond), "
+        "written beside the store",
+    )
+    p_masks.add_argument("store", nargs="?", default="dash-molecules")
+    p_masks.add_argument("--n-jobs", type=int, default=None)
+    p_masks.set_defaults(func=_cmd_stereo_subset_masks)
+
+    p_score_sub = sub.add_parser(
+        "score-stereo-subsets",
+        help="Study D: score saved CV predictions on the stereo subsets, into "
+        "each run's subset_metrics.json",
+    )
+    p_score_sub.add_argument("store", nargs="?", default="dash-molecules")
+    p_score_sub.add_argument(
+        "--select",
+        action="append",
+        required=True,
+        help="EXPERIMENT=METHOD[,METHOD]; repeatable",
+    )
+    p_score_sub.add_argument("--depth", type=int, required=True)
+    p_score_sub.add_argument(
+        "--force", action="store_true", help="rescore runs already scored"
+    )
+    p_score_sub.add_argument(
+        "--check",
+        action="store_true",
+        help="score nothing; exit 1 if any selected run is unscored or stale",
+    )
+    p_score_sub.set_defaults(func=_cmd_score_stereo_subsets)
+
+    p_sreport = sub.add_parser(
+        "stereo-report",
+        help="Study D: each arm against its incumbent, paired by (repeat, "
+        "fold), with Nadeau-Bengio corrected intervals",
+    )
+    p_sreport.add_argument(
+        "--pair",
+        action="append",
+        required=True,
+        help="LABEL=INC_EXPERIMENT:INC_METHOD,EXPERIMENT:METHOD; repeatable",
+    )
+    p_sreport.add_argument("--depth", type=int, required=True)
+    p_sreport.add_argument("--k", type=int, required=True)
+    p_sreport.add_argument("--metric", action="append", required=True)
+    p_sreport.add_argument(
+        "--out", type=Path, default=None, help="stem; writes .txt and .json"
+    )
+    p_sreport.set_defaults(func=_cmd_stereo_report)
 
     p_subsample = sub.add_parser(
         "subsample-store",
