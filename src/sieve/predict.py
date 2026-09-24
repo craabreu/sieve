@@ -197,9 +197,16 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
     if cfg.stereo:
         for k in backoff_path:
             lvl = model.levels[k]
-            idx = np.flatnonzero(
-                (matched == k) & (aware_cid >= 0) & (aware_cid != class_id)
-            )
+            eligible = (matched == k) & (aware_cid >= 0) & (aware_cid != class_id)
+            informative = query[k].stereo_informative
+            if informative is not None:
+                # Under the tetrahedral track, an aware row whose only stereo
+                # content is one centre's sign says nothing the mirror
+                # quotient keeps -- the class and its mirror are pooled -- so
+                # it answers from fewer atoms than its blind class for no
+                # gain (Study E). Such atoms keep the blind answer.
+                eligible &= informative
+            idx = np.flatnonzero(eligible)
             a = aware_cid[idx]
             enough = lvl.count[a] >= cfg.minimum_support
             idx, a = idx[enough], a[enough]
