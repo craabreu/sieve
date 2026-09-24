@@ -219,8 +219,10 @@ The construction carries over. Blinding the tetrahedral trit yields the blind cl
 the same way, and the kind flags generalise to one bit per track. The mirror quotient
 the tetrahedral half needs acts on aware classes only: it negates the chirality trit and
 leaves the cis/trans trit fixed, and blind classes are fixed by it, so blinding commutes
-with the quotient. The tetrahedral spec should state this explicitly and extend §8.1's
-equivalence test to both tracks at once.
+with the quotient. Implemented in
+`docs/superpowers/specs/2026-09-24-tetrahedral-handedness-design.md`, with a third row
+set M (each atom's aware row in its molecule's enantiomer) rather than a second fitted
+chain, and `mirror_of` alongside `blind_of`.
 
 ## 10. Open items
 

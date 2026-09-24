@@ -120,7 +120,7 @@ def _union_level(
     kind[aware] |= KIND_AWARE
     # Well defined: an atom's aware class determines its blind one, since the
     # aware row names the aware classes one level down, whose blind classes
-    # are themselves determined, and the trit only adds to the edge code.
+    # are themselves determined, and the trits only add to the edge code.
     blind_of = np.arange(uniq.shape[0], dtype=np.int64)
     blind_of[aware] = blind
     mirror = mirror_of = None

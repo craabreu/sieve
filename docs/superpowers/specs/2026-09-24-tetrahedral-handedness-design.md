@@ -1,7 +1,7 @@
 # Tetrahedral Handedness in the Aware Chain
 
 **Date:** 2026-09-24
-**Status:** design, awaiting review; not implemented
+**Status:** implemented (plan: `docs/superpowers/plans/2026-09-24-tetrahedral-handedness.md`)
 **Builds on:** `2026-09-23-stereo-refines-the-blind-class-design.md` (design D), whose
 aware and blind chains, union vocabulary, `blind_of`, estimation and prediction are kept
 unchanged. That spec's §9 anticipated this track.

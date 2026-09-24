@@ -10,7 +10,7 @@ pytest.importorskip("rdkit")
 from rdkit import Chem
 
 import sieve
-from sieve.config import KIND_AWARE, KIND_BLIND, SieveConfig
+from sieve.config import KIND_AWARE, SieveConfig
 from sieve.io.rdkit_adapter import build_codes, from_rdkit
 from sieve.level import blind_targets, class_kinds, mirror_targets
 from sieve.refine import refine
@@ -118,8 +118,10 @@ def test_a_centre_listed_twice_is_refused():
 def test_stereo_centres_follow_slicing_and_concat():
     b = _star_batch([[0, 1, 2, 3, 4, 1], [5, 6, 7, 8, 9, -1]])
     second = b[b.graph_id == 1]
+    assert second.stereo_centres is not None
     np.testing.assert_array_equal(second.stereo_centres, [[0, 1, 2, 3, 4, -1]])
     both = concat_batches([second, second])
+    assert both.stereo_centres is not None
     np.testing.assert_array_equal(
         both.stereo_centres, [[0, 1, 2, 3, 4, -1], [5, 6, 7, 8, 9, -1]]
     )
@@ -151,9 +153,11 @@ def test_the_batch_carries_centres_only_under_the_track():
     both = from_rdkit(mols, config=_config(mols))
     ct = from_rdkit(mols, config=_config(mols, stereo=("cis_trans",)))
     tet = from_rdkit(mols, config=_config(mols, stereo=("tetrahedral",)))
+    assert both.stereo_centres is not None and both.stereo_bonds is not None
     assert both.stereo_centres.shape == (1, 6) and both.stereo_bonds.shape == (1, 7)
     assert ct.stereo_centres is None
-    assert tet.stereo_bonds is None and tet.stereo_centres.shape == (1, 6)
+    assert tet.stereo_bonds is None and tet.stereo_centres is not None
+    assert tet.stereo_centres.shape == (1, 6)
 
 
 def test_parallel_featurisation_carries_centres():
@@ -161,6 +165,7 @@ def test_parallel_featurisation_carries_centres():
     cfg = _config(mols)
     seq = from_rdkit(mols, config=cfg)
     par = from_rdkit(mols, config=cfg, n_jobs=2)
+    assert seq.stereo_centres is not None and par.stereo_centres is not None
     np.testing.assert_array_equal(seq.stereo_centres, par.stereo_centres)
 
 
@@ -428,9 +433,8 @@ def test_a_fit_on_the_mirrored_corpus_predicts_the_same():
 def test_merge_monoid_with_enantiomers_split(cuts):
     import itertools
 
-    mols = _mols(
-        CORPUS + ["N[C@H](C)C(=O)O"]
-    )  # alanine's two hands in different shards
+    # Alanine's two hands land in different shards.
+    mols = _mols([*CORPUS, "N[C@H](C)C(=O)O"])
     cfg = _config(mols, **EB)
     batch = _batch(mols, cfg)
     edges = [0, *cuts, len(mols)]
@@ -438,6 +442,7 @@ def test_merge_monoid_with_enantiomers_split(cuts):
     for lo, hi in itertools.pairwise(edges):
         part = sieve.fit(batch[(batch.graph_id >= lo) & (batch.graph_id < hi)], cfg)
         merged = part if merged is None else merged.merge(part)
+    assert merged is not None  # edges always yields >= 1 pair
     whole = sieve.fit(batch, cfg)
     assert [lv.n_classes for lv in merged.levels] == [
         lv.n_classes for lv in whole.levels

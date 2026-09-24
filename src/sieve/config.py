@@ -405,7 +405,9 @@ class SieveConfig:
     @property
     def stereo_radices(self) -> tuple[int, ...]:
         """One radix per enabled stereo track, each ``STEREO_RADIX`` wide:
-        ``{none, cis, trans}`` plus the reserved unknown code.
+        ``{none, cis, trans}`` for ``cis_trans``, ``{none, plus, minus}`` for
+        ``tetrahedral``, plus the reserved unknown code either way. One digit
+        per enabled track, in ``STEREO_TRACKS`` order (``refine.stereo_full``).
 
         Kept separate from ``edge_radices``, which describes the *static*
         adapter columns present in ``batch.edge_attrs``: a stereo code is

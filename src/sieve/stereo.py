@@ -1,4 +1,5 @@
-"""Content-rank fingerprints and the cis/trans code built on them.
+"""Content-rank fingerprints and the cis/trans and tetrahedral codes built
+on them.
 
 Kept out of ``refine.py`` because it has its own tests and ``refine`` is one
 readable function; ``refine`` calls in and folds the result.
