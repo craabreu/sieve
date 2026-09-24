@@ -30,6 +30,9 @@ class FrozenLevel:
     # each class is, and the blind class of the same atoms at this level.
     kind: np.ndarray | None = None  # (nc,) uint8
     blind_of: np.ndarray | None = None  # (nc,) int64
+    # Under the tetrahedral track only (see mirror_targets): the class of the
+    # same atoms in the molecule's enantiomer.
+    mirror_of: np.ndarray | None = None  # (nc,) int64
 
     @property
     def n_classes(self) -> int:
@@ -61,6 +64,13 @@ def blind_targets(level) -> np.ndarray:
     if level.blind_of is None:
         return np.arange(level.n_classes, dtype=np.int64)
     return level.blind_of
+
+
+def mirror_targets(level) -> np.ndarray:
+    """Per-class mirror image; a stored ``None`` means the identity."""
+    if level.mirror_of is None:
+        return np.arange(level.n_classes, dtype=np.int64)
+    return level.mirror_of
 
 
 def _reduce(

@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
 
 from sieve.batch import NodeBatch
-from sieve.config import KIND_AWARE, KIND_BLIND, LEVEL_WL, SieveConfig
+from sieve.config import KIND_AWARE, KIND_BLIND, LEVEL_WL, STEREO_RADIX, SieveConfig
 from sieve.dedupe import dense_rows
-from sieve.stereo import cis_trans_codes, content_ranks, directed_positions
+from sieve.stereo import (
+    FingerprintWindow,
+    centre_positions,
+    cis_trans_codes,
+    content_ranks,
+    directed_positions,
+    mirror_codes,
+    tetrahedral_codes,
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,13 @@ class LevelLabels:
     blind_labels: np.ndarray | None = None  # (n_nodes,) int64
     kind: np.ndarray | None = None  # (n_classes,) uint8, KIND_* bits
     blind_of: np.ndarray | None = None  # (n_classes,) int64
+    # Set only on the WL levels of a tetrahedral-aware chain (docs/
+    # superpowers/specs/2026-09-24-tetrahedral-handedness-design.md, section
+    # 3): ``labels`` is then each atom's aware class and ``mirror_labels`` its
+    # aware class in the enantiomer of its molecule, both ids in the same
+    # vocabulary ``signatures``.
+    mirror_labels: np.ndarray | None = None  # (n_nodes,) int64
+    mirror_of: np.ndarray | None = None  # (n_classes,) int64
 
     @property
     def n_classes(self) -> int:
@@ -43,6 +57,12 @@ class LevelLabels:
     def blind(self) -> np.ndarray:
         """Each atom's stereo-blind class: its own class when no track is on."""
         return self.labels if self.blind_labels is None else self.blind_labels
+
+    @property
+    def mirror(self) -> np.ndarray:
+        """Each atom's class in its molecule's enantiomer: its own class when
+        the tetrahedral track is off."""
+        return self.labels if self.mirror_labels is None else self.mirror_labels
 
 
 def _wl_rows(
@@ -61,20 +81,40 @@ def _wl_rows(
     return np.concatenate([base[:, None], pad], axis=1)
 
 
-def _union_level(sig_aware: np.ndarray, sig_blind: np.ndarray) -> LevelLabels:
-    """One vocabulary holding every atom's aware and blind rows (spec section 3).
+def _union_level(
+    sig_aware: np.ndarray,
+    sig_blind: np.ndarray,
+    sig_mirror: np.ndarray | None = None,
+) -> LevelLabels:
+    """One vocabulary holding every atom's aware, blind and mirror rows
+    (design D spec, section 3; tetrahedral-handedness spec, section 3).
 
     Rows are deduplicated together, so an aware row equal to a blind row is
     the same class, flagged both -- the case for every atom with no stereo
-    bond within reach. Only the rows that differ are stacked: the rest would
-    deduplicate onto their blind twin anyway.
+    code within reach. Only the rows that differ are stacked: the rest would
+    deduplicate onto their blind (or aware) twin anyway.
+
+    ``sig_mirror``, when given, is each atom's aware row in the enantiomer of
+    its molecule (tetrahedral-handedness spec, section 3). An M class is
+    itself an aware class -- it never coincides with a blind class, since
+    that would force the blind class to equal its own mirror's blind class,
+    which it already does by construction -- and ``mirror_of`` maps every
+    aware class to its M counterpart (the identity on an achiral one, where
+    the aware and mirror rows coincide).
     """
     n = sig_blind.shape[0]
     differs = np.flatnonzero((sig_aware != sig_blind).any(axis=1))
-    labels, uniq = dense_rows(np.concatenate([sig_blind, sig_aware[differs]]))
+    stack = [sig_blind, sig_aware[differs]]
+    mdiff = None
+    if sig_mirror is not None:
+        # A mirror row differs from its aware row only where a handedness
+        # code is in reach; elsewhere it would deduplicate onto it anyway.
+        mdiff = np.flatnonzero((sig_mirror != sig_aware).any(axis=1))
+        stack.append(sig_mirror[mdiff])
+    labels, uniq = dense_rows(np.concatenate(stack))
     blind = labels[:n]
     aware = blind.copy()
-    aware[differs] = labels[n:]
+    aware[differs] = labels[n : n + differs.size]
     kind = np.zeros(uniq.shape[0], np.uint8)
     kind[blind] |= KIND_BLIND
     kind[aware] |= KIND_AWARE
@@ -83,7 +123,26 @@ def _union_level(sig_aware: np.ndarray, sig_blind: np.ndarray) -> LevelLabels:
     # are themselves determined, and the trit only adds to the edge code.
     blind_of = np.arange(uniq.shape[0], dtype=np.int64)
     blind_of[aware] = blind
-    return LevelLabels(aware, uniq, uniq[:, 0].astype(np.int32), blind, kind, blind_of)
+    mirror = mirror_of = None
+    if mdiff is not None:
+        mirror = aware.copy()
+        mirror[mdiff] = labels[n + differs.size :]
+        # An M class is the aware class of an enantiomer's atom.
+        kind[mirror] |= KIND_AWARE
+        blind_of[mirror] = blind
+        mirror_of = np.arange(uniq.shape[0], dtype=np.int64)
+        mirror_of[aware] = mirror
+        mirror_of[mirror] = aware
+    return LevelLabels(
+        aware,
+        uniq,
+        uniq[:, 0].astype(np.int32),
+        blind,
+        kind,
+        blind_of,
+        mirror,
+        mirror_of,
+    )
 
 
 def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
@@ -172,9 +231,8 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
         edge_code = edge_code * radix + csr.attr[:, j]
 
     # --- stereo codes (docs/superpowers/specs/2026-09-22-cis-trans-
-    # featurisation-design.md; since 2026-09-23-stereo-refines-the-blind-
-    # class-design.md the code refines the blind class of each WL level
-    # instead of replacing it, see _union_level) ----------------------------
+    # featurisation-design.md, 2026-09-23-stereo-refines-the-blind-class-
+    # design.md, 2026-09-24-tetrahedral-handedness-design.md) --------------
     # Recomputed every WL round from the content-rank fingerprint, never
     # stored: what reaches a signature row is the pair encoding below, which
     # merge can remap freely. The fingerprint itself folds the *static*
@@ -182,59 +240,111 @@ def refine(batch: NodeBatch, config: SieveConfig) -> list[LevelLabels]:
     # -- and therefore which substituent wins -- independent of mirroring or
     # remapping.
     stereo_radix = math.prod(config.stereo_radices)
-    fingerprints: Iterator[np.ndarray] = iter(())
+    cis_trans = "cis_trans" in config.stereo
+    tetrahedral = "tetrahedral" in config.stereo
     # Bound once here rather than read off the batch in the loop: non-None
-    # exactly when a track is enabled, so the loop's own `is not None` both
-    # narrows the type and says the same thing as `if config.stereo`.
+    # exactly when its own track is enabled, so the loop's own `is not None`
+    # checks both narrow the type and say the same thing as the track flags.
     stereo_bonds: np.ndarray | None = None
-    pos_ab = pos_ba = None
+    stereo_centres: np.ndarray | None = None
+    pos_ab = pos_ba = tet_pos = tet_row = None
+    window: FingerprintWindow | None = None
     if config.stereo:
-        if batch.stereo_bonds is None:
-            raise ValueError(
-                f"config.stereo is {list(config.stereo)} but the batch carries "
-                "no stereo_bonds; the adapter was run with a stereo-blind config"
-            )
-        stereo_bonds = batch.stereo_bonds
+        if cis_trans:
+            if batch.stereo_bonds is None:
+                raise ValueError(
+                    f"config.stereo is {list(config.stereo)} but the batch "
+                    "carries no stereo_bonds; the adapter was run with a "
+                    "stereo-blind config"
+                )
+            stereo_bonds = batch.stereo_bonds
+            pos_ab, pos_ba = directed_positions(csr, n, stereo_bonds)
+        if tetrahedral:
+            if batch.stereo_centres is None:
+                raise ValueError(
+                    f"config.stereo is {list(config.stereo)} but the batch "
+                    "carries no stereo_centres; the adapter was run without "
+                    "the tetrahedral track"
+                )
+            stereo_centres = batch.stereo_centres
+            tet_pos, tet_row = centre_positions(csr, n, stereo_centres)
         n_wl = sum(1 for k in kinds if k == LEVEL_WL)
-        # Consumed one at a time below, never indexed: config refuses
-        # stereo with neighbor_depth, so the WL levels are a single chain
-        # and the radius the code reads rises by exactly one per round.
-        fingerprints = content_ranks(batch.node_attrs, csr, edge_code, max(n_wl - 2, 0))
-        pos_ab, pos_ba = directed_positions(csr, n, stereo_bonds)
+        # Round k reads fp_{k-1} (tetrahedral, one bond away) and fp_{k-2}
+        # (cis/trans, two bonds away). config refuses stereo with
+        # neighbor_depth, so the WL levels are a single chain and both radii
+        # rise by exactly one per round -- FingerprintWindow serves both from
+        # one generator consumed strictly in order.
+        rounds = max(n_wl - 1, 0) if tetrahedral else max(n_wl - 2, 0)
+        window = FingerprintWindow(
+            content_ranks(batch.node_attrs, csr, edge_code, rounds)
+        )
+
+    def stereo_full(ct: np.ndarray, tet: np.ndarray) -> np.ndarray:
+        """Fold the enabled tracks' codes into the edge code, one digit per
+        track in ``STEREO_TRACKS`` order."""
+        code = np.zeros(edge_code.shape[0], np.int64)
+        if cis_trans:
+            code = code * STEREO_RADIX + ct
+        if tetrahedral:
+            code = code * STEREO_RADIX + tet
+        return edge_code * stereo_radix + code
 
     wl_round = 0
     for offset, kind in enumerate(kinds):
         base = levels[parents[offset]].labels
         if kind == LEVEL_WL:
             wl_round += 1
-            if stereo_bonds is not None:
-                # The gather reaches distance 2, so an honest code needs
-                # radius-(k-2) identities. At k = 1 there is no such radius:
-                # the far substituent is two bonds away, outside a radius-1
-                # neighborhood, so the feature stays silent rather than
-                # asserting something the level cannot support.
-                stereo_code = np.zeros(edge_code.shape[0], np.int64)
-                if wl_round >= 2:
-                    codes = cis_trans_codes(stereo_bonds, next(fingerprints))
-                    stereo_code[pos_ab] = codes
-                    stereo_code[pos_ba] = codes
-                # The trit refines the stereo-blind class rather than
+            if window is not None:
+                e = edge_code.shape[0]
+                ct = np.zeros(e, np.int64)
+                tet = np.zeros(e, np.int64)
+                tet_mirror = np.zeros(e, np.int64)
+                if stereo_centres is not None:
+                    assert tet_pos is not None and tet_row is not None
+                    # The ranked neighbours sit one bond away, so radius
+                    # k-1 is honest and the code can fire from round 1.
+                    codes = tetrahedral_codes(stereo_centres, window.at(wl_round - 1))
+                    tet[tet_pos] = codes[tet_row]
+                    tet_mirror[tet_pos] = mirror_codes(codes)[tet_row]
+                if stereo_bonds is not None and wl_round >= 2:
+                    assert pos_ab is not None and pos_ba is not None
+                    # The gather reaches distance 2, so an honest code needs
+                    # radius-(k-2) identities. At k = 1 there is no such
+                    # radius: the far substituent is two bonds away, outside
+                    # a radius-1 neighborhood, so the feature stays silent
+                    # rather than asserting something the level cannot
+                    # support.
+                    codes = cis_trans_codes(stereo_bonds, window.at(wl_round - 2))
+                    ct[pos_ab] = codes
+                    ct[pos_ba] = codes
+                # The trits refine the stereo-blind class rather than
                 # replacing it (spec 2026-09-23). The blind row is built
-                # recursively -- blind parent and neighbours, trit 0 -- or
-                # stereo inherited through the ids one level down would
-                # survive in it. Both share the modulus, so a trit of 0 makes
-                # the two rows coincide exactly when they should.
-                sig_aware = _wl_rows(
-                    base, csr, edge_code * stereo_radix + stereo_code, n, n_edge_types
-                )
+                # recursively -- blind parent and neighbours, both trits 0 --
+                # or stereo inherited through the ids one level down would
+                # survive in it. All three rows share the modulus, so a trit
+                # of 0 makes the blind row coincide with the aware one
+                # exactly when it should.
+                parent = levels[parents[offset]]
+                zero = np.zeros(e, np.int64)
+                sig_aware = _wl_rows(base, csr, stereo_full(ct, tet), n, n_edge_types)
                 sig_blind = _wl_rows(
-                    levels[parents[offset]].blind,
-                    csr,
-                    edge_code * stereo_radix,
-                    n,
-                    n_edge_types,
+                    parent.blind, csr, stereo_full(zero, zero), n, n_edge_types
                 )
-                levels.append(_union_level(sig_aware, sig_blind))
+                # The mirror row set (tetrahedral-handedness spec, section 3)
+                # is each atom's aware row in the enantiomer of its molecule:
+                # same cis/trans code (E/Z survives reflection), handedness
+                # negated, and parent/neighbours from their own mirror
+                # classes -- which is what makes a class and its mirror hold
+                # identical statistics without ever materialising a mirrored
+                # molecule.
+                sig_mirror = (
+                    _wl_rows(
+                        parent.mirror, csr, stereo_full(ct, tet_mirror), n, n_edge_types
+                    )
+                    if stereo_centres is not None
+                    else None
+                )
+                levels.append(_union_level(sig_aware, sig_blind, sig_mirror))
                 continue
             sig = _wl_rows(base, csr, edge_code, n, n_edge_types)
         else:  # LEVEL_WL_PAIR: the coarse chain's own class at this round is

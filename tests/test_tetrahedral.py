@@ -12,7 +12,7 @@ from rdkit import Chem
 import sieve
 from sieve.config import KIND_AWARE, KIND_BLIND, SieveConfig
 from sieve.io.rdkit_adapter import build_codes, from_rdkit
-from sieve.level import blind_targets, class_kinds
+from sieve.level import blind_targets, class_kinds, mirror_targets
 from sieve.refine import refine
 
 BOTH = ("cis_trans", "tetrahedral")
@@ -208,3 +208,81 @@ def test_the_window_serves_two_consecutive_radii():
     assert w.at(3).tolist() == [3] and w.at(2).tolist() == [2]
     with pytest.raises(ValueError, match="radius"):
         w.at(0)
+
+
+def _centre_labels(levels, atom):
+    return [int(lv.labels[atom]) for lv in levels]
+
+
+def test_the_radius_rule_under_element_only_attributes():
+    """fp_0 hashes the whole attribute row, so the rule is only visible with
+    element-only attributes: there CHFClBr's four neighbours differ at
+    radius 0 and alanine's two carbons do not."""
+    for smiles, first in (("F[C@H](Cl)Br", 1), ("N[C@@H](C)C(=O)O", 2)):
+        mols = _mols([smiles])
+        mirror = _inverted(mols)
+        cfg = _config(mols + mirror, depth=3)
+        lv = refine(from_rdkit(mols + mirror, config=cfg), cfg)
+        (row,) = _stereo_centre_rows(mols[0])
+        v, n = row[0], mols[0].GetNumAtoms()
+        for k in range(1, 4):
+            same = lv[k].labels[v] == lv[k].labels[v + n]
+            assert same == (k < first), (smiles, k)
+
+
+def test_ties_defer_at_every_radius():
+    m = Chem.MolFromSmiles("CC(C)Cl")
+    m.GetAtomWithIdx(1).SetChiralTag(Chem.ChiralType.CHI_TETRAHEDRAL_CW)
+    mols = [Chem.AddHs(m)]
+    cfg = _config(mols, depth=4)
+    for lv in refine(from_rdkit(mols, config=cfg), cfg):
+        np.testing.assert_array_equal(lv.labels, lv.blind)
+
+
+def test_five_orderings_of_alanine_agree():
+    """Random SMILES of one molecule, so every copy is the same enantiomer."""
+    base = Chem.MolFromSmiles("N[C@@H](C)C(=O)O")
+    smiles = list(Chem.MolToRandomSmilesVect(base, 5, randomSeed=0))
+    for hs in (True, False):
+        mols = _mols(smiles, hs=hs)
+        cfg = _config(mols, depth=3)
+        lv = refine(from_rdkit(mols, config=cfg), cfg)
+        offs = np.cumsum([0] + [m.GetNumAtoms() for m in mols])
+        centres = [
+            o + _stereo_centre_rows(m)[0][0] for o, m in zip(offs, mols, strict=False)
+        ]
+        for level in lv:
+            assert len({int(level.labels[c]) for c in centres}) == 1
+
+
+def test_renumbering_leaves_the_classes_unchanged():
+    mols = _mols(["N[C@@H](C)C(=O)O", "F[C@H](Cl)Br"])
+    rng = np.random.default_rng(0)
+    orders = [rng.permutation(m.GetNumAtoms()) for m in mols]
+    cfg = _config(mols + mols, depth=3)
+    natural = [np.arange(m.GetNumAtoms()) for m in mols]
+    b = from_rdkit(mols + mols, config=cfg, node_order=natural + orders)
+    sizes = [m.GetNumAtoms() for m in mols]
+    n = sum(sizes)
+    # Raw atom a of molecule j sits at first[j] + a in the natural copy and at
+    # n + first[j] + position-of-a-in-order_j in the permuted copy.
+    first = np.cumsum([0, *sizes[:-1]])
+    natural_pos = np.concatenate(
+        [f + np.arange(k) for f, k in zip(first, sizes, strict=True)]
+    )
+    permuted_pos = np.concatenate(
+        [n + f + np.argsort(o) for f, o in zip(first, orders, strict=True)]
+    )
+    for lv in refine(b, cfg):
+        np.testing.assert_array_equal(lv.labels[natural_pos], lv.labels[permuted_pos])
+
+
+def test_mirror_rows_and_maps_are_consistent():
+    mols = _mols(["N[C@@H](C)C(=O)O", r"C/C=C\[C@H](F)Cl", "CCCC"])
+    cfg = _config(mols)
+    for lv in refine(from_rdkit(mols, config=cfg), cfg):
+        mt, bt = mirror_targets(lv), blind_targets(lv)
+        np.testing.assert_array_equal(mt[mt], np.arange(lv.n_classes))
+        np.testing.assert_array_equal(mt[lv.labels], lv.mirror)
+        np.testing.assert_array_equal(bt[lv.mirror], lv.blind)
+        assert np.all(class_kinds(lv)[lv.mirror] & KIND_AWARE)
