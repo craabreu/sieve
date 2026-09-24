@@ -49,11 +49,13 @@ CLASS_ESTIMATORS = (
 )
 
 # Stereo tracks a config may enable. Each contributes a fixed radix of 4 to
-# the edge alphabet: {none, cis, trans} plus the reserved unknown code. Kept
-# as a tuple of names, not a bool, because a second track (tetrahedral
-# handedness) is coming and a bool would have to become two.
+# the edge alphabet: {none, +/cis, -/trans} plus the reserved unknown code.
+# Kept as a tuple of names, not a bool, because there are two tracks and a
+# bool would have to become two anyway. Order here is the digit order
+# `refine` composes the stereo code in, and __post_init__ normalises any
+# `stereo` tuple to this order so both spellings hash identically.
 STEREO_RADIX = 4
-STEREO_TRACKS = ("cis_trans",)
+STEREO_TRACKS = ("cis_trans", "tetrahedral")
 
 # Class kinds under a stereo track (docs/superpowers/specs/2026-09-23-stereo-
 # refines-the-blind-class-design.md, section 3): a bitmask, so a class that is
@@ -154,6 +156,13 @@ class SieveConfig:
                 raise ValueError(
                     f"unknown stereo track {track!r}; known: {list(STEREO_TRACKS)}"
                 )
+        if len(set(self.stereo)) != len(self.stereo):
+            raise ValueError(f"stereo lists a track twice: {list(self.stereo)}")
+        # One spelling per configuration, so equal configs hash equally; the
+        # digits of the stereo code follow this order too (refine).
+        object.__setattr__(
+            self, "stereo", tuple(t for t in STEREO_TRACKS if t in self.stereo)
+        )
         if self.minimum_support < 1:
             raise ValueError("minimum_support must be >= 1")
         if self.class_estimator not in CLASS_ESTIMATORS:

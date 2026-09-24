@@ -75,8 +75,8 @@ reindexed on slicing, offset and all-or-none on concat.
 ### 2.2 The code at WL round k
 
 At round *k*, rank the centre's neighbours by the stereo-blind content fingerprint at
-radius *k* − 1 (`stereo.content_ranks`, fixed-width since PR #39). A virtual hydrogen
-takes the fixed value 0, which sorts first.
+radius *k* − 1 (`stereo.content_ranks`, fixed-width since PR #39). An absent position
+contributes no inversion: it sorts last, as it sits last in RDKit's reference order.
 
 - If any two ranked values tie, the code is `none`: the centre is not resolvable at this
   radius. This also covers atoms that are tagged but not stereogenic.
