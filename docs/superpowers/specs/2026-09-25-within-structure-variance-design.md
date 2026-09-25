@@ -1,7 +1,7 @@
 # Within-Structure Variance in the Predictive Variance
 
 **Date:** 2026-09-25
-**Status:** design, awaiting review; not implemented
+**Status:** phase 1 implemented (plan: docs/superpowers/plans/2026-09-25-within-structure-variance.md); phase 2 not started
 **Revises:** `design-update-v2.md` §3 (the three-term predictive variance) by one added
 term and one changed constant. The three terms and their estimators are kept.
 
