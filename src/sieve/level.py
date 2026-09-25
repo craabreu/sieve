@@ -33,6 +33,13 @@ class FrozenLevel:
     # Under the tetrahedral track only (see mirror_targets): the class of the
     # same atoms in the molecule's enantiomer.
     mirror_of: np.ndarray | None = None  # (nc,) int64
+    # Within-structure sums per class (within-structure-variance spec 4): the
+    # summed squared deviations of the class's training atoms from their
+    # structures' orbit means, and the number of atoms summed over. Accrued
+    # through exactly the membership `y` accrues through. None when the fit
+    # carried no within-structure statistics.
+    within_sse: np.ndarray | None = None  # (nc, d) float64
+    within_n: np.ndarray | None = None  # (nc,) float64
 
     @property
     def n_classes(self) -> int:
@@ -102,7 +109,19 @@ def _reduce(
     return count, mean, msd
 
 
-def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
+def _sums(labels: np.ndarray, values: np.ndarray, nc: int) -> np.ndarray:
+    """Per-class sums of ``values`` rows ((n,) or (n, d)), by the same sparse
+    membership operator ``_reduce`` builds."""
+    n = labels.shape[0]
+    P = sparse.csr_matrix((np.ones(n), (labels, np.arange(n))), shape=(nc, n))
+    return np.asarray(P @ values)
+
+
+def fit_level(
+    level: LevelLabels,
+    y: np.ndarray,
+    within: tuple[np.ndarray, np.ndarray] | None = None,
+) -> FrozenLevel:
     """Reduce one chunk to per-class statistics.
 
     Under a stereo track each atom accrues to its blind class and, where it
@@ -120,22 +139,36 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
     has ``mirror_labels[i] == labels[i]`` for every one of its atoms (the
     mirror label is a function of the class alone), so it is excluded from
     this second pass and never double-counted.
+
+    ``within``, when given, is the batch's ``(within_sse, within_n)``; they
+    are summed per class through exactly the memberships above
+    (within-structure-variance spec 4).
     """
     nc = level.n_classes
     count, mean, msd = _reduce(level.blind, y, nc)
+    w_sse = w_n = None
+    if within is not None:
+        sse, cnt = within
+        w_sse, w_n = _sums(level.blind, sse, nc), _sums(level.blind, cnt, nc)
     if level.kind is not None:
         differs = level.labels != level.blind
         extra_labels, extra_y = [level.labels[differs]], [y[differs]]
+        extra_rows = [np.flatnonzero(differs)]
         if level.mirror_labels is not None:
             moved = level.mirror_labels != level.labels
             extra_labels.append(level.mirror_labels[moved])
             extra_y.append(y[moved])
+            extra_rows.append(np.flatnonzero(moved))
         lab = np.concatenate(extra_labels)
         if lab.size:
             yy = np.concatenate(extra_y)
             c2, m2, s2 = _reduce(lab, yy, nc)
             only = level.kind == KIND_AWARE
             count[only], mean[only], msd[only] = c2[only], m2[only], s2[only]
+            if within is not None and w_sse is not None and w_n is not None:
+                rows = np.concatenate(extra_rows)
+                w_sse[only] = _sums(lab, sse[rows], nc)[only]
+                w_n[only] = _sums(lab, cnt[rows], nc)[only]
     return FrozenLevel(
         level.signatures,
         count,
@@ -145,6 +178,8 @@ def fit_level(level: LevelLabels, y: np.ndarray) -> FrozenLevel:
         level.kind,
         level.blind_of,
         level.mirror_of,
+        w_sse,
+        w_n,
     )
 
 

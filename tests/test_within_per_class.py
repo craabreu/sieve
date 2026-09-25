@@ -1,0 +1,135 @@
+"""Per-class within-structure variance (within-structure-variance spec, section 4).
+
+The per-class sums must follow exactly the membership `y` follows. The
+cleanest check is to feed a copy of `y` through them: with within_sse = y and
+within_n = 1 on every atom, each class's within_n must equal its count and its
+within_sse / within_n its mean, under every stereo track.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import numpy as np
+import pytest
+
+import sieve
+from tests.helpers import chain_batch, simple_config, split_batch
+
+CIS_TRANS = [
+    "C/C=C/C",
+    r"C/C=C\C",
+    "C/C=C/CC",
+    r"C/C=C\CC",
+    "C/C(F)=C(Cl)/C",
+    r"C/C(F)=C(Cl)\C",
+    "CCCC",
+    "C/C=C/Br",
+]
+CHIRAL = [
+    "N[C@@H](C)C(=O)O",
+    "N[C@H](C)C(=O)O",
+    "C[C@H](O)[C@H](N)C",
+    "C[C@H](O)[C@@H](N)C",
+    "OC[C@@H](O)[C@H](O)C=O",
+    "CC(C)C",
+]
+
+
+def _echo(batch, seed=0):
+    """y positive, and the within arrays a copy of it with one member each."""
+    y = np.random.default_rng(seed).uniform(0.1, 1.0, size=(batch.n_nodes, 1))
+    return dataclasses.replace(
+        batch, y=y, within_sse=y.copy(), within_n=np.ones(batch.n_nodes)
+    )
+
+
+def _stereo_batch(smiles, stereo):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    from sieve.config import SieveConfig
+    from sieve.io.rdkit_adapter import build_codes, from_rdkit
+
+    mols = [Chem.AddHs(Chem.MolFromSmiles(s)) for s in smiles]
+    codes, edges = build_codes(mols, ["element"])
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes=codes,
+        edge_codes=edges,
+        max_wl_depth=4,
+        stereo=stereo,
+    )
+    return _echo(from_rdkit(mols, config=cfg)), cfg
+
+
+def _assert_echoes_y(model):
+    for lvl in model.levels:
+        assert lvl.within_sse is not None and lvl.within_n is not None
+        np.testing.assert_array_equal(lvl.within_n, lvl.count.astype(np.float64))
+        filled = lvl.count > 0
+        np.testing.assert_allclose(
+            lvl.within_sse[filled] / lvl.within_n[filled, None],
+            lvl.mean[filled],
+            rtol=1e-12,
+        )
+
+
+@pytest.mark.parametrize(
+    ("smiles", "stereo"),
+    [
+        (CIS_TRANS, ()),
+        (CIS_TRANS, ("cis_trans",)),
+        (CHIRAL, ("cis_trans", "tetrahedral")),
+    ],
+    ids=["blind", "cis_trans", "both_tracks"],
+)
+def test_within_sums_follow_y_under_every_track(smiles, stereo):
+    batch, cfg = _stereo_batch(smiles, stereo)
+    _assert_echoes_y(sieve.fit(batch, cfg))
+
+
+def test_within_sums_follow_y_on_a_plain_chain():
+    _assert_echoes_y(sieve.fit(_echo(chain_batch(12, graphs=4)), simple_config()))
+
+
+def test_a_batch_without_within_arrays_has_no_per_class_sums():
+    m = sieve.fit(chain_batch(12, graphs=4), simple_config())
+    assert all(lvl.within_sse is None and lvl.within_n is None for lvl in m.levels)
+
+
+def test_per_class_sums_leave_the_class_statistics_unchanged():
+    b = chain_batch(12, graphs=4)
+    plain = sieve.fit(b, simple_config())
+    rng = np.random.default_rng(3)
+    with_sums = sieve.fit(
+        dataclasses.replace(
+            b, within_sse=rng.uniform(size=(b.n_nodes, 1)), within_n=np.ones(b.n_nodes)
+        ),
+        simple_config(),
+    )
+    for p, w in zip(plain.levels, with_sums.levels, strict=True):
+        np.testing.assert_array_equal(p.count, w.count)
+        np.testing.assert_array_equal(p.mean, w.mean)
+        np.testing.assert_array_equal(p.msd, w.msd)
+
+
+def test_blind_class_sums_add_up_to_the_pooled_sums():
+    from sieve.config import KIND_BLIND
+    from sieve.level import class_kinds
+
+    batch, cfg = _stereo_batch(CIS_TRANS, ("cis_trans",))
+    rng = np.random.default_rng(5)
+    batch = dataclasses.replace(
+        batch,
+        within_sse=rng.uniform(size=(batch.n_nodes, 1)),
+        within_n=rng.integers(1, 4, size=batch.n_nodes).astype(np.float64),
+    )
+    m = sieve.fit(batch, cfg)
+    assert m.within_sse is not None
+    for lvl in m.levels:
+        assert lvl.within_sse is not None and lvl.within_n is not None
+        blind = (class_kinds(lvl) & KIND_BLIND) > 0
+        np.testing.assert_allclose(lvl.within_sse[blind].sum(axis=0), m.within_sse)
+        assert lvl.within_n[blind].sum() == pytest.approx(m.within_n)

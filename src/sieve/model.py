@@ -282,7 +282,10 @@ def fit(batch: NodeBatch, config: SieveConfig) -> SieveModel:
         return fold(shards, config)
 
     levels_lbl = refine(batch, config)
-    levels = tuple(fit_level(lv, batch.y) for lv in levels_lbl)
+    within = None
+    if batch.within_sse is not None and batch.within_n is not None:
+        within = (batch.within_sse, batch.within_n)
+    levels = tuple(fit_level(lv, batch.y, within) for lv in levels_lbl)
     n, mean, msd = global_stats(batch.y)
     within_sse, within_n = None, 0.0
     if batch.within_sse is not None and batch.within_n is not None:
