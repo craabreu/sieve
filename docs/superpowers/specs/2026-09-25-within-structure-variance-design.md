@@ -1,7 +1,7 @@
 # Within-Structure Variance in the Predictive Variance
 
 **Date:** 2026-09-25
-**Status:** phase 1 implemented (plan: docs/superpowers/plans/2026-09-25-within-structure-variance.md); phase 2 not started
+**Status:** phase 1 implemented (plan: docs/superpowers/plans/2026-09-25-within-structure-variance.md); phase 2 run and not adopted (§4.1)
 **Revises:** `design-update-v2.md` §3 (the three-term predictive variance) by one added
 term and one changed constant. The three terms and their estimators are kept.
 
@@ -139,6 +139,38 @@ shrunk toward the pooled σ²_w, with β fixed by the same rotation over repeat 
 **Adopted only if** it beats pooled σ²_w out of fold on both NLL and normalised RMSE.
 Otherwise it is not merged. Phase 2 requires refitting shards, one arm (the incumbent)
 first.
+
+### 4.1 Result (2026-09-25): not adopted
+
+The incumbent's 50 shards were refitted under the config label `element-eb-wc`. The
+refit's class statistics are bit-identical to the `element-eb` fits, and its per-shard sums
+equal the floor cache. It was scored on all 25 Study B samples (train split only), with
+β ∈ {0, 1, 3, 10, 30, 100, 300, 1000, ∞}, where β = ∞ is phase 1. Means over the 25
+samples:
+
+| β | NLL | E[z²] | E[z²] at k\* = 5 | coverage 95% | normalised RMSE |
+|---|---:|---:|---:|---:|---:|
+| 0 | −2.910 | 1.25 | 1.42 | 0.954 | 0.018909 |
+| 10 | **−2.934** | 1.07 | 1.15 | 0.960 | 0.018891 |
+| 100 | −2.915 | 1.00 | 1.03 | 0.961 | 0.018884 |
+| ∞ (phase 1) | −2.836 | 0.96 | 0.96 | 0.956 | **0.018876** |
+
+The rotation over repeat 0 picked β = 10 in all five folds. Its out-of-fold NLL is −2.9338
+against −2.8366 for pooled, but its normalised RMSE is 0.018885 against 0.018870: condition
+(a) holds for NLL and fails for normalised RMSE. On repeats 1–4, with β = 10 fixed, the
+paired differences against pooled (Nadeau–Bengio 95% intervals) are:
+
+- NLL: −0.0974 [−0.1017, −0.0932], lower in 20/20 samples;
+- normalised RMSE: +1.49 × 10⁻⁵ [+1.24, +1.73] × 10⁻⁵, higher in 20/20.
+
+Normalised RMSE rises monotonically as β decreases. **Per-class σ²_w is therefore not
+adopted, and `WITHIN_SHRINKAGE` stays ∞.** It sharpens the variance between classes,
+which the likelihood rewards: NLL improves by 3.4%, far more than the α^v retuning's
+0.2%. But it distorts the ratios within a molecule that charge normalisation reads, and it
+is overconfident at depth (E[z²] 1.15 at k\* = 5). Classes with few structures get a
+small, noisy σ²_w,c. The trade-off is real, and the NLL gain is large. A user who wants
+uncertainties rather than normalised charges could want it, so the code is kept on the
+unmerged branch `within-structure-per-class` (PR #48).
 
 ## 5. Tests
 
