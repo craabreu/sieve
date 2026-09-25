@@ -47,7 +47,11 @@ mean over conformers and symmetry-equivalent atoms
 so none of the three terms above can see it, while every held-out atom is an
 individual conformer and carries it. Without it the variance was five times
 overconfident at the deepest radius (within-structure-variance spec 1). Zero
-for a model that carries no within-structure statistics.
+for a model that carries no within-structure statistics. Per class, when the
+fit carried per-class sums, it is
+$\sigma^2_{w,c} = (\mathrm{sse}_c + \beta \sigma^2_w)/(n_c + \beta)$, shrunk
+toward the pooled value (``WITHIN_SHRINKAGE``); $\beta = \infty$ is the pooled
+value in every class.
 
 Derived on demand and never stored, like ``shrinkage.shrunk_means`` and
 ``continuation.class_means``, and for the same reason: every value depends on
@@ -86,6 +90,23 @@ from sieve.shrinkage import empirical_bayes_weights
 ALPHA_V = 10.0  # within-class shrinkage toward the level-pooled variance
 ALPHA_T = 1.0  # per-class sibling variance shrinkage toward the pooled one
 SELECTION_WEIGHT = 0.5  # coefficient `a` on the selection term
+# beta: per-class within-structure variance shrinkage toward the pooled one
+# (within-structure-variance spec 4). Infinite -- the pooled sigma2_w in every
+# class, phase 1 exactly -- until the out-of-fold experiment decides.
+WITHIN_SHRINKAGE = np.inf
+
+
+def _within_structure(lvl, pooled: np.ndarray, beta: float) -> np.ndarray:
+    """sigma2_w per class: (sse_c + beta*pooled) / (n_c + beta), and the pooled
+    value itself where the class carries no sums or beta is infinite -- the
+    limit, taken explicitly because inf/inf is nan."""
+    if lvl.within_sse is None or lvl.within_n is None or np.isinf(beta):
+        return pooled
+    n = lvl.within_n[:, None]
+    den = n + beta
+    with np.errstate(invalid="ignore", divide="ignore"):
+        blend = (lvl.within_sse + beta * pooled) / den
+    return np.where(den > 0, blend, pooled)
 
 
 def predictive_variance(
@@ -94,6 +115,7 @@ def predictive_variance(
     alpha_v: float = ALPHA_V,
     alpha_t: float = ALPHA_T,
     selection_weight: float = SELECTION_WEIGHT,
+    within_shrinkage: float = WITHIN_SHRINKAGE,
 ) -> list[np.ndarray]:
     """Per-level ``(n_classes, d)`` predictive variance for a *new* node drawn
     from each class.
@@ -161,5 +183,10 @@ def predictive_variance(
             t = tau_aware[k] if np.isfinite(tau_aware[k]) else 0.0
             estimation[only] = t * (1.0 - weights[k][only][:, None])
 
-        out.append(within + selection_weight * selection + estimation + sigma2_w)
+        out.append(
+            within
+            + selection_weight * selection
+            + estimation
+            + _within_structure(lvl, sigma2_w, within_shrinkage)
+        )
     return out

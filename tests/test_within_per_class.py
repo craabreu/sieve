@@ -209,3 +209,79 @@ def test_truncation_keeps_per_class_sums():
 
     m = sieve.fit(_echo(chain_batch(12, graphs=4)), simple_config(max_wl_depth=3))
     _assert_echoes_y(truncate_model(m, 1))
+
+
+# ----------------------------------------------------- predictive variance --
+
+
+def _model_with_class_sums(seed=0):
+    b = chain_batch(12, graphs=4, seed=seed)
+    rng = np.random.default_rng(seed + 10)
+    n = rng.integers(1, 5, size=b.n_nodes).astype(np.float64)
+    sse = rng.uniform(0.0, 2e-4, size=(b.n_nodes, 1)) * n[:, None]
+    return sieve.fit(
+        dataclasses.replace(b, within_sse=sse, within_n=n),
+        simple_config(max_wl_depth=2),
+    )
+
+
+def test_infinite_shrinkage_is_phase_one_bit_for_bit():
+    from sieve.uncertainty import WITHIN_SHRINKAGE, predictive_variance
+
+    assert WITHIN_SHRINKAGE == np.inf
+    m = _model_with_class_sums()
+    # phase 1: the same model with its per-class sums stripped
+    pooled_only = dataclasses.replace(
+        m,
+        levels=tuple(
+            dataclasses.replace(lvl, within_sse=None, within_n=None) for lvl in m.levels
+        ),
+    )
+    for a, b in zip(
+        predictive_variance(m), predictive_variance(pooled_only), strict=True
+    ):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_finite_shrinkage_is_the_hand_computed_blend():
+    from sieve.uncertainty import predictive_variance
+
+    m = _model_with_class_sums()
+    beta = 3.0
+    pooled = m.within_variance
+    base = predictive_variance(m)  # pooled sigma2_w in every class
+    blended = predictive_variance(m, within_shrinkage=beta)
+    for lvl, b0, b1 in zip(m.levels, base, blended, strict=True):
+        assert lvl.within_sse is not None and lvl.within_n is not None
+        s2c = (lvl.within_sse + beta * pooled) / (lvl.within_n[:, None] + beta)
+        np.testing.assert_allclose(b1, b0 - pooled + s2c, rtol=1e-12)
+
+
+def test_zero_shrinkage_uses_each_class_s_own_ratio_and_pooled_where_empty():
+    from sieve.uncertainty import predictive_variance
+
+    m = _model_with_class_sums()
+    base = predictive_variance(m)
+    own = predictive_variance(m, within_shrinkage=0.0)
+    pooled = m.within_variance
+    for lvl, b0, b1 in zip(m.levels, base, own, strict=True):
+        assert lvl.within_sse is not None and lvl.within_n is not None
+        n = lvl.within_n[:, None]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = np.where(n > 0, lvl.within_sse / n, pooled)
+        np.testing.assert_allclose(b1, b0 - pooled + ratio, rtol=1e-12)
+        assert np.isfinite(b1).all()
+
+
+def test_a_model_without_per_class_sums_ignores_the_shrinkage():
+    from sieve.uncertainty import predictive_variance
+
+    m = sieve.fit(chain_batch(12, graphs=4), simple_config()).with_within_structure(
+        1e-3, 10
+    )
+    for a, b in zip(
+        predictive_variance(m),
+        predictive_variance(m, within_shrinkage=1.0),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(a, b)
