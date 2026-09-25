@@ -1510,16 +1510,36 @@ def test_training_floors_are_attached_only_to_collapsed_fits(tmp_path):
 def test_truncation_keeps_per_class_within_sums():
     """Per-class within-structure sums (within-structure-variance spec 4)
     ride on the levels, so a truncated model keeps them."""
-    import dataclasses
-
     from experiments.cv import truncate_model
 
     import sieve
-    from tests.helpers import chain_batch, simple_config
+    from sieve.batch import NodeBatch
+    from sieve.config import SieveConfig
 
-    b = chain_batch(12, graphs=4)
-    b = dataclasses.replace(b, within_sse=np.abs(b.y), within_n=np.ones(b.n_nodes))
-    m = sieve.fit(b, simple_config(max_wl_depth=3))
+    # Built inline: `tests.helpers` resolves to this directory's helpers or
+    # the root suite's, depending on which was imported first.
+    n = 24
+    src = [u for i in range(n - 1) for u in (i, i + 1)]
+    dst = [v for i in range(n - 1) for v in (i + 1, i)]
+    y = np.random.default_rng(0).uniform(size=(n, 1))
+    b = NodeBatch(
+        node_attrs=(np.arange(n) % 2).reshape(-1, 1).astype(np.int64),
+        edge_src=np.array(src, np.int64),
+        edge_dst=np.array(dst, np.int64),
+        edge_attrs=np.ones((len(src), 1), np.int64),
+        graph_id=np.zeros(n, np.int64),
+        y=y,
+        within_sse=y.copy(),
+        within_n=np.ones(n),
+    )
+    cfg = SieveConfig(
+        target_dim=1,
+        attribute_levels=(("element",),),
+        attribute_codes={"element": {"C": 0, "H": 1}},
+        edge_codes={"bond_type": {"SINGLE": 0}},
+        max_wl_depth=3,
+    )
+    m = sieve.fit(b, cfg)
     t = truncate_model(m, 1)
     assert len(t.levels) < len(m.levels)
     for a, c in zip(t.levels, m.levels, strict=False):

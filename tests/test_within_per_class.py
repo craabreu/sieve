@@ -278,3 +278,11 @@ def test_a_model_without_per_class_sums_ignores_the_shrinkage():
         strict=True,
     ):
         np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("beta", [-0.5, -np.inf, np.nan])
+def test_an_impossible_shrinkage_is_refused(beta):
+    from sieve.uncertainty import predictive_variance
+
+    with pytest.raises(ValueError, match="within_shrinkage"):
+        predictive_variance(_model_with_class_sums(), within_shrinkage=beta)

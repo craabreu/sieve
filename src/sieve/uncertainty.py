@@ -135,6 +135,11 @@ def predictive_variance(
     per-dimension variants of both, which is the same computation without the
     sum over ``j``.
     """
+    if not within_shrinkage >= 0:  # also refuses nan
+        raise ValueError(
+            f"within_shrinkage must be >= 0 (inf for the pooled value), got "
+            f"{within_shrinkage}"
+        )
     cfg = model.config
     parents = cfg.level_parents
     av = np.asarray(atom_variance(model), dtype=np.float64)
