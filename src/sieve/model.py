@@ -26,6 +26,14 @@ class SieveModel:
     global_count: int
     global_mean: np.ndarray
     global_msd: np.ndarray
+    # Within-structure statistics (within-structure-variance spec 3.3): the
+    # summed squared deviation of each training atom from its structure's
+    # orbit mean over conformers, and the number of atoms it was summed over.
+    # Collapse removes this scatter from the fit; these carry it back so the
+    # predictive variance can add it. Statistics, not configuration: they are
+    # outside schema_version, and they add under merge.
+    within_sse: np.ndarray | None = None  # (d,)
+    within_n: float = 0.0
 
     @classmethod
     def empty(cls, config: SieveConfig) -> SieveModel:
@@ -60,6 +68,33 @@ class SieveModel:
         if bad:
             raise ValueError(f"with_params only changes inference params, got {bad}")
         return replace(self, config=replace(self.config, **kw))
+
+    @property
+    def within_variance(self) -> np.ndarray:
+        """σ²_w per target dimension, and 0 when no statistics were carried."""
+        d = self.config.target_dim
+        if self.within_sse is None or self.within_n == 0:
+            return np.zeros(d)
+        return self.within_sse / self.within_n
+
+    def with_within_structure(self, sse, n) -> SieveModel:
+        """A copy carrying the given within-structure sums.
+
+        For models fitted without them -- the cached CV fold models -- whose
+        training shards' sums are known from elsewhere (spec 3.4). Predictions
+        and ``schema_version`` are unchanged; only the predictive variance
+        reads them.
+        """
+        d = self.config.target_dim
+        sse = np.broadcast_to(np.asarray(sse, np.float64), (d,)).copy()
+        n = float(n)
+        if not (np.isfinite(sse).all() and np.isfinite(n)):
+            raise ValueError("within-structure sums must be finite")
+        if (sse < 0).any() or n < 0:
+            raise ValueError("within-structure sums must be non-negative")
+        if n == 0 and (sse > 0).any():
+            raise ValueError("a positive within-structure SSE needs a positive count")
+        return replace(self, within_sse=sse, within_n=n)
 
     def merge(self, other: SieveModel) -> SieveModel:
         """Combine two models. Named `merge` because `a + b` reads as ensembling."""
@@ -125,6 +160,10 @@ class SieveModel:
                 [[float(self.global_count)], self.global_mean, self.global_msd]
             ),
         }
+        if self.within_sse is not None:
+            # Only when present, so a file without the statistics keeps exactly
+            # the keys it always had.
+            arrays["within"] = np.concatenate([[self.within_n], self.within_sse])
         for k, lvl in enumerate(self.levels):
             arrays[f"level_{k}_vocab"] = lvl.signatures
             arrays[f"level_{k}_count"] = lvl.count
@@ -201,7 +240,19 @@ class SieveModel:
             )
             for k in range(cfg.n_levels)
         )
-        return cls(cfg, levels, int(g[0]), g[1 : 1 + d], g[1 + d : 1 + 2 * d])
+        within_sse, within_n = None, 0.0
+        if "within" in data.files:
+            w = data["within"]
+            within_sse, within_n = w[1 : 1 + d], float(w[0])
+        return cls(
+            cfg,
+            levels,
+            int(g[0]),
+            g[1 : 1 + d],
+            g[1 + d : 1 + 2 * d],
+            within_sse,
+            within_n,
+        )
 
 
 def fit(batch: NodeBatch, config: SieveConfig) -> SieveModel:
@@ -233,7 +284,11 @@ def fit(batch: NodeBatch, config: SieveConfig) -> SieveModel:
     levels_lbl = refine(batch, config)
     levels = tuple(fit_level(lv, batch.y) for lv in levels_lbl)
     n, mean, msd = global_stats(batch.y)
-    return SieveModel(config, levels, n, mean, msd)
+    within_sse, within_n = None, 0.0
+    if batch.within_sse is not None and batch.within_n is not None:
+        within_sse = batch.within_sse.sum(axis=0)
+        within_n = float(batch.within_n.sum())
+    return SieveModel(config, levels, n, mean, msd, within_sse, within_n)
 
 
 def _sub_batch(batch: NodeBatch, mask: np.ndarray) -> NodeBatch:

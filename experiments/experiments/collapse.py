@@ -20,6 +20,7 @@ from rdkit import Chem
 from rdkit.Chem import CanonicalRankAtoms
 
 from experiments.data import MoleculeSet
+from sieve.io.rdkit_adapter import WITHIN_N_SUFFIX, WITHIN_SSE_SUFFIX
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +300,9 @@ def collapse_molecule_set(
     ``weight_by_collapse`` repeats each representative ``n_collapsed`` times,
     reproducing the uncollapsed, atom-weighted fit. It exists for the
     migration check and is not the recommended setting.
+
+    Each atom also carries ``<atom_property>__within_sse`` and ``__within_n``,
+    the scatter the averaging removed (within-structure-variance spec 3.1).
     """
     keys = mset.ids.get("collapse_key")
     if keys is None:
@@ -325,12 +329,26 @@ def collapse_molecule_set(
         # orbit: atoms of one orbit are the same atom to every arm, so they
         # get one target, and no pairing of them can change it.
         target = orbit_means(aligned, orbit)
+        # What the averaging removes, kept beside the target so the fit can
+        # add it back to the predictive variance (within-structure-variance
+        # spec 3.1): each atom's squared deviations from that mean, summed over
+        # the members. Summed over atoms and keys this is floor_components'
+        # `sse`, and the member counts sum to its `n_atoms`.
+        sse = ((aligned - target) ** 2).sum(axis=0)
+        # A weighted collapse repeats the representative, so each copy carries
+        # its share and the sums stay the same.
+        repeats = len(members) if weight_by_collapse else 1
+        n_share = len(members) / repeats
 
         rep_i = members[0]
         rep = Chem.Mol(mset.mols[rep_i])
         for atom_idx, value in enumerate(target):
-            rep.GetAtomWithIdx(atom_idx).SetDoubleProp(mset.atom_property, float(value))
-        repeats = len(members) if weight_by_collapse else 1
+            atom = rep.GetAtomWithIdx(atom_idx)
+            atom.SetDoubleProp(mset.atom_property, float(value))
+            atom.SetDoubleProp(
+                mset.atom_property + WITHIN_SSE_SUFFIX, float(sse[atom_idx]) / repeats
+            )
+            atom.SetDoubleProp(mset.atom_property + WITHIN_N_SUFFIX, n_share)
         for _ in range(repeats):
             mols.append(rep)
             for name in mset.ids:

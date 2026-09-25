@@ -892,6 +892,8 @@ def truncate_model(model: Any, depth: int) -> Any:
         model.global_count,
         model.global_mean,
         model.global_msd,
+        model.within_sse,
+        model.within_n,
     )
 
 
@@ -997,6 +999,68 @@ def _floors_for(
         if all(sid in cache for sid in held_out_shards):
             return floors_from_components(cache[sid] for sid in held_out_shards)
     return held_out_floors(held_out)
+
+
+def _with_training_floor(
+    model: Any,
+    store: str,
+    train_shards: Sequence[str],
+    *,
+    stores_root: Path | None = None,
+) -> Any:
+    """The fold model with its training shards' pooled within-structure sums.
+
+    Cached fold models were fitted before collapse carried these sums
+    (within-structure-variance spec 3.4); the floor cache holds exactly the
+    same sums per shard -- the same deviations from the same orbit means -- so
+    no refit is needed. A model that already carries sums keeps its own. When
+    the cache is absent or misses a training shard, the model is returned
+    unchanged (sigma2_w = 0) with a warning, rather than with a partial sum.
+    """
+    if model.within_n > 0:
+        return model
+    path = floor_cache_path(store, stores_root=stores_root)
+    cache = json.loads(path.read_text()) if path.exists() else {}
+    missing = [s for s in train_shards if s not in cache]
+    if missing:
+        logger.warning(
+            "no floor-cache entry for training shard(s) %s of %s; the fold "
+            "model's predictive variance omits the within-structure term",
+            missing,
+            store,
+        )
+        return model
+    sse = sum(float(cache[s]["sse"]) for s in train_shards)
+    n = sum(float(cache[s]["n_atoms"]) for s in train_shards)
+    return model.with_within_structure(sse, n)
+
+
+def _attach_training_floors(
+    train_models: Sequence[Any],
+    plan: Any,
+    store: str,
+    *,
+    collapse: bool,
+    stores_root: Path | None = None,
+) -> list[Any]:
+    """Every fold model, given its training shards' within-structure sums
+    (``_with_training_floor``) -- but only for collapsed fits.
+
+    An uncollapsed fit trained on every conformer, so each class's own spread
+    already holds the scatter these sums describe; adding sigma2_w on top would
+    count it twice.
+    """
+    if not collapse:
+        return list(train_models)
+    return [
+        _with_training_floor(
+            m,
+            store,
+            [s for g in _other_groups(plan, f) for s in g],
+            stores_root=stores_root,
+        )
+        for f, m in enumerate(train_models)
+    ]
 
 
 def _collapse_for_train_scoring(train_set: MoleculeSet, collapse: bool) -> MoleculeSet:
@@ -1747,6 +1811,10 @@ def run_sieve_cv(
                     save_one=lambda m, path: m.save(path),
                     sidecar_extra=sidecar,
                 )
+        # After the cache is written, so cached files stay as they were.
+        train_models = _attach_training_floors(
+            train_models, plan, store, collapse=collapse, stores_root=stores_root
+        )
 
         for fold, group in enumerate(plan.groups):
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])

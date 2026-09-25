@@ -274,6 +274,16 @@ def merge_level(
     )
 
 
+def _merge_within(a, b) -> tuple[np.ndarray | None, float]:
+    """The within-structure sums add; a side without them counts as zero."""
+    if a.within_sse is None and b.within_sse is None:
+        return None, 0.0
+    d = a.config.target_dim
+    sa = np.zeros(d) if a.within_sse is None else a.within_sse
+    sb = np.zeros(d) if b.within_sse is None else b.within_sse
+    return sa + sb, float(a.within_n) + float(b.within_n)
+
+
 def merge_models(a, b):
     """Merge two fitted models (design.md 5)."""
     from sieve.model import SieveModel
@@ -302,15 +312,18 @@ def merge_models(a, b):
         levels.append(lvl)
         remaps.append(remap)
 
+    within_sse, within_n = _merge_within(a, b)
     nA, nB = float(a.global_count), float(b.global_count)
     n = nA + nB
     if n == 0:
-        return SieveModel(cfg, tuple(levels), 0, a.global_mean, a.global_msd)
+        return SieveModel(
+            cfg, tuple(levels), 0, a.global_mean, a.global_msd, within_sse, within_n
+        )
     wA, wB = nA / n, nB / n
     delta = b.global_mean - a.global_mean
     g_msd = wA * a.global_msd + wB * b.global_msd + wA * wB * delta * delta
     g_mean = wA * a.global_mean + wB * b.global_mean
-    return SieveModel(cfg, tuple(levels), int(n), g_mean, g_msd)
+    return SieveModel(cfg, tuple(levels), int(n), g_mean, g_msd, within_sse, within_n)
 
 
 def fold(models, config: SieveConfig):

@@ -165,6 +165,27 @@ def _build_config(
     )
 
 
+def _carries_within(mols: list[Any], atom_property: str) -> bool:
+    """Whether ``mols`` came out of collapse, which attaches the
+    within-structure companions to every atom (collapse_molecule_set).
+
+    Every molecule is checked, and a set that carries them on some molecules
+    only is refused: fitting it would give a partial sigma2_w, or none at all
+    if the first molecule happens to lack them.
+    """
+    from sieve.io.rdkit_adapter import WITHIN_SSE_SUFFIX
+
+    prop = atom_property + WITHIN_SSE_SUFFIX
+    has = [any(a.HasProp(prop) for a in m.GetAtoms()) for m in mols]
+    if any(has) and not all(has):
+        raise ValueError(
+            f"{sum(has)} of {len(has)} training molecules carry within-structure "
+            f"statistics ({prop}); a training set must be collapsed as a whole "
+            "or not at all"
+        )
+    return bool(has) and all(has)
+
+
 def _batch_for(
     mols: list[Any],
     config: Any,
@@ -175,13 +196,19 @@ def _batch_for(
 ) -> Any:
     """Build a ``NodeBatch`` for ``mols`` under an already-fitted
     ``config``. ``node_order`` is left ``None``: each ``Mol``'s own atom
-    order is already this series' canonical order."""
+    order is already this series' canonical order.
+
+    A collapsed training set also hands over its within-structure sums; a
+    set that carries them on some molecules only is refused
+    (``_carries_within``)."""
     from sieve.io.rdkit_adapter import from_rdkit
 
+    within = with_target and _carries_within(mols, atom_property)
     return from_rdkit(
         mols,
         config=config,
         y_from_atom_prop=atom_property if with_target else None,
+        within_from_atom_prop=atom_property if within else None,
         n_jobs=n_jobs,
     )
 

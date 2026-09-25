@@ -6,7 +6,7 @@ $N = 1$ and can be a sampling-artefact zero when a class's members happen to
 agree, which design.md 6.4 would then read as a delta-function likelihood and
 *pin* the node. This module supplies the quantity 6.4 actually needs.
 
-Three terms, each with a distinct reason to exist:
+Four terms, each with a distinct reason to exist:
 
 .. math::
 
@@ -16,6 +16,7 @@ Three terms, each with a distinct reason to exist:
     + a \underbrace{\frac{(C_c-1)\tau^2_c + \alpha^t \hat\tau^2_k}
                          {(C_c-1) + \alpha^t}}_{\text{selection}}
     + \underbrace{\hat\tau^2_{\mathrm{pa}(k)}(1 - w_c)}_{\text{mean estimation}}
+    + \underbrace{\sigma^2_w}_{\text{within structure}}
 
 **within-class** is the class's own spread, pooled toward its level's average
 with degrees of freedom $N-1$. Raw $s^2$ is unusable, not merely noisy:
@@ -39,6 +40,15 @@ $\tau^2(1-w) = \sigma^2/(N+\alpha)$. Note this is *smaller* than the naive
 $\sigma^2/N$ -- shrinkage makes the mean more certain, not less -- so it is
 not, and never was, the fix for low-support miscalibration.
 
+**within structure** is the scatter collapse removed from the fit: the
+expected squared deviation of one conformer's charge from its structure's
+mean over conformers and symmetry-equivalent atoms
+(``SieveModel.within_variance``). Training classes hold one row per structure,
+so none of the three terms above can see it, while every held-out atom is an
+individual conformer and carries it. Without it the variance was five times
+overconfident at the deepest radius (within-structure-variance spec 1). Zero
+for a model that carries no within-structure statistics.
+
 Derived on demand and never stored, like ``shrinkage.shrunk_means`` and
 ``continuation.class_means``, and for the same reason: every value depends on
 its full ancestor chain, so one added node would invalidate essentially all of
@@ -61,17 +71,19 @@ from sieve.continuation import (
 from sieve.level import class_kinds
 from sieve.shrinkage import empirical_bayes_weights
 
-# Selected on the val split of dash-molecules-10fold-1 by Gaussian NLL over a
-# 200-point grid, then reported on test: the val pick reaches the best
-# achievable *test* NLL to four decimals (gap +0.0000), so honest selection
-# costs nothing here.
+# ALPHA_T and SELECTION_WEIGHT were selected on the val split of
+# dash-molecules-10fold-1 by Gaussian NLL over a 200-point grid. ALPHA_V was
+# re-selected on 2026-09-25, with the within-structure term in place, by
+# rotating over the five folds of the Study B incumbent's repeat 0 (chosen on
+# four, scored on the fifth): 10 in every fold, by both NLL and normalised
+# RMSE, against the earlier 30 (within-structure-variance spec 1).
 #
 # Deliberately module constants rather than SieveConfig fields. The objective
-# is flat -- the top twelve grid points span 0.004 in NLL and 0.006 in
-# within-molecule ranking -- so exposing them as knobs would invite tuning
-# that the measurement says cannot pay. They are named, not magic, and a
-# caller who genuinely needs to sweep can pass them to `predictive_variance`.
-ALPHA_V = 30.0  # within-class shrinkage toward the level-pooled variance
+# is flat -- the gain of 10 over 30 is 0.006 in NLL -- so exposing them as
+# knobs would invite tuning that the measurement says cannot pay. They are
+# named, not magic, and a caller who genuinely needs to sweep can pass them to
+# `predictive_variance`.
+ALPHA_V = 10.0  # within-class shrinkage toward the level-pooled variance
 ALPHA_T = 1.0  # per-class sibling variance shrinkage toward the pooled one
 SELECTION_WEIGHT = 0.5  # coefficient `a` on the selection term
 
@@ -111,6 +123,8 @@ def predictive_variance(
     root = root_variance(model)
     tau_aware = aware_variance(model)
 
+    sigma2_w = model.within_variance
+
     out: list[np.ndarray] = []
     for k, lvl in enumerate(model.levels):
         n = lvl.count[:, None].astype(np.float64)
@@ -147,5 +161,5 @@ def predictive_variance(
             t = tau_aware[k] if np.isfinite(tau_aware[k]) else 0.0
             estimation[only] = t * (1.0 - weights[k][only][:, None])
 
-        out.append(within + selection_weight * selection + estimation)
+        out.append(within + selection_weight * selection + estimation + sigma2_w)
     return out

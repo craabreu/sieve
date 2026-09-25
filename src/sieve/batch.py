@@ -41,12 +41,18 @@ class NodeBatch:
     elements: np.ndarray | None = None  # (n_nodes,) int64, for the alignment guard
     stereo_bonds: np.ndarray | None = None  # (n_stereo, 7) int64
     stereo_centres: np.ndarray | None = None  # (n_centres, 6) int64
+    # Within-structure statistics (within-structure-variance spec 3.2): each
+    # node's summed squared deviation from its structure's orbit mean, and the
+    # number of conformers summed over. Set by collapse, read by fit.
+    within_sse: np.ndarray | None = None  # (n_nodes, d) float64
+    within_n: np.ndarray | None = None  # (n_nodes,) float64
 
     def __post_init__(self) -> None:
         self._check_shapes()
         self._check_edges()
         self._check_stereo_bonds()
         self._check_stereo_centres()
+        self._check_within()
 
     def _check_shapes(self) -> None:
         n = self.node_attrs.shape[0]
@@ -64,6 +70,32 @@ class NodeBatch:
             )
         if self.y is not None and self.y.shape[0] != n:
             raise ValueError(f"y must have {n} rows, got {self.y.shape[0]}")
+        if (self.within_sse is None) != (self.within_n is None):
+            raise ValueError("within_sse and within_n must be set together")
+        if self.within_sse is not None and self.within_n is not None:
+            if self.within_sse.ndim != 2 or self.within_sse.shape[0] != n:
+                raise ValueError(
+                    f"within_sse must have shape ({n}, d), got {self.within_sse.shape}"
+                )
+            if self.y is not None and self.within_sse.shape[1] != self.y.shape[1]:
+                raise ValueError("within_sse must have as many columns as y")
+            if self.within_n.shape != (n,):
+                raise ValueError(
+                    f"within_n must have shape ({n},), got {self.within_n.shape}"
+                )
+
+    def _check_within(self) -> None:
+        """The within-structure sums are finite, non-negative, and a positive
+        SSE has at least one member behind it."""
+        if self.within_sse is None or self.within_n is None:
+            return
+        finite = np.isfinite(self.within_sse).all() and np.isfinite(self.within_n).all()
+        if not finite:
+            raise ValueError("within_sse and within_n must be finite")
+        if (self.within_sse < 0).any() or (self.within_n < 0).any():
+            raise ValueError("within_sse and within_n must be non-negative")
+        if ((self.within_sse > 0).any(axis=1) & (self.within_n < 1)).any():
+            raise ValueError("a positive within_sse needs within_n >= 1")
 
     def _check_edges(self) -> None:
         """Endpoints are in range, and every edge carries its reverse.
@@ -324,6 +356,8 @@ class NodeBatch:
             elements=None if self.elements is None else self.elements[sel],
             stereo_bonds=stereo_bonds,
             stereo_centres=stereo_centres,
+            within_sse=None if self.within_sse is None else self.within_sse[sel],
+            within_n=None if self.within_n is None else self.within_n[sel],
         )
 
     def csr(self) -> CSRLayout:
@@ -391,6 +425,10 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
     has_stereo_centres = {p.stereo_centres is not None for p in parts}
     if len(has_stereo_centres) > 1:
         raise ValueError("stereo_centres is set on some but not all parts")
+    within_sse_parts = [p.within_sse for p in parts if p.within_sse is not None]
+    within_n_parts = [p.within_n for p in parts if p.within_n is not None]
+    if 0 < len(within_sse_parts) < len(parts):
+        raise ValueError("within_sse is set on some but not all parts")
 
     node_attrs = np.concatenate([p.node_attrs for p in parts], axis=0)
     y = np.concatenate([p.y for p in parts], axis=0) if has_y == {True} else None
@@ -454,6 +492,10 @@ def concat_batches(parts: list[NodeBatch]) -> NodeBatch:
             if has_stereo_centres == {True}
             else None
         ),
+        within_sse=(
+            np.concatenate(within_sse_parts, axis=0) if within_sse_parts else None
+        ),
+        within_n=np.concatenate(within_n_parts) if within_n_parts else None,
     )
 
 

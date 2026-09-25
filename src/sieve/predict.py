@@ -229,10 +229,13 @@ def _search(model, batch: NodeBatch, loo_y: np.ndarray | None = None) -> Predict
         from sieve.uncertainty import predictive_variance
 
         # global_msd for a node that matched nothing: there is no class row to
-        # index, exactly as `value` falls back to global_mean. Every matched
-        # node gets a finite, strictly positive entry from the table itself.
+        # index, exactly as `value` falls back to global_mean. The
+        # within-structure variance is added here as it is to every class
+        # (uncertainty.py), since an unmatched conformer carries it too. Every
+        # matched node gets a finite, strictly positive entry from the table.
         table = predictive_variance(model)
-        pred_var = np.broadcast_to(model.global_msd, (n, d)).astype(np.float64).copy()
+        fallback = model.global_msd + model.within_variance
+        pred_var = np.broadcast_to(fallback, (n, d)).astype(np.float64).copy()
         for k in backoff_path:
             sel = matched == k
             if sel.any():

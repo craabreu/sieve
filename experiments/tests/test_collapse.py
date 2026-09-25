@@ -766,3 +766,79 @@ def _floor_set_of(mols):
             "conf_id": ["c0"] * len(mols),
         },
     )
+
+
+# --------------------------------------------------------------------------
+# Within-structure statistics carried by the collapsed molecules
+# --------------------------------------------------------------------------
+
+
+def _within_sums(mset):
+    import numpy as np
+
+    from sieve.io.rdkit_adapter import WITHIN_N_SUFFIX, WITHIN_SSE_SUFFIX
+
+    sse = n = 0.0
+    for m in mset.mols:
+        for a in m.GetAtoms():
+            sse += a.GetDoubleProp(mset.atom_property + WITHIN_SSE_SUFFIX)
+            n += a.GetDoubleProp(mset.atom_property + WITHIN_N_SUFFIX)
+    return np.float64(sse), np.float64(n)
+
+
+def _multi_conformer_set():
+    """Two conformers of ethanol that disagree, a lone propane whose symmetric
+    methyl carbons disagree (orbit scatter in a group of one), and a lone
+    methanol with no scatter at all."""
+    return _floor_set_of(
+        [
+            _charged("CCO", {0: 1.0, 1: 2.0, 2: 3.0}),
+            _charged("CCO", {0: 3.0, 1: 4.0, 2: 5.0}),
+            _charged("CCC", {0: 1.0, 1: 0.5, 2: 2.0}),
+            _charged("CO", {0: 0.3, 1: -0.3}),
+        ]
+    )
+
+
+def _keyed_like(mset):
+    """_floor_set_of numbers every row as its own dash_id; the two ethanols
+    must share a collapse key for the test to mean anything."""
+    keys = mset.ids["collapse_key"]
+    assert keys[0] == keys[1]
+    return mset
+
+
+def test_collapse_attaches_sums_equal_to_the_floor_components():
+    from experiments.collapse import collapse_molecule_set, floor_components
+
+    mset = _keyed_like(_multi_conformer_set())
+    sse, n = _within_sums(collapse_molecule_set(mset))
+    parts = floor_components(mset)
+    assert parts["sse"] > 0.0  # or the test is vacuous
+    assert sse == pytest.approx(parts["sse"], rel=1e-12)
+    assert n == pytest.approx(parts["n_atoms"], rel=1e-12)
+
+
+def test_weight_by_collapse_leaves_the_sums_unchanged():
+    from experiments.collapse import collapse_molecule_set
+
+    mset = _keyed_like(_multi_conformer_set())
+    plain = _within_sums(collapse_molecule_set(mset))
+    weighted = _within_sums(collapse_molecule_set(mset, weight_by_collapse=True))
+    assert weighted[0] == pytest.approx(plain[0], rel=1e-12)
+    assert weighted[1] == pytest.approx(plain[1], rel=1e-12)
+
+
+def test_a_collapsed_atom_carries_its_own_deviations():
+    """Ethanol's C0 is 1 and 3 in the two conformers: mean 2, SSE 2, two members."""
+    from experiments.collapse import collapse_molecule_set
+
+    from sieve.io.rdkit_adapter import WITHIN_N_SUFFIX, WITHIN_SSE_SUFFIX
+
+    mset = _keyed_like(_multi_conformer_set())
+    out = collapse_molecule_set(mset)
+    ethanol = next(m for m in out.mols if m.GetNumAtoms() == 9)
+    heavy = [ethanol.GetAtomWithIdx(i) for i in range(3)]
+    sse = sorted(a.GetDoubleProp("MBIScharge" + WITHIN_SSE_SUFFIX) for a in heavy)
+    assert sse == pytest.approx([2.0, 2.0, 2.0])
+    assert all(a.GetDoubleProp("MBIScharge" + WITHIN_N_SUFFIX) == 2.0 for a in heavy)
