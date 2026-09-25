@@ -297,3 +297,67 @@ def test_available_under_either_class_estimator(estimator):
     out = sieve.predict_detailed(sieve.fit(batch, cfg), batch)
     assert out.predictive_variance is not None  # set whenever the flag is on
     assert np.all(np.isfinite(out.predictive_variance))
+
+
+# ------------------------------------------------------------ the terms --
+
+
+def _terms_models():
+    """A plain model, and the same with sigma2_w."""
+    m = sieve.fit(_structured_batch(graphs=5, n=10), simple_config(max_wl_depth=3))
+    return [m, m.with_within_structure(3.0e-3, 30)]
+
+
+@pytest.mark.parametrize("which", [0, 1])
+def test_predictive_variance_is_the_weighted_sum_of_its_terms(which):
+    from sieve.uncertainty import variance_terms
+
+    m = _terms_models()[which]
+    for alpha_v, a in ((ALPHA_V, SELECTION_WEIGHT), (30.0, 0.0), (3.0, 1.0)):
+        terms = variance_terms(m, alpha_v=alpha_v)
+        total = predictive_variance(m, alpha_v=alpha_v, selection_weight=a)
+        assert len(terms) == len(total) == len(m.levels)
+        for t, p in zip(terms, total, strict=True):
+            assert set(t) == {"within", "selection", "estimation", "within_structure"}
+            np.testing.assert_array_equal(
+                t["within"]
+                + a * t["selection"]
+                + t["estimation"]
+                + t["within_structure"],
+                p,
+            )
+
+
+def test_within_structure_term_is_the_pooled_sigma2_w():
+    from sieve.uncertainty import variance_terms
+
+    plain, with_w = _terms_models()
+    for t in variance_terms(plain):
+        np.testing.assert_array_equal(t["within_structure"], np.zeros(1))
+    for t in variance_terms(with_w):
+        np.testing.assert_allclose(t["within_structure"], [1.0e-4])
+
+
+def test_variance_terms_under_a_stereo_track():
+    pytest.importorskip("rdkit")
+    import dataclasses
+
+    from rdkit import Chem
+
+    from sieve.io.rdkit_adapter import from_rdkit
+    from sieve.uncertainty import variance_terms
+
+    smiles = ["C/C=C/C", r"C/C=C\C", "C/C=C/CC", r"C/C=C\CC", "CCCC"]
+    mols = [Chem.MolFromSmiles(s) for s in smiles]
+    cfg = simple_config(stereo=("cis_trans",), max_wl_depth=3)
+    b = from_rdkit(mols, config=cfg)
+    b = dataclasses.replace(b, y=np.random.default_rng(0).normal(size=(b.n_nodes, 1)))
+    m = sieve.fit(b, cfg)
+    for t, p in zip(variance_terms(m), predictive_variance(m), strict=True):
+        np.testing.assert_array_equal(
+            t["within"]
+            + SELECTION_WEIGHT * t["selection"]
+            + t["estimation"]
+            + t["within_structure"],
+            p,
+        )
