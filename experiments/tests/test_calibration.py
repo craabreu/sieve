@@ -368,3 +368,114 @@ def test_aggregate_merges_the_calibration_sidecar_and_refuses_a_clash(scored_cv)
     (runs[0] / METRICS_FILE).write_text(json.dumps(d))
     with pytest.raises(ValueError, match="repeats"):
         read_runs_from_dirs(scored_cv["runs_root"], "sieve-cv")
+
+
+# ---------------------------------------------------------------- report --
+
+
+def _fake_runs(tmp_path, n_repeats=2, k=5, seed=0):
+    """Hand-written runs: a manifest, metrics.json and a calibration sidecar."""
+    import json
+
+    from experiments.calibration import ARMS, METRICS_FILE
+
+    rng = np.random.default_rng(seed)
+    root = tmp_path / "runs"
+    for r in range(n_repeats):
+        for f in range(k):
+            run = root / "exp" / f"r{r}-f{f}"
+            run.mkdir(parents=True)
+            cv = {"method": "m", "depth": 2, "repeat": r, "fold": f}
+            (run / "manifest.json").write_text(json.dumps({"config": {"cv": cv}}))
+            (run / "metrics.json").write_text(json.dumps({"rmse": 0.02, "mae": 0.01}))
+            side = {
+                "calibration/n_atoms": 100.0,
+                "calibration/sigma2_w": 1e-4,
+                "calibration/share_k1": 0.4,
+                "calibration/share_k2": 0.6,
+                "calibration/equal/norm_rmse": 0.0196 + 1e-5 * rng.normal(),
+                "calibration/equal/norm_mae": 0.0109,
+            }
+            for i, arm in enumerate(ARMS):
+                for key in (
+                    "nll",
+                    "ez2",
+                    "cov50",
+                    "cov90",
+                    "cov95",
+                    "cov99",
+                    "rho",
+                    "norm_rmse",
+                    "norm_mae",
+                    "ez2_k1",
+                    "ez2_k2",
+                ):
+                    side[f"calibration/{arm.name}/{key}"] = (
+                        1.0 + 0.01 * i + 1e-3 * rng.normal()
+                    )
+            (run / METRICS_FILE).write_text(json.dumps(side))
+    return root
+
+
+def test_the_report_has_its_blocks_and_is_deterministic(tmp_path):
+    from experiments.calibration import calibration_report
+
+    root = _fake_runs(tmp_path)
+    kw = {"experiment": "exp", "method": "m", "depth": 2, "k": 5}
+    a = calibration_report(root, **kw)
+    assert a == calibration_report(root, **kw)
+    for heading in (
+        "means over all 10 samples",
+        "E[z^2] by matched radius",
+        "paired differences, all 10 samples",
+        "paired differences, repeats 1-",
+    ):
+        assert heading in a
+    for arm in ("form_b", "no_sigma2_w", "alpha_v_30", "no_selection", "no_estimation"):
+        assert arm in a
+    assert "no_sigma2_w at alpha_v = 30" in a
+
+
+def test_the_report_s_differences_are_paired_difference_s(tmp_path):
+    import json
+
+    from experiments.calibration import METRICS_FILE, calibration_report, selected_runs
+    from experiments.stereo_subsets import paired_difference
+
+    root = _fake_runs(tmp_path)
+    runs = selected_runs(root, experiment="exp", method="m", depth=2)
+    sides = [json.loads((r / METRICS_FILE).read_text()) for r in runs]
+    a = np.array([s["calibration/form_b/nll"] for s in sides])
+    b = np.array([s["calibration/alpha_v_30/nll"] for s in sides])
+    d = paired_difference(a, b, k=5)
+    text = calibration_report(root, experiment="exp", method="m", depth=2, k=5)
+    assert f"{d.mean:+.2e}" in text and f"[{d.lo:+.2e}, {d.hi:+.2e}]" in text
+
+
+def test_score_calibration_check_is_scoped_by_repeats(scored_cv, monkeypatch):
+    from experiments import cli
+
+    monkeypatch.setattr(cli, "DEFAULT_RUNS_ROOT", scored_cv["runs_root"])
+    monkeypatch.setattr(cli, "DEFAULT_STORES_ROOT", scored_cv["stores_root"])
+    base = [
+        "score-calibration",
+        scored_cv["store"],
+        "--experiment",
+        "sieve-cv",
+        "--method",
+        scored_cv["method"],
+        "--depth",
+        "1",
+        "--k",
+        str(scored_cv["k"]),
+        "--n-shards",
+        str(scored_cv["n_shards"]),
+        "--config-label",
+        scored_cv["config_label"],
+        "--fit-depth",
+        "1",
+    ]
+    assert cli.main([*base, "--check"]) == 1  # unscored, and nothing written
+    assert cli.main([*base, "--check", "--repeats", "3"]) == 0  # no runs in repeat 3
+    assert cli.main(base) == 0
+    assert cli.main([*base, "--check"]) == 0

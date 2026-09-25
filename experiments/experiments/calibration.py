@@ -366,3 +366,137 @@ def score_runs(
             )
             written.append(run)
     return written
+
+
+# -------------------------------------------------------------- report ---
+
+_MEAN_COLS = (
+    "nll",
+    "ez2",
+    "cov50",
+    "cov90",
+    "cov95",
+    "cov99",
+    "rho",
+    "norm_rmse",
+    "norm_mae",
+)
+_DIFF_METRICS = ("nll", "norm_rmse", "norm_mae")
+
+
+def _fmt(metric: str, v: float) -> str:
+    return f"{v:10.6f}" if metric.startswith("norm_") else f"{v:10.4f}"
+
+
+def calibration_report(
+    runs_root, *, experiment: str, method: str, depth: int, k: int
+) -> str:
+    """Study F's report (spec section 4), from the selected runs' sidecars."""
+    import json
+
+    from experiments.stereo_subsets import paired_difference
+
+    runs = selected_runs(runs_root, experiment=experiment, method=method, depth=depth)
+    missing = [r for r in runs if not (r / METRICS_FILE).exists()]
+    if not runs or missing:
+        raise FileNotFoundError(f"unscored runs: {missing or 'none selected'}")
+    sides = [json.loads((r / METRICS_FILE).read_text()) for r in runs]
+    own = [json.loads((r / "metrics.json").read_text()) for r in runs]
+    repeat = np.array([int(_cv(r)["repeat"]) for r in runs])
+    n = len(runs)
+
+    def col(key: str, rows=None) -> np.ndarray:
+        rows = range(n) if rows is None else rows
+        return np.array([sides[i][key] for i in rows], np.float64)
+
+    s2w = col(f"{PREFIX}/sigma2_w")
+    lines = [
+        "Study F: calibration of Sieve's predictive variance",
+        f"samples: {experiment} / {method} at depth {depth}, n = {n} "
+        f"(repeats {repeat.min()}-{repeat.max()} x {k} folds); "
+        f"pooled sigma2_w {s2w.min():.4e}..{s2w.max():.4e}",
+        "the old three-term variance is no_sigma2_w at alpha_v = 30 "
+        "(within-structure-variance spec, section 1)",
+        "",
+        f"== means over all {n} samples ==",
+        f"{'arm':<16}" + "".join(f"{c:>10}" for c in _MEAN_COLS),
+    ]
+    for arm in ARMS:
+        lines.append(
+            f"{arm.name:<16}"
+            + "".join(
+                _fmt(c, col(f"{PREFIX}/{arm.name}/{c}").mean()) for c in _MEAN_COLS
+            )
+        )
+    pad = " " * 10 * (len(_MEAN_COLS) - 2)
+    lines.append(
+        f"{'equal weights':<16}{pad}"
+        + _fmt("norm_rmse", col(f"{PREFIX}/equal/norm_rmse").mean())
+        + _fmt("norm_mae", col(f"{PREFIX}/equal/norm_mae").mean())
+    )
+    lines.append(
+        f"{'unnormalised':<16}{pad}"
+        + _fmt("norm_rmse", float(np.mean([o["rmse"] for o in own])))
+        + _fmt("norm_mae", float(np.mean([o["mae"] for o in own])))
+    )
+
+    radii = [
+        r
+        for r in range(-1, depth + 1)
+        if all(f"{PREFIX}/share_k{r}" in s for s in sides)
+    ]
+    lines += [
+        "",
+        "== E[z^2] by matched radius k* (k* = -1: unmatched) ==",
+        f"{'':<16}" + "".join(f"{'k' + str(r):>10}" for r in radii),
+    ]
+    lines.append(
+        f"{'atom share':<16}"
+        + "".join(_fmt("x", col(f"{PREFIX}/share_k{r}").mean()) for r in radii)
+    )
+    for arm in ARMS:
+        cells = []
+        for r in radii:
+            key = f"{PREFIX}/{arm.name}/ez2_k{r}"
+            cells.append(
+                _fmt("x", col(key).mean())
+                if all(key in s for s in sides)
+                else f"{'-':>10}"
+            )
+        lines.append(f"{arm.name:<16}" + "".join(cells))
+
+    def diff_block(title: str, rows) -> list[str]:
+        out = [
+            "",
+            f"== {title} ==",
+            f"{'comparison':<28} {'metric':<10} {'change':>11} "
+            f"{'95% CI (NB-corrected)':>26} {'rel.':>7} {'lower':>7}",
+        ]
+        base = f"{PREFIX}/form_b/"
+        for arm in ARMS[1:]:
+            for m in _DIFF_METRICS:
+                a, b = col(base + m, rows), col(f"{PREFIX}/{arm.name}/{m}", rows)
+                out.append(_diff_line(f"{arm.name} - form_b", m, a, b, k))
+        for m in ("norm_rmse", "norm_mae"):
+            a, b = col(f"{PREFIX}/equal/{m}", rows), col(base + m, rows)
+            out.append(_diff_line("form_b - equal", m, a, b, k))
+        return out
+
+    def _diff_line(label, metric, a, b, k):
+        d = paired_difference(a, b, k=k)
+        ci = f"[{d.lo:+.2e}, {d.hi:+.2e}]"
+        rel = 100 * d.mean / abs(float(a.mean()))
+        return (
+            f"{label:<28} {metric:<10} {d.mean:>+11.2e} {ci:>26} "
+            f"{rel:>+6.2f}% {d.n_better:>3}/{d.n:<3}"
+        )
+
+    lines += diff_block(f"paired differences, all {n} samples", None)
+    later = [i for i in range(n) if repeat[i] > 0]
+    if len(later) > 1:
+        lines += diff_block(
+            f"paired differences, repeats 1-{repeat.max()} ({len(later)} samples; "
+            "alpha_v was tuned on repeat 0)",
+            later,
+        )
+    return "\n".join(lines) + "\n"
