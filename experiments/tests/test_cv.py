@@ -1505,3 +1505,23 @@ def test_training_floors_are_attached_only_to_collapsed_fits(tmp_path):
     )
     # fold 0 trains on s01, fold 1 on s00
     assert [m.within_n for m in collapsed] == [30.0, 10.0]
+
+
+def test_truncation_keeps_per_class_within_sums():
+    """Per-class within-structure sums (within-structure-variance spec 4)
+    ride on the levels, so a truncated model keeps them."""
+    import dataclasses
+
+    from experiments.cv import truncate_model
+
+    import sieve
+    from tests.helpers import chain_batch, simple_config
+
+    b = chain_batch(12, graphs=4)
+    b = dataclasses.replace(b, within_sse=np.abs(b.y), within_n=np.ones(b.n_nodes))
+    m = sieve.fit(b, simple_config(max_wl_depth=3))
+    t = truncate_model(m, 1)
+    assert len(t.levels) < len(m.levels)
+    for a, c in zip(t.levels, m.levels, strict=False):
+        assert a.within_sse is not None and c.within_sse is not None
+        np.testing.assert_array_equal(a.within_sse, c.within_sse)

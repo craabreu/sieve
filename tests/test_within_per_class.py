@@ -166,8 +166,9 @@ def test_merge_with_a_level_without_sums_keeps_the_other_side():
     for merged in (with_sums.merge(without), without.merge(with_sums)):
         for lvl in merged.levels:
             assert lvl.within_n is not None and lvl.within_sse is not None
-        total = sum(float(lvl.within_n.sum()) for lvl in merged.levels[:1])
-        assert total == pytest.approx(float(mask.sum()))
+        level0 = merged.levels[0]
+        assert level0.within_n is not None
+        assert float(level0.within_n.sum()) == pytest.approx(float(mask.sum()))
 
 
 def test_the_empty_model_keeps_per_class_sums_under_merge():
@@ -201,14 +202,6 @@ def test_a_file_without_per_class_sums_keeps_its_keys(tmp_path):
     m.save(path)
     assert not any("within" in f for f in np.load(path).files)
     assert all(lvl.within_sse is None for lvl in SieveModel.load(path).levels)
-
-
-def test_truncation_keeps_per_class_sums():
-    pytest.importorskip("experiments")
-    from experiments.cv import truncate_model
-
-    m = sieve.fit(_echo(chain_batch(12, graphs=4)), simple_config(max_wl_depth=3))
-    _assert_echoes_y(truncate_model(m, 1))
 
 
 # ----------------------------------------------------- predictive variance --
