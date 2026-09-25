@@ -1919,6 +1919,52 @@ run_study_e_report() {
 
 step study-e-report "study_e_report_is_up_to_date" -- run_study_e_report
 
+# ===========================================================================
+# Study F: calibration of Sieve's predictive variance
+# ===========================================================================
+#
+# docs/superpowers/specs/2026-09-25-study-f-calibration-design.md. Scores the
+# Study B incumbent's own runs -- no refits, no new runs: each run's fold model
+# is reloaded (SieveTrainModels, the assembly run_sieve_cv used), must
+# reproduce the run's saved predictions, and the shipped form B and four
+# ablations are scored from one prediction into a sidecar beside the run.
+STUDY_F_JOBS="${STUDY_F_JOBS:-5}"          # repeats scored in parallel
+STUDY_F_NJOBS="${STUDY_F_NJOBS:-4}"        # featurisation workers per repeat
+STUDY_F_REPORT="$FIGURES_DIR/study-f"
+STUDY_F_ARGS="--experiment $SIEVE_STUDY_B --method $SIEVE_METHOD \
+  --depth $SIEVE_SELECTED_DEPTH --k $K --n-shards $N_SHARDS \
+  --config-label $SIEVE_CONFIG_LABEL --fit-depth $SIEVE_MAX_DEPTH \
+  --n-jobs $STUDY_F_NJOBS $COLLAPSE_FLAG $MODEL_CACHE_FLAG"
+export STUDY_F_ARGS
+
+run_one_study_f_repeat() {
+  "$PYTHON" -m experiments score-calibration "$STORE" $STUDY_F_ARGS --repeats "$1"
+}
+export -f run_one_study_f_repeat
+
+dispatch_study_f_repeats() {
+  echo "$STUDY_B_REPEATS" | tr ',' '\n' \
+    | xargs -P "$STUDY_F_JOBS" -I{} bash -c 'run_one_study_f_repeat "$1"' -- {}
+}
+
+step study-f-scores \
+  "'$PYTHON' -m experiments score-calibration '$STORE' $STUDY_F_ARGS --check" -- \
+  dispatch_study_f_repeats
+
+study_f_report_is_up_to_date() {
+  [ -f "$STUDY_F_REPORT.txt" ] || return 1
+  [ -z "$(find "experiments/runs/$SIEVE_STUDY_B" -name calibration_metrics.json \
+            -newer "$STUDY_F_REPORT.txt" -print -quit)" ]
+}
+
+run_study_f_report() {
+  "$PYTHON" -m experiments calibration-report --experiment "$SIEVE_STUDY_B" \
+    --method "$SIEVE_METHOD" --depth "$SIEVE_SELECTED_DEPTH" --k "$K" \
+    --out "$STUDY_F_REPORT"
+}
+
+step study-f-report "study_f_report_is_up_to_date" -- run_study_f_report
+
 # --- final held-out evaluation ---------------------------------------------
 #
 # Once, at the end, outside both studies: merge every shard into one
