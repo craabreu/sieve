@@ -659,7 +659,7 @@ def _cmd_score_calibration(args: argparse.Namespace) -> int:
         k=args.k,
         config_label=args.config_label,
         fit_depth=args.fit_depth,
-        collapse=args.collapse,
+        collapse_override=True if args.collapse else None,
         model_cache=args.model_cache,
         stores_root=DEFAULT_STORES_ROOT,
         force=args.force,
@@ -1642,7 +1642,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_score_cal.add_argument(
         "--collapse",
         action="store_true",
-        help="the CV's own --collapse: attach training floors",
+        help="assert the runs were collapsed (read from each manifest either "
+        "way; a disagreement is refused)",
     )
     p_score_cal.add_argument("--model-cache", type=Path, default=None)
     p_score_cal.add_argument(

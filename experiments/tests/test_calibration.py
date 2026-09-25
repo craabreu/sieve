@@ -261,7 +261,6 @@ def _score(kw, **extra):
         k=kw["k"],
         config_label=kw["config_label"],
         fit_depth=1,
-        collapse=False,
         stores_root=kw["stores_root"],
         **extra,
     )
@@ -479,3 +478,36 @@ def test_score_calibration_check_is_scoped_by_repeats(scored_cv, monkeypatch):
     assert cli.main([*base, "--check", "--repeats", "3"]) == 0  # no runs in repeat 3
     assert cli.main(base) == 0
     assert cli.main([*base, "--check"]) == 0
+
+
+def _set_manifest_collapse(run, value):
+    import json
+
+    path = run / "manifest.json"
+    m = json.loads(path.read_text())
+    m["config"]["cv"]["collapse_train_scoring"] = value
+    path.write_text(json.dumps(m))
+
+
+def test_a_collapse_flag_that_disagrees_with_the_manifest_is_refused(scored_cv):
+    """Collapse is the CV's own (spec 2.1): a flag contradicting the manifest
+    would attach -- or omit -- sigma2_w wrongly (final review, Important 1)."""
+    with pytest.raises(ValueError, match="collapse"):
+        _score(scored_cv, collapse_override=True)
+
+
+def test_a_collapsed_run_without_a_training_floor_is_refused(scored_cv):
+    """A collapsed run must carry sigma2_w; without a floor-cache entry the
+    sidecar would silently score form_b as no_sigma2_w (final review,
+    Important 1)."""
+    from experiments.calibration import selected_runs
+
+    for run in selected_runs(
+        scored_cv["runs_root"],
+        experiment="sieve-cv",
+        method=scored_cv["method"],
+        depth=1,
+    ):
+        _set_manifest_collapse(run, True)
+    with pytest.raises(ValueError, match="sigma2_w"):
+        _score(scored_cv)

@@ -205,8 +205,27 @@ def missing_scores(runs_root, *, experiment, method, depth, repeats=None) -> lis
     return stale
 
 
+def _manifest_collapse(runs, override: bool | None) -> bool:
+    """The CV's own collapse for ``runs`` (one repeat), from their manifests."""
+    values = {bool(_cv(r).get("collapse_train_scoring", False)) for r in runs}
+    if len(values) != 1:
+        raise ValueError(f"runs of one repeat disagree on collapse: {runs}")
+    (collapse,) = values
+    if override is not None and override != collapse:
+        raise ValueError(
+            f"--collapse={override} disagrees with the runs' own collapse "
+            f"({collapse}, manifest config.cv.collapse_train_scoring)"
+        )
+    return collapse
+
+
 def score_run(
-    run, model: Any, held_out: Any, *, n_jobs: int | None = None
+    run,
+    model: Any,
+    held_out: Any,
+    *,
+    n_jobs: int | None = None,
+    collapse: bool = False,
 ) -> dict[str, float]:
     """One run's sidecar: ``model`` is the run's untruncated training model
     with its training floor attached, ``held_out`` the run's held-out set in
@@ -244,6 +263,14 @@ def score_run(
     raw = p.value[:, 0]
     if np.max(np.abs(raw - z["atom_target_pred"].ravel())) > 1e-12:
         raise ValueError(f"{run}: the fold model does not reproduce its predictions")
+    if collapse and m.within_n == 0:
+        # The mean predictions do not depend on sigma2_w, so the check above
+        # cannot catch this: without a training floor, form_b would silently
+        # score as no_sigma2_w, and the sidecar would then pass for fresh.
+        raise ValueError(
+            f"{run}: a collapsed run's model carries no sigma2_w; is the floor "
+            "cache missing its training shards? (experiments build-floor-cache)"
+        )
 
     target = z["atom_target_true"].ravel()
     num_atoms = np.asarray(z["num_atoms"], dtype=np.int64)
@@ -290,7 +317,7 @@ def score_runs(
     k: int,
     config_label: str,
     fit_depth: int,
-    collapse: bool,
+    collapse_override: bool | None = None,
     model_cache=None,
     stores_root=None,
     repeats=None,
@@ -300,7 +327,10 @@ def score_runs(
     """Write the sidecar of every selected run that needs one, and return
     those runs. Fold models come from ``SieveTrainModels``, the same assembly
     ``run_sieve_cv`` scored the runs with; training floors are attached as
-    ``run_sieve_cv`` does (``collapse`` must be the CV's own)."""
+    ``run_sieve_cv`` does, with collapse read from each run's own manifest
+    (spec section 2.1). ``collapse_override``, when given, must agree with it:
+    it exists so the workflow can state its assumption and have it checked,
+    not to change what is scored."""
     import json
 
     from experiments.cv import (
@@ -345,6 +375,7 @@ def score_runs(
     for run in todo:
         by_repeat.setdefault(int(_cv(run)["repeat"]), []).append(run)
     for repeat, runs in sorted(by_repeat.items()):
+        collapse = _manifest_collapse(runs, collapse_override)
         plan = build_cv_plan(ids, k=k, repeat=repeat)
         models = _attach_training_floors(
             train_models_for(repeat, plan),
@@ -360,7 +391,9 @@ def score_runs(
             if cv.get("held_out_shards") != ",".join(group):
                 raise ValueError(f"{run}: held_out_shards disagrees with the CV plan")
             held_out = concat_molecule_sets([mset_by_shard[s] for s in group])
-            scores = score_run(run, models[fold], held_out, n_jobs=n_jobs)
+            scores = score_run(
+                run, models[fold], held_out, n_jobs=n_jobs, collapse=collapse
+            )
             (run / METRICS_FILE).write_text(
                 json.dumps(scores, indent=1, sort_keys=True)
             )
