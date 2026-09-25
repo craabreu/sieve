@@ -230,3 +230,141 @@ def test_rho_is_one_when_sigma_orders_the_errors_exactly():
     e = np.abs(s["raw"] - s["target"])
     m = calibration_metrics(**{**s, "sigma2": e**2 + 1e-9})
     assert m["rho"] == pytest.approx(1.0, abs=1e-9)
+
+
+# --------------------------------------------------------- scoring runs --
+
+
+@pytest.fixture
+def scored_cv(tmp_path):
+    """A tiny Study-B-like CV experiment with saved predictions."""
+    pytest.importorskip("pandas")
+    from experiments.cv import run_sieve_cv
+
+    from experiments.tests.test_cv import _sieve_cv_kwargs
+
+    kw = _sieve_cv_kwargs(tmp_path)
+    run_sieve_cv(save_predictions=True, experiment="sieve-cv", **kw)
+    return kw
+
+
+def _score(kw, **extra):
+    from experiments.calibration import score_runs
+
+    return score_runs(
+        kw["runs_root"],
+        store=kw["store"],
+        experiment="sieve-cv",
+        method=kw["method"],
+        depth=1,
+        n_shards=kw["n_shards"],
+        k=kw["k"],
+        config_label=kw["config_label"],
+        fit_depth=1,
+        collapse=False,
+        stores_root=kw["stores_root"],
+        **extra,
+    )
+
+
+def test_every_run_gets_every_arm_s_keys(scored_cv):
+    import json
+
+    from experiments.calibration import ARMS, METRICS_FILE
+
+    written = _score(scored_cv)
+    assert len(written) == scored_cv["k"]
+    for run in written:
+        side = json.loads((run / METRICS_FILE).read_text())
+        for arm in ARMS:
+            for m in ("nll", "ez2", "cov95", "rho", "norm_rmse", "norm_mae"):
+                assert f"calibration/{arm.name}/{m}" in side
+        assert "calibration/equal/norm_rmse" in side
+        assert side["calibration/n_atoms"] > 0
+        assert sum(v for k, v in side.items() if "/share_k" in k) == pytest.approx(1.0)
+
+
+def test_missing_scores_reports_absent_stale_and_incomplete(scored_cv):
+    import json
+    import os
+
+    from experiments.calibration import METRICS_FILE, missing_scores
+
+    sel = {"experiment": "sieve-cv", "method": scored_cv["method"], "depth": 1}
+    root = scored_cv["runs_root"]
+    assert len(missing_scores(root, **sel)) == scored_cv["k"]  # absent
+    runs = _score(scored_cv)
+    assert missing_scores(root, **sel) == []
+    assert _score(scored_cv) == []  # nothing left to do
+    # stale: predictions newer than the sidecar
+    pred = runs[0] / "predictions.npz"
+    side = runs[0] / METRICS_FILE
+    os.utime(pred, (side.stat().st_mtime + 10, side.stat().st_mtime + 10))
+    # incomplete: an arm's keys missing
+    d = json.loads((runs[1] / METRICS_FILE).read_text())
+    (runs[1] / METRICS_FILE).write_text(
+        json.dumps({k: v for k, v in d.items() if "/no_estimation/" not in k})
+    )
+    assert set(missing_scores(root, **sel)) == {runs[0], runs[1]}
+
+
+def test_repeats_restrict_the_selection(scored_cv):
+    from experiments.calibration import selected_runs
+
+    sel = {"experiment": "sieve-cv", "method": scored_cv["method"], "depth": 1}
+    assert (
+        len(selected_runs(scored_cv["runs_root"], repeats=[0], **sel)) == scored_cv["k"]
+    )
+    assert selected_runs(scored_cv["runs_root"], repeats=[3], **sel) == []
+
+
+def test_a_run_whose_predictions_disagree_is_refused(scored_cv):
+    from experiments.calibration import selected_runs
+
+    run = selected_runs(
+        scored_cv["runs_root"],
+        experiment="sieve-cv",
+        method=scored_cv["method"],
+        depth=1,
+    )[0]
+    z = dict(np.load(run / "predictions.npz", allow_pickle=True))
+    z["atom_target_pred"] = z["atom_target_pred"] + 1e-6
+    np.savez(run / "predictions.npz", **z)
+    with pytest.raises(ValueError, match="does not reproduce"):
+        _score(scored_cv)
+
+
+def test_a_run_whose_ids_disagree_is_refused(scored_cv):
+    from experiments.calibration import selected_runs
+
+    run = selected_runs(
+        scored_cv["runs_root"],
+        experiment="sieve-cv",
+        method=scored_cv["method"],
+        depth=1,
+    )[0]
+    z = dict(np.load(run / "predictions.npz", allow_pickle=True))
+    # the synthetic store has no dash_id and few distinct conf_ids; its
+    # chembl_ids are distinct per molecule, so a reversal misaligns them
+    z["chembl_id"] = z["chembl_id"][::-1].copy()
+    before = np.load(run / "predictions.npz", allow_pickle=True)["chembl_id"]
+    assert (z["chembl_id"].astype(str) != before.astype(str)).any()
+    np.savez(run / "predictions.npz", **z)
+    with pytest.raises(ValueError, match="held-out order"):
+        _score(scored_cv)
+
+
+def test_aggregate_merges_the_calibration_sidecar_and_refuses_a_clash(scored_cv):
+    import json
+
+    from experiments.aggregate import read_runs_from_dirs
+    from experiments.calibration import METRICS_FILE
+
+    runs = _score(scored_cv)
+    rows = read_runs_from_dirs(scored_cv["runs_root"], "sieve-cv")
+    assert all("calibration/form_b/nll" in r.metrics for r in rows)
+    d = json.loads((runs[0] / METRICS_FILE).read_text())
+    d["rmse"] = 0.0  # clashes with metrics.json
+    (runs[0] / METRICS_FILE).write_text(json.dumps(d))
+    with pytest.raises(ValueError, match="repeats"):
+        read_runs_from_dirs(scored_cv["runs_root"], "sieve-cv")

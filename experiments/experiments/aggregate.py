@@ -134,16 +134,18 @@ def read_runs_from_dirs(runs_root: Path, experiment: str | None = None) -> list[
             json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
         )
         # Metrics scored after the run from its saved predictions (Study D's
-        # stereo subsets, experiments.stereo_subsets) live in a sidecar, so
-        # the run's own record is never rewritten. A key in both would make
-        # the run say two things, so it is refused rather than overwritten.
-        sidecar = run_dir / "subset_metrics.json"
-        if sidecar.exists():
-            extra = json.loads(sidecar.read_text())
-            clash = sorted(set(extra) & set(raw_metrics))
-            if clash:
-                raise ValueError(f"{sidecar} repeats metrics.json's {clash}")
-            raw_metrics = {**raw_metrics, **extra}
+        # stereo subsets, experiments.stereo_subsets; Study F's calibration,
+        # experiments.calibration) live in sidecars, so the run's own record
+        # is never rewritten. A key in two places would make the run say two
+        # things, so it is refused rather than overwritten.
+        for name in ("subset_metrics.json", "calibration_metrics.json"):
+            sidecar = run_dir / name
+            if sidecar.exists():
+                extra = json.loads(sidecar.read_text())
+                clash = sorted(set(extra) & set(raw_metrics))
+                if clash:
+                    raise ValueError(f"{sidecar} repeats metrics already read: {clash}")
+                raw_metrics = {**raw_metrics, **extra}
         manifest = json.loads(manifest_path.read_text())
         rows.append(
             RunRow(
