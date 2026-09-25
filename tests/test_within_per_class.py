@@ -133,3 +133,79 @@ def test_blind_class_sums_add_up_to_the_pooled_sums():
         blind = (class_kinds(lvl) & KIND_BLIND) > 0
         np.testing.assert_allclose(lvl.within_sse[blind].sum(axis=0), m.within_sse)
         assert lvl.within_n[blind].sum() == pytest.approx(m.within_n)
+
+
+# --------------------------------------------------------- merge and I/O --
+
+
+def test_merge_of_two_fits_echoes_y_like_the_fit_of_their_union():
+    b = _echo(chain_batch(12, graphs=6))
+    cfg = simple_config()
+    mask = b.graph_id < 3
+    merged = sieve.fit(split_batch(b, mask), cfg).merge(
+        sieve.fit(split_batch(b, ~mask), cfg)
+    )
+    _assert_echoes_y(merged)
+
+
+def test_stereo_merge_echoes_y():
+    batch, cfg = _stereo_batch(CHIRAL, ("cis_trans", "tetrahedral"))
+    mask = batch.graph_id < 3
+    merged = sieve.fit(split_batch(batch, mask), cfg).merge(
+        sieve.fit(split_batch(batch, ~mask), cfg)
+    )
+    _assert_echoes_y(merged)
+
+
+def test_merge_with_a_level_without_sums_keeps_the_other_side():
+    b = chain_batch(12, graphs=6)
+    cfg = simple_config()
+    mask = b.graph_id < 3
+    with_sums = sieve.fit(_echo(split_batch(b, mask)), cfg)
+    without = sieve.fit(split_batch(b, ~mask), cfg)
+    for merged in (with_sums.merge(without), without.merge(with_sums)):
+        for lvl in merged.levels:
+            assert lvl.within_n is not None and lvl.within_sse is not None
+        total = sum(float(lvl.within_n.sum()) for lvl in merged.levels[:1])
+        assert total == pytest.approx(float(mask.sum()))
+
+
+def test_the_empty_model_keeps_per_class_sums_under_merge():
+    from sieve.model import SieveModel
+
+    m = sieve.fit(_echo(chain_batch(12, graphs=4)), simple_config())
+    e = SieveModel.empty(m.config)
+    _assert_echoes_y(m.merge(e))
+    _assert_echoes_y(e.merge(m))
+
+
+def test_save_load_round_trips_per_class_sums(tmp_path):
+    from sieve.model import SieveModel
+
+    m = sieve.fit(_echo(chain_batch(12, graphs=4)), simple_config())
+    path = tmp_path / "m.npz"
+    m.save(path)
+    back = SieveModel.load(path)
+    for a, b in zip(m.levels, back.levels, strict=True):
+        assert a.within_sse is not None and b.within_sse is not None
+        assert a.within_n is not None and b.within_n is not None
+        np.testing.assert_array_equal(a.within_sse, b.within_sse)
+        np.testing.assert_array_equal(a.within_n, b.within_n)
+
+
+def test_a_file_without_per_class_sums_keeps_its_keys(tmp_path):
+    from sieve.model import SieveModel
+
+    m = sieve.fit(chain_batch(12, graphs=4), simple_config())
+    path = tmp_path / "m.npz"
+    m.save(path)
+    assert not any("within" in f for f in np.load(path).files)
+    assert all(lvl.within_sse is None for lvl in SieveModel.load(path).levels)
+
+
+def test_truncation_keeps_per_class_sums():
+    pytest.importorskip("experiments")
+    from experiments.cv import truncate_model
+
+    m = sieve.fit(_echo(chain_batch(12, graphs=4)), simple_config(max_wl_depth=3))
+    _assert_echoes_y(truncate_model(m, 1))

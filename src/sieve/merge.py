@@ -268,8 +268,33 @@ def merge_level(
         if np.any(both) and not np.array_equal(mirror_of[i][both], b_mirror_of[both]):
             raise AssertionError("mirror_of disagreement: a class changed its mirror")
         mirror_of[i] = np.where(nA > 0, mirror_of[i], b_mirror_of)
+
+    within_sse = within_n = None
+    if a.within_sse is not None or b.within_sse is not None:
+        # Sums, so they add; a side without them (the empty model, or a fit
+        # of an uncollapsed set) contributes zero (within-structure-variance
+        # spec 4). `i` is a bijection, so the scatter-add has no collisions.
+        within_sse = np.zeros((n_new, d), np.float64)
+        within_n = np.zeros(n_new, np.float64)
+        if a.within_sse is not None and a.within_n is not None:
+            within_sse[:m] = a.within_sse
+            within_n[:m] = a.within_n
+        if b.within_sse is not None and b.within_n is not None:
+            within_sse[i] += b.within_sse
+            within_n[i] += b.within_n
     return (
-        FrozenLevel(uniq, count, mean, msd, parent, class_kind, blind_of, mirror_of),
+        FrozenLevel(
+            uniq,
+            count,
+            mean,
+            msd,
+            parent,
+            class_kind,
+            blind_of,
+            mirror_of,
+            within_sse,
+            within_n,
+        ),
         remap,
     )
 

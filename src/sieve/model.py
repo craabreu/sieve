@@ -179,6 +179,11 @@ class SieveModel:
                 # Only under the tetrahedral track, so a cis/trans-only or
                 # stereo-blind file keeps exactly the keys it always had.
                 arrays[f"level_{k}_mirror_of"] = lvl.mirror_of
+            if lvl.within_sse is not None and lvl.within_n is not None:
+                # Only when present, so a file without per-class sums keeps
+                # exactly the keys it always had.
+                arrays[f"level_{k}_within_sse"] = lvl.within_sse
+                arrays[f"level_{k}_within_n"] = lvl.within_n
         np.savez(path, **arrays)
 
     @classmethod
@@ -236,6 +241,12 @@ class SieveModel:
                 else None,
                 data[f"level_{k}_mirror_of"]
                 if f"level_{k}_mirror_of" in data.files
+                else None,
+                data[f"level_{k}_within_sse"]
+                if f"level_{k}_within_sse" in data.files
+                else None,
+                data[f"level_{k}_within_n"]
+                if f"level_{k}_within_n" in data.files
                 else None,
             )
             for k in range(cfg.n_levels)
