@@ -1651,6 +1651,106 @@ def run_dash_cv(
     return results
 
 
+class SieveTrainModels:
+    """The K training models of a repeat: from the model cache when it holds
+    the whole repeat, otherwise merged from the shard fits (``sieve_fold`` per
+    group, then ``leave_one_group_out``) and written back to the cache.
+
+    Untruncated, at ``fit_depth``, and without training floors: those are the
+    caller's (``truncate_model``, ``_attach_training_floors``). Shared by
+    ``run_sieve_cv`` and Study F (``experiments.calibration``), so both read the
+    very models the runs were scored with.
+    """
+
+    def __init__(
+        self,
+        *,
+        store: str,
+        n_shards: int,
+        k: int,
+        config_label: str,
+        fit_depth: int,
+        model_cache: str | Path | None = None,
+        runs_root: Path = DEFAULT_RUNS_ROOT,
+        stores_root: Path | None = None,
+    ) -> None:
+        import sieve
+
+        ids = shard_ids(n_shards)
+        paths_or_none = {
+            s: _shard_fit_done(
+                runs_root, sieve_shard_batch_id(config_label, fit_depth, s)
+            )
+            for s in ids
+        }
+        missing = [s for s, p in paths_or_none.items() if p is None]
+        if missing:
+            raise FileNotFoundError(
+                f"no shard fit for {config_label!r} at depth {fit_depth}, shard(s) "
+                f"{missing}; run run_sieve_shard_fits(max_depth={fit_depth}) first"
+            )
+        self._shard_paths = {s: p for s, p in paths_or_none.items() if p is not None}
+        # Loaded lazily: a fully cached repeat never needs the shards at all, and
+        # opening 50 of them is the first 2.6 s of the 123 s this cache exists to
+        # avoid. One is still read eagerly below, to pin schema_version.
+        self._models_by_shard: dict[str, Any] = {}
+        self._cache_dir: Path | None = None
+        self._sidecar: dict[str, Any] = {}
+        if model_cache is not None:
+            reference = sieve.SieveModel.load(self._shard_paths[ids[0]])
+            self._cache_dir = cv_model_cache_dir(
+                model_cache, "sieve", f"{config_label}-w{fit_depth}-n{n_shards}-k{k}"
+            )
+            # schema_version pins the vocabulary and depth the fits were built
+            # with; a cached model that disagrees is not the same model.
+            self._sidecar = {
+                "schema_version": reference.config.schema_version,
+                **store_identity(store, stores_root=stores_root),
+            }
+
+    def _shards(self) -> dict[str, Any]:
+        import sieve
+
+        if not self._models_by_shard:
+            self._models_by_shard.update(
+                {s: sieve.SieveModel.load(p) for s, p in self._shard_paths.items()}
+            )
+        return self._models_by_shard
+
+    def __call__(self, repeat: int, plan: CVPlan) -> list[Any]:
+        import sieve
+        from sieve.merge import fold as sieve_fold
+        from sieve.merge import merge_models
+
+        if self._cache_dir is not None:
+            cached = _load_cached_train_models(
+                self._cache_dir,
+                repeat=repeat,
+                plan=plan,
+                load_one=sieve.SieveModel.load,
+                sidecar_extra=self._sidecar,
+            )
+            if cached is not None:
+                return cached
+        # Merged once, at fit_depth; every requested depth is a truncation of
+        # these, not a separate merge of a separate shard set.
+        shards = self._shards()
+        group_models = [
+            sieve_fold([shards[s] for s in g], shards[g[0]].config) for g in plan.groups
+        ]
+        models = leave_one_group_out(group_models, merge=merge_models)
+        if self._cache_dir is not None:
+            _save_train_models(
+                self._cache_dir,
+                repeat=repeat,
+                plan=plan,
+                models=models,
+                save_one=lambda m, path: m.save(path),
+                sidecar_extra=self._sidecar,
+            )
+        return models
+
+
 def run_sieve_cv(
     *,
     store: str,
@@ -1715,10 +1815,7 @@ def run_sieve_cv(
     ``config.py`` records a previous 21 GB incident from persisting more than
     was needed.
     """
-    import sieve
     from experiments.predictors.sieve_predictor import SievePredictor
-    from sieve.merge import fold as sieve_fold
-    from sieve.merge import merge_models
 
     method = method or f"sieve-{config_label}"
     variant_list: list[ModelVariant | None] = list(variants) if variants else [None]
@@ -1734,42 +1831,16 @@ def run_sieve_cv(
             f"{max(depths)}; truncation can only remove levels"
         )
 
-    paths_or_none = {
-        s: _shard_fit_done(runs_root, sieve_shard_batch_id(config_label, fit_depth, s))
-        for s in ids
-    }
-    missing = [s for s, p in paths_or_none.items() if p is None]
-    if missing:
-        raise FileNotFoundError(
-            f"no shard fit for {config_label!r} at depth {fit_depth}, shard(s) "
-            f"{missing}; run run_sieve_shard_fits(max_depth={fit_depth}) first"
-        )
-    shard_paths = {s: p for s, p in paths_or_none.items() if p is not None}
-    # Loaded lazily: a fully cached repeat never needs the shards at all, and
-    # opening 50 of them is the first 2.6 s of the 123 s this cache exists to
-    # avoid. One is still read eagerly below, to pin schema_version.
-    _models_by_shard: dict[str, Any] = {}
-
-    def models_by_shard() -> dict[str, Any]:
-        if not _models_by_shard:
-            _models_by_shard.update(
-                {s: sieve.SieveModel.load(p) for s, p in shard_paths.items()}
-            )
-        return _models_by_shard
-
-    cache_dir = None
-    sidecar: dict[str, Any] = {}
-    if model_cache is not None:
-        reference = sieve.SieveModel.load(shard_paths[ids[0]])
-        cache_dir = cv_model_cache_dir(
-            model_cache, "sieve", f"{config_label}-w{fit_depth}-n{n_shards}-k{k}"
-        )
-        # schema_version pins the vocabulary and depth the fits were built
-        # with; a cached model that disagrees is not the same model.
-        sidecar = {
-            "schema_version": reference.config.schema_version,
-            **store_identity(store, stores_root=stores_root),
-        }
+    train_models_for = SieveTrainModels(
+        store=store,
+        n_shards=n_shards,
+        k=k,
+        config_label=config_label,
+        fit_depth=fit_depth,
+        model_cache=model_cache,
+        runs_root=runs_root,
+        stores_root=stores_root,
+    )
 
     mset_by_shard = load_shards(store, ids, stores_root=stores_root)
     git_info = _check_clean(allow_dirty)
@@ -1784,33 +1855,7 @@ def run_sieve_cv(
     for repeat in repeats:
         plan = build_cv_plan(ids, k=k, repeat=repeat)
 
-        train_models = None
-        if cache_dir is not None:
-            train_models = _load_cached_train_models(
-                cache_dir,
-                repeat=repeat,
-                plan=plan,
-                load_one=sieve.SieveModel.load,
-                sidecar_extra=sidecar,
-            )
-        if train_models is None:
-            # Merged once, at fit_depth; every requested depth is a truncation
-            # of these, not a separate merge of a separate shard set.
-            shards = models_by_shard()
-            group_models = [
-                sieve_fold([shards[s] for s in g], shards[g[0]].config)
-                for g in plan.groups
-            ]
-            train_models = leave_one_group_out(group_models, merge=merge_models)
-            if cache_dir is not None:
-                _save_train_models(
-                    cache_dir,
-                    repeat=repeat,
-                    plan=plan,
-                    models=train_models,
-                    save_one=lambda m, path: m.save(path),
-                    sidecar_extra=sidecar,
-                )
+        train_models = train_models_for(repeat, plan)
         # After the cache is written, so cached files stay as they were.
         train_models = _attach_training_floors(
             train_models, plan, store, collapse=collapse, stores_root=stores_root

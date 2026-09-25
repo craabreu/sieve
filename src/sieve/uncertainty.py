@@ -113,6 +113,26 @@ def predictive_variance(
     per-dimension variants of both, which is the same computation without the
     sum over ``j``.
     """
+    return [
+        t["within"]
+        + selection_weight * t["selection"]
+        + t["estimation"]
+        + t["within_structure"]
+        for t in variance_terms(model, alpha_v=alpha_v, alpha_t=alpha_t)
+    ]
+
+
+def variance_terms(
+    model, *, alpha_v: float = ALPHA_V, alpha_t: float = ALPHA_T
+) -> list[dict[str, np.ndarray]]:
+    """The four terms of the predictive variance, per level (raw level index).
+
+    ``predictive_variance`` is ``within + selection_weight * selection +
+    estimation + within_structure`` of these; exposed so an ablation is a sum
+    of terms rather than a flag per term (Study F spec, section 3.1).
+    ``within_structure`` is the pooled sigma2_w, ``(d,)``, broadcast over
+    classes.
+    """
     cfg = model.config
     parents = cfg.level_parents
     av = np.asarray(atom_variance(model), dtype=np.float64)
@@ -125,7 +145,7 @@ def predictive_variance(
 
     sigma2_w = model.within_variance
 
-    out: list[np.ndarray] = []
+    out: list[dict[str, np.ndarray]] = []
     for k, lvl in enumerate(model.levels):
         n = lvl.count[:, None].astype(np.float64)
         dof = np.maximum(n - 1.0, 0.0)
@@ -161,5 +181,12 @@ def predictive_variance(
             t = tau_aware[k] if np.isfinite(tau_aware[k]) else 0.0
             estimation[only] = t * (1.0 - weights[k][only][:, None])
 
-        out.append(within + selection_weight * selection + estimation + sigma2_w)
+        out.append(
+            {
+                "within": within,
+                "selection": selection,
+                "estimation": estimation,
+                "within_structure": sigma2_w,
+            }
+        )
     return out

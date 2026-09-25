@@ -635,6 +635,59 @@ def _cmd_stereo_subset_masks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_score_calibration(args: argparse.Namespace) -> int:
+    from experiments.calibration import missing_scores, score_runs
+
+    repeats = (
+        None if args.repeats is None else [int(r) for r in args.repeats.split(",")]
+    )
+    sel = {
+        "experiment": args.experiment,
+        "method": args.method,
+        "depth": args.depth,
+        "repeats": repeats,
+    }
+    if args.check:
+        missing = missing_scores(DEFAULT_RUNS_ROOT, **sel)
+        for run in missing:
+            print(f"unscored: {run}")
+        return 1 if missing else 0
+    written = score_runs(
+        DEFAULT_RUNS_ROOT,
+        store=args.store,
+        n_shards=args.n_shards,
+        k=args.k,
+        config_label=args.config_label,
+        fit_depth=args.fit_depth,
+        collapse_override=True if args.collapse else None,
+        model_cache=args.model_cache,
+        stores_root=DEFAULT_STORES_ROOT,
+        force=args.force,
+        n_jobs=args.n_jobs,
+        **sel,
+    )
+    print(f"scored {len(written)} run(s)")
+    return 0
+
+
+def _cmd_calibration_report(args: argparse.Namespace) -> int:
+    from experiments.calibration import calibration_report
+
+    text = calibration_report(
+        DEFAULT_RUNS_ROOT,
+        experiment=args.experiment,
+        method=args.method,
+        depth=args.depth,
+        k=args.k,
+    )
+    print(text, end="")
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.with_suffix(".txt").write_text(text)
+        print(f"wrote {args.out.with_suffix('.txt')}")
+    return 0
+
+
 def _cmd_score_stereo_subsets(args: argparse.Namespace) -> int:
     from experiments.stereo_subsets import (
         MASKS_FILE,
@@ -1572,6 +1625,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="score nothing; exit 1 if any selected run is unscored or stale",
     )
     p_score_sub.set_defaults(func=_cmd_score_stereo_subsets)
+
+    p_score_cal = sub.add_parser(
+        "score-calibration",
+        help="Study F: score a CV experiment's runs for calibration of the "
+        "predictive variance (form B and its ablations) into a sidecar",
+    )
+    p_score_cal.add_argument("store", nargs="?", default="dash-molecules")
+    p_score_cal.add_argument("--experiment", required=True)
+    p_score_cal.add_argument("--method", required=True)
+    p_score_cal.add_argument("--depth", type=int, required=True)
+    p_score_cal.add_argument("--k", type=int, default=5)
+    p_score_cal.add_argument("--n-shards", type=int, default=50)
+    p_score_cal.add_argument("--config-label", default="element-eb")
+    p_score_cal.add_argument("--fit-depth", type=int, default=10)
+    p_score_cal.add_argument(
+        "--collapse",
+        action="store_true",
+        help="assert the runs were collapsed (read from each manifest either "
+        "way; a disagreement is refused)",
+    )
+    p_score_cal.add_argument("--model-cache", type=Path, default=None)
+    p_score_cal.add_argument(
+        "--repeats", default=None, help="comma-separated; default all"
+    )
+    p_score_cal.add_argument("--n-jobs", type=int, default=None)
+    p_score_cal.add_argument(
+        "--check",
+        action="store_true",
+        help="exit 1 if any selected run is unscored or stale; write nothing",
+    )
+    p_score_cal.add_argument("--force", action="store_true")
+    p_score_cal.set_defaults(func=_cmd_score_calibration)
+
+    p_cal_report = sub.add_parser(
+        "calibration-report", help="Study F: the calibration report from the sidecars"
+    )
+    p_cal_report.add_argument("--experiment", required=True)
+    p_cal_report.add_argument("--method", required=True)
+    p_cal_report.add_argument("--depth", type=int, required=True)
+    p_cal_report.add_argument("--k", type=int, default=5)
+    p_cal_report.add_argument("--out", type=Path, default=None)
+    p_cal_report.set_defaults(func=_cmd_calibration_report)
 
     p_sreport = sub.add_parser(
         "stereo-report",
