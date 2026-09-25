@@ -1515,7 +1515,9 @@ def test_train_models_from_shards_equal_the_cached_ones(tmp_path):
     kw = _sieve_cv_kwargs(tmp_path)
     ids = shard_ids(kw["n_shards"])
     plan = build_cv_plan(ids, k=kw["k"], repeat=0)
-    common = {
+    # dict[str, Any], as elsewhere in this file: a bare literal is typed as
+    # one narrow union and checked against every keyword at once.
+    common: dict[str, Any] = {
         "store": kw["store"],
         "n_shards": kw["n_shards"],
         "k": kw["k"],
