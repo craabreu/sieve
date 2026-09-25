@@ -1505,3 +1505,49 @@ def test_training_floors_are_attached_only_to_collapsed_fits(tmp_path):
     )
     # fold 0 trains on s01, fold 1 on s00
     assert [m.within_n for m in collapsed] == [30.0, 10.0]
+
+
+def test_train_models_from_shards_equal_the_cached_ones(tmp_path):
+    """SieveTrainModels, cache miss then cache hit, gives the same models --
+    and the same ones run_sieve_cv's own runs were scored with."""
+    from experiments.cv import SieveTrainModels, build_cv_plan, shard_ids
+
+    kw = _sieve_cv_kwargs(tmp_path)
+    ids = shard_ids(kw["n_shards"])
+    plan = build_cv_plan(ids, k=kw["k"], repeat=0)
+    common = {
+        "store": kw["store"],
+        "n_shards": kw["n_shards"],
+        "k": kw["k"],
+        "config_label": kw["config_label"],
+        "fit_depth": 1,
+        "runs_root": kw["runs_root"],
+        "stores_root": kw["stores_root"],
+    }
+    uncached = SieveTrainModels(**common)(0, plan)
+    cache = tmp_path / "cache"
+    miss = SieveTrainModels(model_cache=cache, **common)(0, plan)
+    hit = SieveTrainModels(model_cache=cache, **common)(0, plan)
+    assert len(uncached) == len(miss) == len(hit) == kw["k"]
+    for a, b, c in zip(uncached, miss, hit, strict=True):
+        assert a.global_count == b.global_count == c.global_count
+        for la, lb, lc in zip(a.levels, b.levels, c.levels, strict=True):
+            np.testing.assert_array_equal(la.count, lb.count)
+            np.testing.assert_array_equal(lb.count, lc.count)
+            np.testing.assert_array_equal(lb.mean, lc.mean)
+
+
+def test_train_models_refuse_a_missing_shard_fit(tmp_path):
+    from experiments.cv import SieveTrainModels
+
+    kw = _sieve_cv_kwargs(tmp_path)
+    with pytest.raises(FileNotFoundError, match="no shard fit"):
+        SieveTrainModels(
+            store=kw["store"],
+            n_shards=kw["n_shards"],
+            k=kw["k"],
+            config_label="absent",
+            fit_depth=1,
+            runs_root=kw["runs_root"],
+            stores_root=kw["stores_root"],
+        )
