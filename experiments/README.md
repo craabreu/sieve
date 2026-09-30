@@ -127,6 +127,24 @@ subset, and only then separates the subsets, so a cluster has the same split
 and shard in both stores. Each stage writes its own file in `dash-staging`
 and is skipped when that file exists. See `docs/dash-subset-stores-plan.md`.
 
+THEMol's MBIS subset (PBE0/def2-TZVPD, 3,082,151 molecules, one geometry
+each) is prepared from an already-downloaded copy of its eight HDF5 files:
+
+    uv run python -m experiments prepare-themol-store --source-dir /path/to/THEMol/MBIS --stop-before-split
+
+Each record's graph is read from its atom-mapped isomeric SMILES, its
+stereochemistry is perceived from its own coordinates exactly as for DASH,
+and the SMILES's reported stereochemistry is then checked against it: the
+`stereo_check` column holds each record's verdict (`agree`, `conflict`,
+`perceived_only`, `reported_only`, `both_only`) and
+`stereo_check_summary.txt` the totals. The atom property is `MBIScharge`, as
+for DASH, so the DASH configs apply unchanged. The split keys on
+`themol_id`; its Butina pass is quadratic in the molecule count, so choose
+`--n-shards` with `cluster-report themol-mbis --id-columns themol_id` before
+dropping `--stop-before-split`. `subsample-store`, `partition-store` and
+`annotate-collapse` still key on the DASH id columns and do not yet accept a
+THEMol store.
+
 ### Running an experiment
 
 A single-predictor run:

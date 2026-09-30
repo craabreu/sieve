@@ -589,12 +589,29 @@ def _achiral_fingerprints(mols: list[Any], *, radius: int = 2, n_bits: int = 204
     return out
 
 
+DASH_ID_COLUMNS = ("dash_id", "chembl_id")
+
+
+def _molecule_key(df: Any, id_columns: tuple[str, ...]) -> Any:
+    """One identity per row: the first of ``id_columns`` that is set.
+
+    The DASH store's default, ``dash_id`` falling back to ``chembl_id``, is
+    explained in ``assign_splits``; another dataset names its own single
+    column, such as ``prepare_themol``'s ``themol_id``.
+    """
+    key = df[id_columns[0]]
+    for column in id_columns[1:]:
+        key = key.fillna(df[column])
+    return key
+
+
 def cluster_size_report(
     store_dir: Path,
     *,
     train: float = 0.9,
     test: float = 0.1,
     candidate_n_shards: tuple[int, ...] = (10, 25, 50, 100),
+    id_columns: tuple[str, ...] = DASH_ID_COLUMNS,
 ) -> str:
     """Diagnostic, read-only: report the Butina cluster size distribution
     within what would become the train split, and the shard balance
@@ -621,8 +638,8 @@ def cluster_size_report(
     from experiments.data import blob_to_mol
 
     molecules_path = store_dir / "molecules.parquet"
-    df = pd.read_parquet(molecules_path, columns=["chembl_id", "dash_id", "mol"])
-    mol_key = df["dash_id"].fillna(df["chembl_id"])
+    df = pd.read_parquet(molecules_path, columns=[*id_columns, "mol"])
+    mol_key = _molecule_key(df, id_columns)
     first_seen_mask = ~mol_key.duplicated(keep="first")
     first_mols = [blob_to_mol(b) for b in df.loc[first_seen_mask, "mol"]]
     fingerprints = _achiral_fingerprints(first_mols)
@@ -673,6 +690,7 @@ def assign_splits(
     val: float = 0.0,
     test: float = 0.1,
     n_shards: int = 25,
+    id_columns: tuple[str, ...] = DASH_ID_COLUMNS,
 ) -> str:
     """Compute (or refresh) the ``split``/``cluster``/``shard`` columns on
     ``store_dir / 'molecules.parquet'`` and overwrite it in place; return
@@ -712,7 +730,8 @@ def assign_splits(
     key (``mol_key`` below) is what clustering, splitting, and this
     function's own uniqueness/grouping all operate on -- ``chembl_id``/
     ``dash_id`` themselves stay in the output purely as provenance, never
-    read back for grouping elsewhere.
+    read back for grouping elsewhere. ``id_columns`` names that coalescing
+    order, so a store with a different identity column is split the same way.
 
     Loads the entire parsed store into memory at once (via
     ``pd.read_parquet``) rather than streaming, since by this point it is
@@ -738,7 +757,7 @@ def assign_splits(
 
     molecules_path = store_dir / "molecules.parquet"
     df = pd.read_parquet(molecules_path)
-    mol_key = df["dash_id"].fillna(df["chembl_id"])
+    mol_key = _molecule_key(df, id_columns)
 
     first_seen_mask = ~mol_key.duplicated(keep="first")
     unique_keys = mol_key[first_seen_mask].to_numpy()

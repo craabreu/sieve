@@ -475,6 +475,23 @@ def test_build_parser_cluster_report_defaults():
     assert args.train == 0.9
     assert args.test == 0.1
     assert args.candidates == "10,25,50,100"
+    assert args.id_columns == "dash_id,chembl_id"
+
+
+def test_build_parser_prepare_themol_store_requires_a_source_dir():
+    import pytest
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["prepare-themol-store"])
+    args = parser.parse_args(["prepare-themol-store", "--source-dir", "/x"])
+    assert args.store == "themol-mbis"
+    assert str(args.source_dir) == "/x"
+    assert args.n_shards == 25
+    assert args.workers == 8
+    assert args.limit_per_shard is None
+    assert not args.stop_before_split
 
 
 def test_build_parser_build_sieve_codes_requires_out():
