@@ -732,3 +732,22 @@ def test_build_parser_annotate_geometry_defaults():
     args = build_parser().parse_args(["annotate-geometry", "dash-molecules"])
     assert args.store == "dash-molecules"
     assert args.workers == 16
+
+
+def test_build_parser_prepare_spice_store_defaults():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["prepare-spice-store"])
+    assert args.store == "spice-2"
+    assert args.hdf5_path is None
+    assert args.n_shards == 25
+    assert args.workers == 16
+    assert args.limit_groups is None
+    assert not args.stop_before_split
+    assert not args.keep_uncurated
+    args = parser.parse_args(
+        ["prepare-spice-store", "--hdf5-path", "/x.hdf5", "--keep-uncurated"]
+    )
+    assert str(args.hdf5_path) == "/x.hdf5"
+    assert args.keep_uncurated

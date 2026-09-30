@@ -150,6 +150,21 @@ dropping `--stop-before-split`. `subsample-store`, `partition-store` and
 `annotate-collapse` still key on the DASH id columns and do not yet accept a
 THEMol store.
 
+SPICE 2.0.1 (ωB97M-D3(BJ)/def2-TZVPPD, CC0) is downloaded from Zenodo --
+one 37 GB HDF5 file, checked against its published md5 -- and built into
+`spice-2`:
+
+    uv run python -m experiments prepare-spice-store --keep-uncurated
+
+Only single-molecule records are kept: a group whose SMILES has more than
+one fragment (dimers, ion pairs, water clusters, solvated systems) is left
+out and counted per subset in `spice_summary.txt`, as are groups without MBIS
+charges. Each conformer's stereochemistry is perceived and checked as for
+THEMol, the conformers are then curated with DASH's 0.4 e criterion, and the
+split keys on `spice_id`, the HDF5 group name. `--hdf5-path` parses an
+already-downloaded copy instead; the collapse key is added with
+`annotate-collapse spice-2 --id-column spice_id`.
+
 ### Running an experiment
 
 A single-predictor run:

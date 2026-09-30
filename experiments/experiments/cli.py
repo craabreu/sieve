@@ -192,6 +192,22 @@ def _cmd_prepare_themol_store(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_prepare_spice_store(args: argparse.Namespace) -> int:
+    from experiments.prepare_spice import prepare_store
+
+    prepare_store(
+        args.store,
+        stores_root=DEFAULT_STORES_ROOT,
+        hdf5_path=args.hdf5_path,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit_groups=args.limit_groups,
+        stop_before_split=args.stop_before_split,
+        keep_uncurated=args.keep_uncurated,
+    )
+    return 0
+
+
 def _cmd_cluster_report(args: argparse.Namespace) -> int:
     from experiments.prepare_dash import cluster_size_report
 
@@ -1209,6 +1225,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="stop after the parse, without writing the split",
     )
     p_themol.set_defaults(func=_cmd_prepare_themol_store)
+
+    p_spice = sub.add_parser(
+        "prepare-spice-store",
+        help="download and parse SPICE 2.0.1's single-molecule records, "
+        "perceive stereo from 3D, check it against the reported SMILES, "
+        "curate conformers, and split",
+    )
+    p_spice.add_argument("store", nargs="?", default="spice-2")
+    p_spice.add_argument(
+        "--hdf5-path",
+        type=Path,
+        default=None,
+        help="use an already-downloaded SPICE-2.0.1.hdf5 instead of "
+        "downloading a fresh copy (37 GB)",
+    )
+    p_spice.add_argument(
+        "--n-shards",
+        type=int,
+        default=25,
+        help="cluster-clean train shards for CV; choose via cluster-report "
+        "--id-columns spice_id first (default: 25)",
+    )
+    p_spice.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="parallel parse processes over blocks of HDF5 groups (default: 16)",
+    )
+    p_spice.add_argument(
+        "--limit-groups",
+        type=int,
+        default=None,
+        help="parse only the first N HDF5 groups",
+    )
+    p_spice.add_argument(
+        "--stop-before-split",
+        action="store_true",
+        help="stop after parse+curate, without writing the split",
+    )
+    p_spice.add_argument(
+        "--keep-uncurated",
+        action="store_true",
+        help="copy the parsed parquet aside as molecules.parquet.uncurated "
+        "before curation runs",
+    )
+    p_spice.set_defaults(func=_cmd_prepare_spice_store)
 
     p_cluster_report = sub.add_parser(
         "cluster-report",

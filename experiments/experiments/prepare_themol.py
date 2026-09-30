@@ -348,15 +348,25 @@ def build_record_mol(
     return mol, verdict, counts
 
 
+def store_blob(mol: Any) -> bytes:
+    """``mol`` serialised as the store holds it. As in ``prepare_dash``: the
+    mol-level properties a parse left behind are dropped, and the marker that
+    the rigorous CIP labeler has already run is set. Mutates ``mol``."""
+    from experiments.data import mol_to_blob
+    from sieve.io.rdkit_adapter import CIP_LABELED_PROP
+
+    for name in list(mol.GetPropNames()):
+        mol.ClearProp(name)
+    mol.SetBoolProp(CIP_LABELED_PROP, True)
+    return mol_to_blob(mol)
+
+
 def _parse_one_group(themol_id: str, group: Any, h5_name: str) -> tuple[dict, Counter]:
     """One parquet row from one HDF5 group, plus the counts it contributes to
     the stereo summary. A record that cannot be built returns an empty row
     and a ``skipped`` count rather than raising, as in ``prepare_dash``: a
     malformed record should not abort a three-million-record parse."""
     from rdkit import Chem
-
-    from experiments.data import mol_to_blob
-    from sieve.io.rdkit_adapter import CIP_LABELED_PROP
 
     smiles = group["mapped_isomeric_smiles"][()].decode()
     try:
@@ -375,17 +385,11 @@ def _parse_one_group(themol_id: str, group: Any, h5_name: str) -> tuple[dict, Co
         counts["isotope_labelled"] += 1
     net_charge = float(Chem.GetFormalCharge(mol))
 
-    # As in prepare_dash: drop mol-level properties the parse left behind,
-    # then set the marker that the rigorous CIP labeler has already run.
-    for name in list(mol.GetPropNames()):
-        mol.ClearProp(name)
-    mol.SetBoolProp(CIP_LABELED_PROP, True)
-
     row = {
         "themol_id": themol_id,
         "h5_file": h5_name,
         "smiles": smiles,
-        "mol": mol_to_blob(mol),
+        "mol": store_blob(mol),
         "net_charge": net_charge,
         "stereo_check": verdict,
     }
