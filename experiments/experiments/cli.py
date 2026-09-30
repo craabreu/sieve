@@ -1173,15 +1173,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_themol = sub.add_parser(
         "prepare-themol-store",
-        help="parse THEMol's MBIS subset, perceive stereo from 3D, check it "
-        "against the reported SMILES, and split",
+        help="download and parse THEMol's MBIS subset, perceive stereo from "
+        "3D, check it against the reported SMILES, and split",
     )
     p_themol.add_argument("store", nargs="?", default="themol-mbis")
     p_themol.add_argument(
         "--source-dir",
         type=Path,
-        required=True,
-        help="directory holding mbis_0.h5 .. mbis_7.h5",
+        default=None,
+        help="use an already-downloaded directory holding mbis_0.h5 .. "
+        "mbis_7.h5 instead of downloading a fresh copy (31 GB)",
     )
     p_themol.add_argument(
         "--n-shards",

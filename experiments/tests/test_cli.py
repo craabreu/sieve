@@ -478,16 +478,19 @@ def test_build_parser_cluster_report_defaults():
     assert args.id_columns == "dash_id,chembl_id"
 
 
-def test_build_parser_prepare_themol_store_requires_a_source_dir():
-    import pytest
+def test_build_parser_prepare_themol_store_defaults():
     from experiments.cli import build_parser
 
     parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["prepare-themol-store"])
-    args = parser.parse_args(["prepare-themol-store", "--source-dir", "/x"])
+    args = parser.parse_args(["prepare-themol-store"])
     assert args.store == "themol-mbis"
-    assert str(args.source_dir) == "/x"
+    assert args.source_dir is None
+    assert (
+        str(
+            parser.parse_args(["prepare-themol-store", "--source-dir", "/x"]).source_dir
+        )
+        == "/x"
+    )
     assert args.n_shards == 25
     assert args.workers == 8
     assert args.limit_per_shard is None

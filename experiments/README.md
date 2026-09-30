@@ -128,9 +128,14 @@ and shard in both stores. Each stage writes its own file in `dash-staging`
 and is skipped when that file exists. See `docs/dash-subset-stores-plan.md`.
 
 THEMol's MBIS subset (PBE0/def2-TZVPD, 3,082,151 molecules, one geometry
-each) is prepared from an already-downloaded copy of its eight HDF5 files:
+each; CC BY-NC 4.0) is downloaded from Hugging Face -- eight HDF5 files,
+31 GB, pinned to one repository revision and checked against its SHA-256
+digests -- and parsed into `themol-mbis`:
 
-    uv run python -m experiments prepare-themol-store --source-dir /path/to/THEMol/MBIS --stop-before-split
+    uv run python -m experiments prepare-themol-store --stop-before-split
+
+`--source-dir /path/to/THEMol/MBIS` parses an already-downloaded copy
+instead.
 
 Each record's graph is read from its atom-mapped isomeric SMILES, its
 stereochemistry is perceived from its own coordinates exactly as for DASH,

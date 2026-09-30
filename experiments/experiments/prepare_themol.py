@@ -22,26 +22,126 @@ the non-isomeric SMILES silently turns ``[2H]`` into ``H``.
 atom against the same atom in sibling conformers; THEMol stores one geometry
 per molecule, so the criterion has nothing to compare.
 
-Nothing is downloaded: the subset is 31 GB and its checksums are published on
-Hugging Face, so fetching and verifying it is left to ``huggingface-cli``.
+The eight HDF5 files (31 GB) are downloaded from Hugging Face when no local
+copy is given, pinned to one revision of the repository and verified against
+its published sizes and SHA-256 digests (``download_themol``). The data is
+licensed CC BY-NC 4.0.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-SHARD_FILES = tuple(f"mbis_{i}.h5" for i in range(8))
+# The repository revision the sizes and digests below were read from, so that
+# a later push to the dataset cannot change what a rebuild downloads.
+REVISION = "e029fa677b2638b29efa5930a1173d4e41abcab8"
+DOWNLOAD_BASE_URL = (
+    f"https://huggingface.co/datasets/ByteDance-Seed/THEMol/resolve/{REVISION}/MBIS"
+)
+# (bytes, SHA-256) per file, from the Hugging Face tree API at REVISION.
+EXPECTED_FILES = {
+    "mbis_0.h5": (
+        4_135_202_860,
+        "c307229b4a7c47654a51203dbbf51e93951de817fa04ecd41cbb6603efc3d5a2",
+    ),
+    "mbis_1.h5": (
+        4_145_984_100,
+        "d2a6b469fec5730626230244c98c56f28c77777d8932e8093837e8947a623452",
+    ),
+    "mbis_2.h5": (
+        3_556_407_192,
+        "b10313baf25ecc9b2b98d03cc01d012353c719fb0f3837093d361b34133e913d",
+    ),
+    "mbis_3.h5": (
+        3_549_593_228,
+        "b364c682c2d871951c80db3d0c5daac5aebfe6cc09596e29ed0a64e4d0adc557",
+    ),
+    "mbis_4.h5": (
+        3_553_728_336,
+        "6bf24bcd99def7544e4875bee9a7a808abe2bb1b2120d81b9f36eb23f28f3549",
+    ),
+    "mbis_5.h5": (
+        3_550_420_692,
+        "7b76913e297d8495d4d5ae019f69b5b42982a364fd8f13cc0bf202b4361de836",
+    ),
+    "mbis_6.h5": (
+        3_548_145_724,
+        "3841f123e4445019d5f786b23024d7470abf6fdf5ce0678c47201e150dc47b7e",
+    ),
+    "mbis_7.h5": (
+        3_549_135_012,
+        "aa7b3d568e282d1ac55ea0fdf6c6865e99dedc2a3e975b2892a1a3fa2a1f3766",
+    ),
+}
+SHARD_FILES = tuple(EXPECTED_FILES)
 EXPECTED_RECORDS = 3_082_151
 ID_COLUMNS = ("themol_id",)
 STEREO_SUMMARY = "stereo_check_summary.txt"
 PARQUET_BATCH_SIZE = 50_000
+CHUNK_SIZE = 1 << 20  # 1 MiB
 
 logger = logging.getLogger("experiments")
+
+
+def download_themol(
+    dest_dir: Path,
+    *,
+    base_url: str = DOWNLOAD_BASE_URL,
+    expected: dict[str, tuple[int, str]] = EXPECTED_FILES,
+) -> Path:
+    """Stream each file in ``expected`` from ``base_url`` into ``dest_dir``,
+    verifying size and SHA-256 against the published values, and return
+    ``dest_dir``. Idempotent in the way ``prepare_dash.download_dash_sdf`` is:
+    a file already present with the expected size is kept without hashing
+    (a full SHA-256 pass over 31 GB on every call would be needlessly slow),
+    and a corrupted download is caught by its digest the next time one is
+    actually fetched.
+
+    ``resolve/<revision>`` redirects to Hugging Face's CDN, which
+    ``urllib`` follows on its own; the repository is not gated, so no token
+    is needed.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for name, (expected_bytes, expected_sha256) in expected.items():
+        out_path = dest_dir / name
+        if out_path.exists() and out_path.stat().st_size == expected_bytes:
+            logger.info(
+                "%s already present with the expected size; skipping download",
+                out_path,
+            )
+            continue
+
+        sha256 = hashlib.sha256()
+        with (
+            urllib.request.urlopen(f"{base_url}/{name}") as response,
+            out_path.open("wb") as f,
+        ):
+            while chunk := response.read(CHUNK_SIZE):
+                f.write(chunk)
+                sha256.update(chunk)
+
+        actual_bytes = out_path.stat().st_size
+        if actual_bytes != expected_bytes:
+            raise ValueError(
+                f"downloaded {name}: {actual_bytes} bytes, expected "
+                f"{expected_bytes}; download incomplete or corrupted"
+            )
+        actual_sha256 = sha256.hexdigest()
+        if actual_sha256 != expected_sha256:
+            out_path.unlink()
+            raise ValueError(
+                f"downloaded {name} sha256 {actual_sha256} != expected "
+                f"{expected_sha256}; download corrupted"
+            )
+        logger.info("downloaded %s (sha256 %s)", out_path, actual_sha256)
+    return dest_dir
 
 
 def _mol_from_mapped_smiles(smiles: str) -> Any:
@@ -433,7 +533,7 @@ def prepare_store(
     store_name: str,
     *,
     stores_root: Path,
-    source_dir: Path,
+    source_dir: Path | None = None,
     train: float = 0.9,
     val: float = 0.0,
     test: float = 0.1,
@@ -442,8 +542,11 @@ def prepare_store(
     limit_per_shard: int | None = None,
     stop_before_split: bool = False,
 ) -> None:
-    """Ensure ``store_name`` is parsed from ``source_dir`` and has
-    ``split``/``cluster``/``shard`` columns, idempotently at each stage.
+    """Ensure ``store_name`` is downloaded, parsed, and has
+    ``split``/``cluster``/``shard`` columns, idempotently at each stage. If
+    ``source_dir`` is given, its HDF5 files are parsed instead of downloading
+    a fresh copy into the store directory via ``download_themol`` (a
+    ``ValueError`` is raised if it does not exist).
 
     The split is ``prepare_dash.assign_splits`` keyed on ``themol_id``, the
     record's UUID. Its Butina clustering is quadratic in the number of
@@ -459,7 +562,14 @@ def prepare_store(
     store_dir.mkdir(parents=True, exist_ok=True)
     molecules_path = store_dir / "molecules.parquet"
 
+    if source_dir is not None and not source_dir.exists():
+        raise ValueError(f"source_dir {source_dir} does not exist")
+
     if not molecules_path.exists():
+        # Unlike prepare_dash, the download is skipped once the store is
+        # parsed: 31 GB is not worth re-fetching for a parse that is done.
+        if source_dir is None:
+            source_dir = download_themol(store_dir)
         totals = parse_themol(
             source_dir,
             molecules_path,

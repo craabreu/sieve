@@ -304,3 +304,89 @@ def test_prepare_store_can_stop_before_the_split(tmp_path):
     prepare_store("t", stores_root=stores, source_dir=source, stop_before_split=True)
     names = set(pq.ParquetFile(stores / "t" / "molecules.parquet").schema.names)
     assert "split" not in names
+
+
+def _served(tmp_path, contents: dict[str, bytes]):
+    """Files served from a ``file://`` base URL, which ``urllib`` opens the
+    same way as the Hugging Face one, with the ``expected`` mapping that
+    describes them."""
+    import hashlib
+
+    served = tmp_path / "served"
+    served.mkdir()
+    for name, data in contents.items():
+        (served / name).write_bytes(data)
+    expected = {
+        name: (len(data), hashlib.sha256(data).hexdigest())
+        for name, data in contents.items()
+    }
+    return served.as_uri(), expected
+
+
+def test_download_themol_fetches_and_verifies(tmp_path):
+    from experiments.prepare_themol import download_themol
+
+    base_url, expected = _served(tmp_path, {"a.h5": b"alpha", "b.h5": b"beta"})
+    dest = download_themol(tmp_path / "dest", base_url=base_url, expected=expected)
+    assert (dest / "a.h5").read_bytes() == b"alpha"
+    assert (dest / "b.h5").read_bytes() == b"beta"
+
+
+def test_download_themol_keeps_a_file_of_the_expected_size(tmp_path):
+    from experiments.prepare_themol import download_themol
+
+    _, expected = _served(tmp_path, {"a.h5": b"alpha"})
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "a.h5").write_bytes(b"ALPHA")
+    # An unreachable URL: the size check alone must decide.
+    download_themol(dest, base_url="file:///nonexistent", expected=expected)
+    assert (dest / "a.h5").read_bytes() == b"ALPHA"
+
+
+def test_download_themol_rejects_and_removes_a_corrupted_file(tmp_path):
+    from experiments.prepare_themol import download_themol
+
+    base_url, expected = _served(tmp_path, {"a.h5": b"alpha"})
+    expected["a.h5"] = (expected["a.h5"][0], "0" * 64)
+    dest = tmp_path / "dest"
+    with pytest.raises(ValueError, match="sha256"):
+        download_themol(dest, base_url=base_url, expected=expected)
+    assert not (dest / "a.h5").exists()
+
+
+def test_download_themol_rejects_an_incomplete_file(tmp_path):
+    from experiments.prepare_themol import download_themol
+
+    base_url, expected = _served(tmp_path, {"a.h5": b"alpha"})
+    expected["a.h5"] = (10, expected["a.h5"][1])
+    with pytest.raises(ValueError, match="incomplete"):
+        download_themol(tmp_path / "dest", base_url=base_url, expected=expected)
+
+
+def test_prepare_store_downloads_when_no_source_dir_is_given(tmp_path, monkeypatch):
+    import experiments.prepare_themol as prepare_themol
+
+    source = _source_dir(tmp_path)
+    fetched = []
+
+    def fake_download(dest_dir):
+        fetched.append(dest_dir)
+        return source
+
+    monkeypatch.setattr(prepare_themol, "download_themol", fake_download)
+    stores = tmp_path / "stores"
+    prepare_themol.prepare_store("t", stores_root=stores, stop_before_split=True)
+    assert fetched == [stores / "t"]
+    assert (stores / "t" / "molecules.parquet").exists()
+
+    # Once parsed, nothing is fetched again.
+    prepare_themol.prepare_store("t", stores_root=stores, stop_before_split=True)
+    assert len(fetched) == 1
+
+
+def test_prepare_store_rejects_a_missing_source_dir(tmp_path):
+    from experiments.prepare_themol import prepare_store
+
+    with pytest.raises(ValueError, match="does not exist"):
+        prepare_store("t", stores_root=tmp_path, source_dir=tmp_path / "nope")
