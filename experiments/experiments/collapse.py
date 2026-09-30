@@ -52,7 +52,15 @@ def collapse_key(mol: Any) -> str:
     an enantiomer pair from either side, so the two share a key without any
     pairwise comparison.
     """
-    return min(Chem.MolToSmiles(mol), Chem.MolToSmiles(mirror_mol(mol)))
+    return collapse_key_and_smiles(mol)[0]
+
+
+def collapse_key_and_smiles(mol: Any) -> tuple[str, str]:
+    """``collapse_key(mol)`` together with ``mol``'s own canonical SMILES,
+    which the key is computed from -- for a caller that needs both, such as
+    ``store_ops.collapse_columns``, without writing the SMILES twice."""
+    smiles = Chem.MolToSmiles(mol)
+    return min(smiles, Chem.MolToSmiles(mirror_mol(mol))), smiles
 
 
 def _canonical_order(mol: Any, key: str) -> np.ndarray:

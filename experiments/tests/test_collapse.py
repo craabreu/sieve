@@ -123,6 +123,47 @@ def test_annotate_collapse_adds_key_and_counts(tmp_path):
     assert set(other["n_enantiomer_forms"]) == {1}
 
 
+def test_annotate_collapse_counts_molecules_by_the_named_id_column(tmp_path):
+    """A THEMol-shaped store: no dash_id, no split yet, one record per id."""
+    pd = pytest.importorskip("pandas")
+
+    from experiments.data import mol_to_blob
+    from experiments.store_ops import annotate_collapse
+
+    rows = [
+        ("t1", "N[C@@H](C)C(=O)O"),
+        ("t2", "N[C@H](C)C(=O)O"),
+        ("t3", "CCO"),
+    ]
+    store = tmp_path / "s"
+    store.mkdir()
+    pd.DataFrame(
+        {
+            "themol_id": [i for i, _ in rows],
+            "mol": [mol_to_blob(_mol(smi)) for _, smi in rows],
+        }
+    ).to_parquet(store / "molecules.parquet")
+
+    out = annotate_collapse("s", stores_root=tmp_path, id_column="themol_id")
+    assert out == {"rows": 3, "keys": 2}
+    df = pd.read_parquet(store / "molecules.parquet")
+    ala = df[df["themol_id"].isin(["t1", "t2"])]
+    assert set(ala["n_molecules"]) == {2}
+    assert set(ala["n_collapsed"]) == {2}
+    assert set(ala["n_enantiomer_forms"]) == {2}
+
+
+def test_collapse_key_and_smiles_agrees_with_collapse_key():
+    from experiments.collapse import collapse_key, collapse_key_and_smiles
+    from rdkit import Chem
+
+    for smiles in ("N[C@@H](C)C(=O)O", "N[C@H](C)C(=O)O", "C/C=C/[C@@H](O)CC"):
+        mol = _mol(smiles)
+        key, own = collapse_key_and_smiles(mol)
+        assert key == collapse_key(mol)
+        assert own == Chem.MolToSmiles(mol)
+
+
 def test_annotate_collapse_is_idempotent(tmp_path):
     from experiments.store_ops import annotate_collapse
 

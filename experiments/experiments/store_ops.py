@@ -373,7 +373,6 @@ def _to_united_atom(
     vs. kept, since ``RemoveHs`` doesn't report that directly. Returns
     ``(ua_mol, n_removed, n_kept)``.
     """
-    from rdkit import Chem
 
     work = Chem.Mol(mol)
     for atom in work.GetAtoms():
@@ -511,25 +510,32 @@ def to_united_atom_store(
     )
 
 
-def annotate_collapse(store: str, *, stores_root: Path) -> dict[str, int]:
+def annotate_collapse(
+    store: str, *, stores_root: Path, id_column: str = "dash_id"
+) -> dict[str, int]:
     """Add ``collapse_key`` and its three counts to an existing store.
 
     In place, like ``prepare-store --n-shards`` adding ``cluster``/``shard``.
     Idempotent: a store already carrying the columns is recounted, not
     rewritten differently. See ``collapse_columns`` for what is computed and
-    what is refused.
+    what is refused, and for ``id_column``.
     """
     import pandas as pd
 
     path = Path(stores_root) / store / "molecules.parquet"
-    df = collapse_columns(pd.read_parquet(path))
+    df = collapse_columns(pd.read_parquet(path), id_column=id_column)
     df.to_parquet(path)
     return {"rows": len(df), "keys": int(df["collapse_key"].nunique())}
 
 
-def collapse_columns(df: Any) -> Any:
+def collapse_columns(df: Any, *, id_column: str = "dash_id") -> Any:
     """``df`` with ``collapse_key``, ``n_collapsed``, ``n_molecules`` and
     ``n_enantiomer_forms`` (re)computed from its ``mol`` blobs.
+
+    ``n_molecules`` counts the distinct values of ``id_column`` sharing a
+    key: DASH deposits by default, ``themol_id`` records for a THEMol store,
+    where each record is one geometry and the count therefore equals
+    ``n_collapsed``.
 
     Separate from ``annotate_collapse`` so a store can be recomputed without
     being rewritten -- which is how a patch is staged and checked before it
@@ -539,13 +545,19 @@ def collapse_columns(df: Any) -> Any:
     On the real corpus none does -- identical molecules share a fingerprint,
     so Butina cannot separate them, and both the split and the sharding are by
     whole cluster -- and asserting it means a future corpus that breaks the
-    property stops rather than silently averaging across a fold boundary.
+    property stops rather than silently averaging across a fold boundary. A
+    store with none of the three columns yet has nothing to straddle.
+
+    Each blob is deserialised once, for both the key and the canonical form
+    that ``n_enantiomer_forms`` counts, and no ``Mol`` outlives its row.
     """
-    from experiments.collapse import collapse_key
+    from experiments.collapse import collapse_key_and_smiles
     from experiments.data import blob_to_mol
 
     df = df.copy()
-    df["collapse_key"] = [collapse_key(blob_to_mol(b)) for b in df["mol"]]
+    pairs = [collapse_key_and_smiles(blob_to_mol(blob)) for blob in df["mol"]]
+    df["collapse_key"] = [key for key, _ in pairs]
+    canonical = [smiles for _, smiles in pairs]
 
     for column in ("split", "cluster", "shard"):
         if column not in df.columns:
@@ -560,9 +572,9 @@ def collapse_columns(df: Any) -> Any:
 
     grouped = df.groupby("collapse_key")
     df["n_collapsed"] = grouped["collapse_key"].transform("size").astype("int32")
-    df["n_molecules"] = grouped["dash_id"].transform("nunique").astype("int32")
+    df["n_molecules"] = grouped[id_column].transform("nunique").astype("int32")
     df["n_enantiomer_forms"] = (
-        df.assign(_canon=[Chem.MolToSmiles(blob_to_mol(b)) for b in df["mol"]])
+        df.assign(_canon=canonical)
         .groupby("collapse_key")["_canon"]
         .transform("nunique")
         .astype("int32")

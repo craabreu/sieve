@@ -341,7 +341,9 @@ def _cmd_to_united_atom(args: argparse.Namespace) -> int:
 def _cmd_annotate_collapse(args: argparse.Namespace) -> int:
     from experiments.store_ops import annotate_collapse
 
-    out = annotate_collapse(args.store, stores_root=DEFAULT_STORES_ROOT)
+    out = annotate_collapse(
+        args.store, stores_root=DEFAULT_STORES_ROOT, id_column=args.id_column
+    )
     print(f"{out['rows']} rows -> {out['keys']} collapse keys")
     return 0
 
@@ -1787,6 +1789,12 @@ def build_parser() -> argparse.ArgumentParser:
         "cluster or shard",
     )
     p_annotate.add_argument("store", nargs="?", default="dash-molecules")
+    p_annotate.add_argument(
+        "--id-column",
+        default="dash_id",
+        help="column whose distinct values n_molecules counts (default: "
+        "dash_id; themol_id for a THEMol store)",
+    )
     p_annotate.set_defaults(func=_cmd_annotate_collapse)
 
     p_summary = sub.add_parser(
