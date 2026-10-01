@@ -447,19 +447,23 @@ def _parse_one_record(
 
     mol.SetBoolProp(CIP_LABELED_PROP, True)
 
+    from experiments.geometry import geometry_record
+
     return {
         "chembl_id": chembl_id,
         "conf_id": conf_id,
         "dash_id": dash_id,
         "mol": mol_to_blob(mol),
         "net_charge": net_charge,
+        **geometry_record(mol),
     }
 
 
 def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
     """Stream-parse ``sdf_path`` (never loading it whole into memory) into
     ``out_path``, a parquet file with columns ``chembl_id, conf_id, dash_id,
-    mol, net_charge`` (no ``split`` column yet -- see ``assign_splits``).
+    mol, net_charge`` and the geometry columns of ``experiments.geometry``
+    (no ``split`` column yet -- see ``assign_splits``).
     ``dash_id`` is set on every row, ``chembl_id``/``conf_id`` additionally
     on the ``QMUGS500_*`` cohort whose records carry them (see
     ``_parse_one_record``'s docstring for why the SDF has two record
@@ -472,6 +476,8 @@ def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
     import pyarrow.parquet as pq
     from rdkit import Chem
 
+    from experiments.geometry import arrow_fields
+
     schema = pa.schema(
         [
             ("chembl_id", pa.string()),
@@ -479,6 +485,7 @@ def parse_dash_molecules(sdf_path: Path, out_path: Path) -> None:
             ("dash_id", pa.string()),
             ("mol", pa.binary()),
             ("net_charge", pa.float64()),
+            *arrow_fields(),
         ]
     )
 

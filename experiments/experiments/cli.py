@@ -348,6 +348,19 @@ def _cmd_annotate_collapse(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_annotate_geometry(args: argparse.Namespace) -> int:
+    from experiments.geometry import annotate_geometry
+
+    out = annotate_geometry(
+        args.store, stores_root=DEFAULT_STORES_ROOT, workers=args.workers
+    )
+    print(
+        f"{out['rows']} rows: {out['stretched_bond']} stretched bond, "
+        f"{out['close_contact']} close contact, {out['either']} either"
+    )
+    return 0
+
+
 def _cmd_cv_fit_dash_shards(args: argparse.Namespace) -> int:
     from experiments.cv import fit_dash_shard, run_dash_shard_fits
 
@@ -1796,6 +1809,21 @@ def build_parser() -> argparse.ArgumentParser:
         "dash_id; themol_id for a THEMol store)",
     )
     p_annotate.set_defaults(func=_cmd_annotate_collapse)
+
+    p_geometry = sub.add_parser(
+        "annotate-geometry",
+        help="add the geometry-against-graph columns (stretched bonds, close "
+        "heavy-atom contacts) to an existing store, in place; flags only, no "
+        "row is removed",
+    )
+    p_geometry.add_argument("store", nargs="?", default="dash-molecules")
+    p_geometry.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="parallel processes (default: 16)",
+    )
+    p_geometry.set_defaults(func=_cmd_annotate_geometry)
 
     p_summary = sub.add_parser(
         "summarize", help="collect runs/**/metrics.json into a CSV"
