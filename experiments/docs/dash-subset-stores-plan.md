@@ -2,7 +2,9 @@
 
 Status: approved with decisions D1-D5 (2026-10-01; see the end); implemented on branch
 `dash-subset-stores` (`dash_subsets.py`, `dash_diagnostics.py`, `dash_curation.py`, CLI
-`prepare-dash-subsets`).
+`prepare-dash-subsets`). Built on the real SDF on 2026-10-01, the staging store reproduces the
+manuscript's pair table row by row, its copy and curation counts, and every DASH/QMugs curation
+decision; `cv_charges.sh` then ran Studies A, B and C on `dash-qmugs`.
 
 ## Goal
 

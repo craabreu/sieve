@@ -82,7 +82,7 @@ def compare_pair(
     mirrors: list[Any],
     i: int,
     j: int,
-    charges: list[dict[str, np.ndarray]],
+    charges: list[dict[str, np.ndarray | None]],
     energies: list[dict[str, float]],
 ) -> tuple:
     """Every quantity of ``PAIR_COLUMNS`` after ``row_a, row_b, subset`` for records
@@ -106,14 +106,11 @@ def compare_pair(
     index, orbit = aligned_values(pair, "_index", stereo=True)
     match = index[1].astype(int)
 
-    d = [
-        _sorted_discrepancy(
-            charges[i][k],
-            None if charges[j][k] is None else charges[j][k][match],
-            orbit,
-        )
-        for k in CHARGE_SETS
-    ]
+    d = []
+    for k in CHARGE_SETS:
+        other = charges[j][k]
+        matched = None if other is None else other[match]
+        d.append(_sorted_discrepancy(charges[i][k], matched, orbit))
     de = [abs(energies[i][k] - energies[j][k]) * HARTREE for k in ENERGIES]
 
     xa, xb = (
@@ -123,9 +120,8 @@ def compare_pair(
     groups: dict[tuple[int, int], tuple[list[float], list[float]]] = {}
     for bond in pair[0].GetBonds():
         u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        la, lb = groups.setdefault(
-            tuple(sorted((int(orbit[u]), int(orbit[v])))), ([], [])
-        )
+        lo, hi = sorted((int(orbit[u]), int(orbit[v])))
+        la, lb = groups.setdefault((lo, hi), ([], []))
         la.append(float(np.linalg.norm(xa[u] - xa[v])))
         lb.append(float(np.linalg.norm(xb[match[u]] - xb[match[v]])))
     bond = max(
@@ -202,14 +198,14 @@ def diagnose_pairs(parsed: Any, fields: Any, *, workers: int = 16) -> tuple[Any,
         for p, r in pool.map(_task, tasks):
             pairs += p
             rotors += r
-    pairs = pd.DataFrame(pairs, columns=list(PAIR_COLUMNS))
+    pairs = pd.DataFrame(pairs, columns=pd.Index(PAIR_COLUMNS))
     sizes = (
         parsed.groupby(["collapse_key", "subset"], sort=False)
         .size()
         .rename("records")
         .reset_index()
     )
-    rot = pd.DataFrame(rotors, columns=["row", "subset", "rotatable_bonds"])
+    rot = pd.DataFrame(rotors, columns=pd.Index(["row", "subset", "rotatable_bonds"]))
     rot["collapse_key"] = parsed["collapse_key"].to_numpy()[rot["row"].to_numpy()]
     structures = sizes.merge(
         rot[["collapse_key", "subset", "rotatable_bonds"]],

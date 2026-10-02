@@ -296,3 +296,10 @@ final held-out evaluation once all shards are fit:
 See `experiments/workflows/cv_charges.sh` for the full sequence, end to
 end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
 stop after a given one.
+`CV_STORE` picks the store the studies run on: `dash-qmugs` (the default) or
+`dash-extra`, both built by the workflow's `prepare-subsets` step, or the
+legacy pooled `dash-molecules`. Each store keeps its own runs, results and
+figures (`experiments/runs/<store>`, `experiments/results/<store>`,
+`experiments/docs/figures/<store>`; the legacy store keeps the original,
+unsuffixed locations), and `EXPERIMENTS_RUNS_ROOT`, which the workflow
+exports, points every Python entry point at the store's runs.

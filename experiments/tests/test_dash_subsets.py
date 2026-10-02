@@ -212,10 +212,10 @@ def test_esp_score_isolates_a_record_that_breaks_the_relation():
 def test_compare_pair_sees_a_mirror_image_as_a_copy():
     from experiments.dash_diagnostics import _mirror, compare_pair
     from rdkit import Chem
-    from rdkit.Chem import AllChem
+    from rdkit.Chem import rdDistGeom
 
     mol = Chem.AddHs(Chem.MolFromSmiles("C[C@H](N)O"))
-    AllChem.EmbedMolecule(mol, randomSeed=7)
+    rdDistGeom.EmbedMolecule(mol, randomSeed=7)
     mirror = _mirror(mol)
     mols = [mol, mirror]
     heavy = [Chem.RemoveHs(m) for m in mols]

@@ -194,7 +194,7 @@ def triangles(copies: Any) -> Any:
                         *sorted((x[a, b], x[a, c], x[b, c])),
                     )
                 )
-    return pd.DataFrame(out, columns=["d1", "d2", "d3", "x1", "x2", "x3"])
+    return pd.DataFrame(out, columns=pd.Index(["d1", "d2", "d3", "x1", "x2", "x3"]))
 
 
 def triangle_bounds(tri: Any) -> tuple[float, float]:

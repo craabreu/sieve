@@ -259,9 +259,9 @@ def stratified_cluster_split(
     target = np.array([fractions[k] for k in names], dtype=np.float64)
     if abs(target.sum() - 1) > 1e-6 or (target <= 0).any():
         raise ValueError("fractions must be positive and sum to 1")
-    _, cl = np.unique(cluster_ids, return_inverse=True)
+    cl_names, cl = np.unique(cluster_ids, return_inverse=True)
     st_names, st = np.unique(strata, return_inverse=True)
-    size = np.zeros((cl.max() + 1, len(st_names)))
+    size = np.zeros((len(cl_names), len(st_names)))
     np.add.at(size, (cl, st), 1.0)
     totals = size.sum(axis=0)
     order = np.argsort(-size.sum(axis=1), kind="stable")
