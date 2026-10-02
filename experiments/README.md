@@ -109,6 +109,24 @@ content transform act on disjoint columns), but subsample first is the
 efficient order -- it runs `to-united-atom`'s own rdkit chemistry on the
 smaller store instead of the full one.
 
+The deposited SDF holds two record schemas, DASH/QMugs (`QMUGS500_*`) and
+DASH/Extra (`Rest_*`), which are meant to be used as separate datasets.
+`prepare-dash-subsets` builds them as two training-ready stores,
+`dash-qmugs` and `dash-extra`, through a shared `dash-staging` store:
+
+    uv run python -m experiments prepare-dash-subsets --sdf-path stores/dash-molecules/dashMoleculesSDF_v2.sdf --workers 32
+
+It parses the SDF once (keeping, besides the training columns, the deposited
+fields the manuscript's figures read), clusters the whole corpus once,
+compares every pair of records of one structure and subset (heavy-atom RMSD
+with symmetry and reflection, charge discrepancies, energy differences),
+curates (geometry-graph mismatches in both subsets; the copy rule and the
+ESP cut in DASH/QMugs), assigns one cluster-level 90/10 split and
+`--n-shards` (default 50) train shards over the survivors, balanced per
+subset, and only then separates the subsets, so a cluster has the same split
+and shard in both stores. Each stage writes its own file in `dash-staging`
+and is skipped when that file exists. See `docs/dash-subset-stores-plan.md`.
+
 ### Running an experiment
 
 A single-predictor run:
@@ -278,3 +296,10 @@ final held-out evaluation once all shards are fit:
 See `experiments/workflows/cv_charges.sh` for the full sequence, end to
 end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
 stop after a given one.
+`CV_STORE` picks the store the studies run on: `dash-qmugs` (the default) or
+`dash-extra`, both built by the workflow's `prepare-subsets` step, or the
+legacy pooled `dash-molecules`. Each store keeps its own runs, results and
+figures (`experiments/runs/<store>`, `experiments/results/<store>`,
+`experiments/docs/figures/<store>`; the legacy store keeps the original,
+unsuffixed locations), and `EXPERIMENTS_RUNS_ROOT`, which the workflow
+exports, points every Python entry point at the store's runs.

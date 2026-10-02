@@ -220,7 +220,7 @@ def _loo_scale(count: NDArray) -> NDArray:
     silently absorbed into the SSE.
     """
     n = count.astype(np.float64)
-    if n.size and n.min() < 2.0:
+    if n.size and np.min(n) < 2.0:
         raise AssertionError(
             "_loo_scale received a class of fewer than 2 atoms; a singleton "
             "must be folded into its parent, not scored in place"

@@ -691,3 +691,24 @@ def test_merge_states_creates_the_output_directory(tmp_path, monkeypatch):
     args = argparse.Namespace(predictor="sieve", out=str(out), shard=["a.npz"])
     assert cli._cmd_merge_states(args) == 0
     assert out.exists(), "merge-states did not create the output directory"
+
+
+def test_build_parser_annotate_collapse_defaults_to_dash_id():
+    from experiments.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["annotate-collapse"])
+    assert args.store == "dash-molecules"
+    assert args.id_column == "dash_id"
+    args = parser.parse_args(
+        ["annotate-collapse", "themol-mbis", "--id-column", "themol_id"]
+    )
+    assert args.id_column == "themol_id"
+
+
+def test_build_parser_annotate_geometry_defaults():
+    from experiments.cli import build_parser
+
+    args = build_parser().parse_args(["annotate-geometry", "dash-molecules"])
+    assert args.store == "dash-molecules"
+    assert args.workers == 16

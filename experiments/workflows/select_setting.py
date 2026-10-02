@@ -43,7 +43,8 @@ TOLERANCE = float(os.environ.get("CV_SELECT_TOLERANCE", "0.005"))
 
 def curve(experiment: str, method: str) -> dict[int, list[float]]:
     rows: dict[int, list[float]] = defaultdict(list)
-    for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+    runs = Path(os.environ.get("EXPERIMENTS_RUNS_ROOT", "experiments/runs"))
+    for manifest in (runs / experiment).glob("*__*/manifest.json"):
         metrics = manifest.parent / "metrics.json"
         if not metrics.exists():
             continue

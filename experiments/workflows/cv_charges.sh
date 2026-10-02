@@ -139,7 +139,7 @@ step() {
 # CV_UNTIL names a real step is a *static* fact, so it must not be inferred
 # from how far a particular run got: an interrupted or failed run reaches
 # fewer steps for reasons that have nothing to do with the name.
-declared_steps() { grep -oE '^step [A-Za-z0-9_-]+' "$0" | awk '{print $2}'; }
+declared_steps() { grep -oE '^ *step [A-Za-z0-9_-]+' "$0" | awk '{print $2}'; }
 
 summarize_steps() {
   local status=$?
@@ -214,12 +214,12 @@ PY
 
 runs_exist() {
   local experiment=$1 batch=$2
-  compgen -G "experiments/runs/$experiment/${batch}__*/metrics.json" > /dev/null
+  compgen -G "$RUNS/$experiment/${batch}__*/metrics.json" > /dev/null
 }
 
 runs_count_is() {
   local experiment=$1 expected=$2 found
-  found=$(ls -d experiments/runs/"$experiment"/*__*/metrics.json 2>/dev/null | wc -l)
+  found=$(ls -d "$RUNS/$experiment"/*__*/metrics.json 2>/dev/null | wc -l)
   [ "$found" -eq "$expected" ]
 }
 
@@ -238,12 +238,13 @@ method_runs_count_is() {
   local experiment=$1 method=$2 expected=$3
   "$PYTHON" - "$experiment" "$method" "$expected" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
 experiment, method, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
 found = 0
-for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+for manifest in Path(os.environ["EXPERIMENTS_RUNS_ROOT"], experiment).glob("*__*/manifest.json"):
     if not (manifest.parent / "metrics.json").exists():
         continue  # a half-written run is not a finished sample
     cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
@@ -262,12 +263,13 @@ depth_runs_count_is() {
   local experiment=$1 depth=$2 expected=$3
   "$PYTHON" - "$experiment" "$depth" "$expected" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
 experiment, depth, expected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 found = 0
-for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+for manifest in Path(os.environ["EXPERIMENTS_RUNS_ROOT"], experiment).glob("*__*/manifest.json"):
     if not (manifest.parent / "metrics.json").exists():
         continue  # a half-written run is not a finished sample
     cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
@@ -287,6 +289,7 @@ method_depth_runs_count_is() {
   local experiment=$1 method=$2 depth=$3 expected=$4
   "$PYTHON" - "$experiment" "$method" "$depth" "$expected" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -294,7 +297,7 @@ experiment, method, depth, expected = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 )
 found = 0
-for manifest in Path("experiments/runs", experiment).glob("*__*/manifest.json"):
+for manifest in Path(os.environ["EXPERIMENTS_RUNS_ROOT"], experiment).glob("*__*/manifest.json"):
     if not (manifest.parent / "metrics.json").exists():
         continue  # a half-written run is not a finished sample
     cv = json.loads(manifest.read_text()).get("config", {}).get("cv", {})
@@ -319,7 +322,7 @@ file_is_newer_than_runs() {
 
 shard_fits_count_is() {
   local prefix=$1 expected=$2 found
-  found=$(ls -d experiments/runs/cv-shard-fits/"$prefix"*__*/tree_stats.npz 2>/dev/null | wc -l)
+  found=$(ls -d "$RUNS"/cv-shard-fits/"$prefix"*__*/tree_stats.npz 2>/dev/null | wc -l)
   [ "$found" -eq "$expected" ]
 }
 
@@ -333,7 +336,33 @@ n_variants() { echo "$SIEVE_VARIANTS" | grep -c '"method"'; }
 # Configuration
 # ===========================================================================
 
-STORE=dash-molecules
+# The store the studies run on. dash-qmugs and dash-extra are the two DASH
+# subsets, built together by prepare-dash-subsets (one clustering, one curation
+# and one split shared by both, then separated); dash-molecules is the legacy
+# pooled store. CV_STORE picks one.
+STORE="${CV_STORE:-dash-qmugs}"
+case "$STORE" in
+  dash-qmugs | dash-extra) SUBSET_STORE=true ;;
+  *) SUBSET_STORE=false ;;
+esac
+
+# Every store keeps its runs, results and figures apart. Shard fits are found
+# by batch id alone (cv._shard_fit_done), so two stores sharing one runs root
+# would read each other's fits as done; and the model cache and the tracked
+# figures would be overwritten. The legacy store keeps the original locations,
+# so its campaign stays where the manuscript's snapshots point.
+if [ "$STORE" = dash-molecules ]; then
+  RUNS=experiments/runs
+  RESULTS=experiments/results
+  FIGURES_DIR=experiments/docs/figures
+else
+  RUNS="experiments/runs/$STORE"
+  RESULTS="experiments/results/$STORE"
+  FIGURES_DIR="experiments/docs/figures/$STORE"
+fi
+# Read by runner.DEFAULT_RUNS_ROOT in every Python process this script starts.
+EXPERIMENTS_RUNS_ROOT="$PWD/$RUNS"
+export EXPERIMENTS_RUNS_ROOT RUNS RESULTS
 
 # Chosen from cluster-report's own measured output, not guessed: the train
 # split holds 313,964 molecules in 17,995 Butina clusters whose largest is
@@ -441,7 +470,7 @@ print(json.dumps([variants[m] for m in wanted]))
 )
 
 CODES_PATH="experiments/stores/$STORE/sieve-codes.json"
-CLUSTER_REPORT="experiments/results/cluster-report.txt"
+CLUSTER_REPORT="$RESULTS/cluster-report.txt"
 
 # Study B fixes each method at the depth Study A selected. Override once
 # Study A's curve has been read; the defaults are each series' own prior
@@ -465,7 +494,7 @@ fi
 # the real shards), and Study A and Study B share repeat 0's partition, so
 # without this that repeat is assembled twice. Set CV_MODEL_CACHE= (empty) to
 # turn it off and trade the disk back for the time.
-CV_MODEL_CACHE="${CV_MODEL_CACHE-experiments/results/cv-model-cache}"
+CV_MODEL_CACHE="${CV_MODEL_CACHE-$RESULTS/cv-model-cache}"
 MODEL_CACHE_FLAG=""
 if [ -n "$CV_MODEL_CACHE" ]; then
   MODEL_CACHE_FLAG="--model-cache $CV_MODEL_CACHE"
@@ -586,7 +615,6 @@ SIEVE_STUDY_B=sieve-cv-study-b
 # Tracked, deliberately: experiments/results is gitignored (friction
 # observation 3), and the Tukey plot is the study's headline result, not an
 # intermediate. It carries its own provenance header (store, commit, run ids).
-FIGURES_DIR=experiments/docs/figures
 # The same test drawn the other way: one interval per method on the metric's
 # own scale rather than one per pair on a difference scale (statsmodels'
 # plot_simultaneous layout, as used in Pat Walters' ADME model comparison).
@@ -622,46 +650,57 @@ each_metric()   { echo "$COMPARE_METRICS" | tr ',' '\n' | grep -v '^$'; }
 # have (curation-key-fix.md section 4), and it exists only transiently inside
 # prepare_store. Recovering it later costs a full re-parse of the 8.3GB SDF,
 # so it is kept here rather than reconstructed.
-step prepare-corpus \
-  "store_is_curated $STORE" -- \
-  "$PYTHON" -m experiments prepare-store "$STORE" --stop-before-split \
-    --keep-uncurated
+if $SUBSET_STORE; then
+  # Parse, cluster, diagnose, curate, split and separate in one idempotent
+  # command (experiments/dash_subsets.py); the shard count is shared by both
+  # stores, and the store carries collapse_key and its counts already.
+  step prepare-subsets \
+    "store_has_columns $STORE split cluster shard collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
+    "$PYTHON" -m experiments prepare-dash-subsets \
+      --sdf-path experiments/stores/dash-molecules/dashMoleculesSDF_v2.sdf \
+      --n-shards "$N_SHARDS" --workers "${CV_PREPARE_WORKERS:-32}"
+else
+  step prepare-corpus \
+    "store_is_curated $STORE" -- \
+    "$PYTHON" -m experiments prepare-store "$STORE" --stop-before-split \
+      --keep-uncurated
 
-# --- choose the shard count ------------------------------------------------
-#
-# Advisory and read-only: reports the train-split cluster size distribution
-# and the shard balance each candidate N would actually achieve. It informs
-# N_SHARDS above (which is where the decision is recorded durably -- this
-# file, in git, not the report, which lands in gitignored results/).
-step cluster-report \
-  "file_exists $CLUSTER_REPORT" -- \
-  bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$CLUSTER_REPORT')\" && \
-           '$PYTHON' -m experiments cluster-report '$STORE' \
-             --candidates 10,20,25,50,100,200 | tee '$CLUSTER_REPORT'"
+  # --- choose the shard count ------------------------------------------------
+  #
+  # Advisory and read-only: reports the train-split cluster size distribution
+  # and the shard balance each candidate N would actually achieve. It informs
+  # N_SHARDS above (which is where the decision is recorded durably -- this
+  # file, in git, not the report, which lands in gitignored results/).
+  step cluster-report \
+    "file_exists $CLUSTER_REPORT" -- \
+    bash -c "set -euo pipefail; mkdir -p \"\$(dirname '$CLUSTER_REPORT')\" && \
+             '$PYTHON' -m experiments cluster-report '$STORE' \
+               --candidates 10,20,25,50,100,200 | tee '$CLUSTER_REPORT'"
 
-# --- split -----------------------------------------------------------------
-#
-# 90/10 train/test by whole Butina cluster, plus the cluster ids and the
-# N_SHARDS cluster-clean train shards, all from one clustering pass.
-step split-store \
-  "store_has_columns $STORE split cluster shard" -- \
-  "$PYTHON" -m experiments prepare-store "$STORE" --n-shards "$N_SHARDS"
+  # --- split -----------------------------------------------------------------
+  #
+  # 90/10 train/test by whole Butina cluster, plus the cluster ids and the
+  # N_SHARDS cluster-clean train shards, all from one clustering pass.
+  step split-store \
+    "store_has_columns $STORE split cluster shard" -- \
+    "$PYTHON" -m experiments prepare-store "$STORE" --n-shards "$N_SHARDS"
 
-# --- collapse annotation ----------------------------------------------------
-#
-# Adds collapse_key plus its three counts, in place. Must run AFTER the split:
-# it refuses a key group that straddles a split, cluster or shard, which is a
-# check on the partition as much as on the key. Measured on the real corpus:
-# 0 groups straddle any of the three, because identical molecules share a
-# fingerprint so Butina cannot separate them, and both the split and the
-# sharding are by whole cluster.
-#
-# Note that a dash_id is NOT a structure key -- 2.14% of them hold conformers
-# that are diastereomers or E/Z isomers of one another, which collapse_key
-# correctly keeps apart. The unit here is the structure, not the dash_id.
-step annotate-collapse \
-  "store_has_columns $STORE collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
-  "$PYTHON" -m experiments annotate-collapse "$STORE"
+  # --- collapse annotation ----------------------------------------------------
+  #
+  # Adds collapse_key plus its three counts, in place. Must run AFTER the split:
+  # it refuses a key group that straddles a split, cluster or shard, which is a
+  # check on the partition as much as on the key. Measured on the real corpus:
+  # 0 groups straddle any of the three, because identical molecules share a
+  # fingerprint so Butina cannot separate them, and both the split and the
+  # sharding are by whole cluster.
+  #
+  # Note that a dash_id is NOT a structure key -- 2.14% of them hold conformers
+  # that are diastereomers or E/Z isomers of one another, which collapse_key
+  # correctly keeps apart. The unit here is the structure, not the dash_id.
+  step annotate-collapse \
+    "store_has_columns $STORE collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
+    "$PYTHON" -m experiments annotate-collapse "$STORE"
+fi
 
 # --- irreducible-floor components ------------------------------------------
 #
@@ -928,7 +967,7 @@ step study-a-hose \
 DEPTH_CURVE_METRIC="${DEPTH_CURVE_METRIC:-rmse,r2}"
 DEPTH_CURVE_STEM="$FIGURES_DIR/depth-curve-study-a"
 DEPTH_CURVE_STAMP="$FIGURES_DIR/.depth-curve-inputs"
-STUDY_A_RUNS="experiments/runs/$DASH_STUDY_A experiments/runs/$SIEVE_STUDY_A experiments/runs/$HOSE_STUDY_A"
+STUDY_A_RUNS="$RUNS/$DASH_STUDY_A $RUNS/$SIEVE_STUDY_A $RUNS/$HOSE_STUDY_A"
 
 # Sieve's WL depth 0 is kept off the figure: with no refinement at all the
 # model is element-wise pooled means, whose R^2 of 0.46 compresses the 0.99
@@ -1150,7 +1189,7 @@ print(json.dumps(out))
 # runs; they cannot catch a changed metric list or a changed set of arms,
 # which change the figures just as much. Guard on both.
 COMPARE_STAMP="$FIGURES_DIR/.compare-inputs"
-STUDY_B_RUNS="experiments/runs/$DASH_STUDY_B experiments/runs/$SIEVE_STUDY_B experiments/runs/$HOSE_STUDY_B"
+STUDY_B_RUNS="$RUNS/$DASH_STUDY_B $RUNS/$SIEVE_STUDY_B $RUNS/$HOSE_STUDY_B"
 
 compare_is_up_to_date() {
   [ -f "$COMPARE_STAMP" ] || return 1
@@ -1529,7 +1568,7 @@ step study-c-curve "study_c_curve_done" -- run_study_c_curve
 # 0.99 band where every difference between the real depths lives.
 STUDY_C_CURVE_STEM="$FIGURES_DIR/depth-curve-study-c"
 STUDY_C_CURVE_STAMP="$FIGURES_DIR/.depth-curve-study-c-inputs"
-STUDY_C_RUNS="experiments/runs/$SIEVE_STUDY_A experiments/runs/$SIEVE_STUDY_C"
+STUDY_C_RUNS="$RUNS/$SIEVE_STUDY_A $RUNS/$SIEVE_STUDY_C"
 
 STUDY_C_CURVE_ARMS=$(
   printf '[{"experiment": "%s", "method": "%s", "label": "element (incumbent)",' \
@@ -1647,7 +1686,7 @@ print(json.dumps({
 )
 
 STUDY_C_COMPARE_STAMP="$FIGURES_DIR/.compare-study-c-inputs"
-STUDY_C_B_RUNS="experiments/runs/$SIEVE_STUDY_B experiments/runs/$SIEVE_STUDY_C_B"
+STUDY_C_B_RUNS="$RUNS/$SIEVE_STUDY_B $RUNS/$SIEVE_STUDY_C_B"
 
 study_c_compare_is_up_to_date() {
   [ -f "$STUDY_C_COMPARE_STAMP" ] || return 1
@@ -1797,7 +1836,7 @@ STUDY_D_METRICS="near_ez2/rmse near_ez1/rmse has_ez/rmse near_ez2/mae rmse mae"
 
 study_d_report_is_up_to_date() {
   [ -f "$STUDY_D_REPORT.txt" ] || return 1
-  [ -z "$(find "experiments/runs/$SIEVE_STUDY_B" "experiments/runs/$SIEVE_STUDY_D" \
+  [ -z "$(find "$RUNS/$SIEVE_STUDY_B" "$RUNS/$SIEVE_STUDY_D" \
             -name subset_metrics.json -newer "$STUDY_D_REPORT.txt" -print -quit)" ]
 }
 
@@ -1902,7 +1941,7 @@ STUDY_E_METRICS="near_tet2/rmse near_tet1/rmse has_tet/rmse near_tet2/mae near_e
 
 study_e_report_is_up_to_date() {
   [ -f "$STUDY_E_REPORT.txt" ] || return 1
-  [ -z "$(find "experiments/runs/$SIEVE_STUDY_D" "experiments/runs/$SIEVE_STUDY_E" \
+  [ -z "$(find "$RUNS/$SIEVE_STUDY_D" "$RUNS/$SIEVE_STUDY_E" \
             -name subset_metrics.json -newer "$STUDY_E_REPORT.txt" -print -quit)" ]
 }
 
@@ -1953,7 +1992,7 @@ step study-f-scores \
 
 study_f_report_is_up_to_date() {
   [ -f "$STUDY_F_REPORT.txt" ] || return 1
-  [ -z "$(find "experiments/runs/$SIEVE_STUDY_B" -name calibration_metrics.json \
+  [ -z "$(find "$RUNS/$SIEVE_STUDY_B" -name calibration_metrics.json \
             -newer "$STUDY_F_REPORT.txt" -print -quit)" ]
 }
 
@@ -1970,11 +2009,11 @@ step study-f-report "study_f_report_is_up_to_date" -- run_study_f_report
 # Once, at the end, outside both studies: merge every shard into one
 # full-train model and score the untouched 10% test split. The headline
 # number, and the only thing here that touches `test`.
-DASH_MERGED=experiments/results/dash-merged/tree_stats.npz
+DASH_MERGED=$RESULTS/dash-merged/tree_stats.npz
 # Named for the depth the shards were FIT at, not a selected one: there is a
 # single merged artifact, and a shallower model is a truncation of it. Using
 # the selected depth here globbed shard fits that never existed.
-SIEVE_MERGED="experiments/results/sieve-merged/tree_stats-w${SIEVE_MAX_DEPTH}.npz"
+SIEVE_MERGED="$RESULTS/sieve-merged/tree_stats-w${SIEVE_MAX_DEPTH}.npz"
 
 # Merge order does not affect the result (both merges are commutative and
 # associative); sorted purely for a readable command line.
@@ -1982,13 +2021,13 @@ step merge-dash-shards \
   "file_exists $DASH_MERGED" -- \
   bash -c "set -euo pipefail; '$PYTHON' -m experiments merge-states --predictor dash \
              --out '$DASH_MERGED' \
-             \$(ls experiments/runs/cv-shard-fits/fit-dash-s*__*/tree_stats.npz | sort)"
+             \$(ls $RUNS/cv-shard-fits/fit-dash-s*__*/tree_stats.npz | sort)"
 
 step merge-sieve-shards \
   "file_exists $SIEVE_MERGED" -- \
   bash -c "set -euo pipefail; '$PYTHON' -m experiments merge-states --predictor sieve \
              --out '$SIEVE_MERGED' \
-             \$(ls experiments/runs/cv-shard-fits/fit-sieve-$SIEVE_CONFIG_LABEL-w${SIEVE_MAX_DEPTH}-s*__*/tree_stats.npz | sort)"
+             \$(ls $RUNS/cv-shard-fits/fit-sieve-$SIEVE_CONFIG_LABEL-w${SIEVE_MAX_DEPTH}-s*__*/tree_stats.npz | sort)"
 
 step final-holdout-dash \
   "runs_exist dash-final-holdout final" -- \
