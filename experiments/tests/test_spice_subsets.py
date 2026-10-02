@@ -17,10 +17,10 @@ BOHR = 0.529177210903
 
 def _embedded(smiles: str, seed: int = 7):
     from rdkit import Chem
-    from rdkit.Chem import AllChem
+    from rdkit.Chem import rdDistGeom
 
     mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
-    AllChem.EmbedMolecule(mol, randomSeed=seed)
+    assert rdDistGeom.EmbedMolecule(mol, randomSeed=seed) == 0, smiles
     for atom in mol.GetAtoms():
         atom.SetAtomMapNum(atom.GetIdx() + 1)
     return mol

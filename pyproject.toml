@@ -121,6 +121,10 @@ allowed-unresolved-imports = [
     "pyarrow.**",
     "matplotlib",
     "matplotlib.**",
+    # The THEMol and SPICE builders read HDF5; h5py ships in the `charges`
+    # extra alongside them.
+    "h5py",
+    "h5py.**",
     # butina_cluster.py's unconditional `from tqdm.auto import tqdm` --
     # tqdm ships in the `charges` extra (prepare-store's real progress
     # bars), not in CI's [dev,chem] install (see
