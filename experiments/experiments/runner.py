@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import logging
+import os
 import platform
 import random
 import shutil
@@ -51,7 +52,12 @@ DEFAULT_TRACKING_URI = f"sqlite:///{_MLFLOW_RUNS_DB}"
 # ./mlruns/ wherever the CLI was invoked from unless every experiment is
 # created with an explicit artifact_location. See _ensure_experiment.
 DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "experiments" / "mlflow_artifacts"
-DEFAULT_RUNS_ROOT = REPO_ROOT / "experiments" / "runs"
+# EXPERIMENTS_RUNS_ROOT moves every default-rooted read and write, so a
+# workflow can keep one store's runs apart from another's (shard fits are found
+# by batch id alone, which two stores would share).
+DEFAULT_RUNS_ROOT = Path(
+    os.environ.get("EXPERIMENTS_RUNS_ROOT", REPO_ROOT / "experiments" / "runs")
+)
 
 logger = logging.getLogger("experiments")
 
