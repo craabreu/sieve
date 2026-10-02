@@ -368,6 +368,8 @@ def _parse_one_group(themol_id: str, group: Any, h5_name: str) -> tuple[dict, Co
     malformed record should not abort a three-million-record parse."""
     from rdkit import Chem
 
+    from experiments.geometry import geometry_record
+
     smiles = group["mapped_isomeric_smiles"][()].decode()
     try:
         mol, verdict, counts = build_record_mol(
@@ -385,6 +387,7 @@ def _parse_one_group(themol_id: str, group: Any, h5_name: str) -> tuple[dict, Co
         counts["isotope_labelled"] += 1
     net_charge = float(Chem.GetFormalCharge(mol))
 
+    geometry = geometry_record(mol)
     row = {
         "themol_id": themol_id,
         "h5_file": h5_name,
@@ -392,12 +395,15 @@ def _parse_one_group(themol_id: str, group: Any, h5_name: str) -> tuple[dict, Co
         "mol": store_blob(mol),
         "net_charge": net_charge,
         "stereo_check": verdict,
+        **geometry,
     }
     return row, counts
 
 
 def _schema():
     import pyarrow as pa
+
+    from experiments.geometry import arrow_fields
 
     return pa.schema(
         [
@@ -407,6 +413,7 @@ def _schema():
             ("mol", pa.binary()),
             ("net_charge", pa.float64()),
             ("stereo_check", pa.string()),
+            *arrow_fields(),
         ]
     )
 

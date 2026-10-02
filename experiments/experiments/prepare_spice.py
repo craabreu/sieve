@@ -120,6 +120,7 @@ def _parse_one_group(spice_id: str, group: Any) -> tuple[list[dict], Counter]:
     parse, so each is counted under the reason it was left out."""
     from rdkit import Chem
 
+    from experiments.geometry import geometry_record
     from experiments.prepare_themol import build_record_mol, store_blob
 
     counts: Counter = Counter(groups=1)
@@ -169,6 +170,7 @@ def _parse_one_group(spice_id: str, group: Any) -> tuple[list[dict], Counter]:
                 "mol": store_blob(mol),
                 "net_charge": float(Chem.GetFormalCharge(mol)),
                 "stereo_check": verdict,
+                **geometry_record(mol),
             }
         )
     counts["groups_kept"] += bool(rows)
@@ -177,6 +179,8 @@ def _parse_one_group(spice_id: str, group: Any) -> tuple[list[dict], Counter]:
 
 def _schema():
     import pyarrow as pa
+
+    from experiments.geometry import arrow_fields
 
     return pa.schema(
         [
@@ -187,6 +191,7 @@ def _schema():
             ("mol", pa.binary()),
             ("net_charge", pa.float64()),
             ("stereo_check", pa.string()),
+            *arrow_fields(),
         ]
     )
 
