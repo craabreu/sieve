@@ -163,6 +163,20 @@ def _cmd_prepare_store(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_prepare_dash_subsets(args: argparse.Namespace) -> int:
+    from experiments.dash_subsets import prepare_dash_subsets
+
+    paths = prepare_dash_subsets(
+        DEFAULT_STORES_ROOT,
+        sdf_path=args.sdf_path,
+        n_shards=args.n_shards,
+        workers=args.workers,
+    )
+    for subset, path in paths.items():
+        print(f"{subset}: {path}")
+    return 0
+
+
 def _cmd_cluster_report(args: argparse.Namespace) -> int:
     from experiments.prepare_dash import cluster_size_report
 
@@ -1114,6 +1128,32 @@ def build_parser() -> argparse.ArgumentParser:
         "otherwise exists only transiently mid-run",
     )
     p_prepare.set_defaults(func=_cmd_prepare_store)
+
+    p_subsets = sub.add_parser(
+        "prepare-dash-subsets",
+        help="build the dash-qmugs and dash-extra stores from the DASH SDF: parse, "
+        "cluster, diagnose, curate and split in a shared dash-staging store, then "
+        "separate the two subsets",
+    )
+    p_subsets.add_argument(
+        "--sdf-path",
+        type=Path,
+        default=None,
+        help="use an already-downloaded SDF instead of downloading a fresh copy",
+    )
+    p_subsets.add_argument(
+        "--n-shards",
+        type=int,
+        default=50,
+        help="cluster-clean train shards, shared by both stores (default: 50)",
+    )
+    p_subsets.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="processes for the pair diagnostics and the ESP score (default: 16)",
+    )
+    p_subsets.set_defaults(func=_cmd_prepare_dash_subsets)
 
     p_cluster_report = sub.add_parser(
         "cluster-report",

@@ -334,7 +334,7 @@ def _finalise_stereo(mol: Any) -> None:
 
 
 def _parse_one_record(
-    mol: Any, *, dash_conf_counters: dict[str, int]
+    mol: Any, *, dash_conf_counters: dict[str, int], staging: dict | None = None
 ) -> dict[str, Any] | None:
     """Extract one row's worth of data from an already-parsed rdkit ``Mol``
     (one ``ForwardSDMolSupplier`` record). Returns ``None`` (and logs a
@@ -367,6 +367,13 @@ def _parse_one_record(
 
     A record carrying neither identity is skipped; see ``assign_splits`` for
     how the two columns are reconciled into one clustering key.
+
+    ``staging``, when given, is cleared and filled for an accepted record with
+    what ``dash_subsets`` needs beyond the training row: ``fields``, the
+    record's deposited properties other than the MBIS charges
+    (``dash_subsets.record_fields``), read before the property dict is cleared,
+    and ``columns``, the subset label and the structure and graph keys, computed
+    on the stereo-finalised molecule.
     """
     from experiments.data import mol_to_blob
 
@@ -417,6 +424,16 @@ def _parse_one_record(
     for atom, charge in zip(mol.GetAtoms(), charges, strict=True):
         atom.SetDoubleProp("MBIScharge", charge)
 
+    fields = None
+    if staging is not None:
+        from experiments.dash_subsets import record_fields
+
+        try:
+            fields = record_fields(mol)
+        except ValueError as error:
+            logger.warning("%s; skipping (id=%s)", error, identity)
+            return None
+
     _finalise_stereo(mol)
 
     from rdkit import Chem
@@ -448,6 +465,13 @@ def _parse_one_record(
     mol.SetBoolProp(CIP_LABELED_PROP, True)
 
     from experiments.geometry import geometry_record
+
+    if staging is not None:
+        from experiments.dash_subsets import staging_columns
+
+        staging.clear()
+        staging["fields"] = fields
+        staging["columns"] = staging_columns(mol, dash_id)
 
     return {
         "chembl_id": chembl_id,
