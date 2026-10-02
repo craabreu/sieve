@@ -351,7 +351,12 @@ end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
 stop after a given one.
 `CV_STORE` picks the store the studies run on: `dash-qmugs` (the default) or
 `dash-extra`, both built by the workflow's `prepare-subsets` step, or the
-legacy pooled `dash-molecules`. Each store keeps its own runs, results and
+legacy pooled `dash-molecules`. `spice-high-energy` and `spice-low-energy`
+are built by the same step through `prepare-spice-subsets`, from the HDF5
+file at `CV_SPICE_HDF5` (default `experiments/stores/spice-2/SPICE-2.0.1.hdf5`,
+downloaded when absent); the depths and the shard count chosen for DASH are
+defaults only, and Study A should be re-read for SPICE before Study B. Each
+store keeps its own runs, results and
 figures (`experiments/runs/<store>`, `experiments/results/<store>`,
 `experiments/docs/figures/<store>`; the legacy store keeps the original,
 unsuffixed locations), and `EXPERIMENTS_RUNS_ROOT`, which the workflow

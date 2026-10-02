@@ -339,12 +339,19 @@ n_variants() { echo "$SIEVE_VARIANTS" | grep -c '"method"'; }
 # The store the studies run on. dash-qmugs and dash-extra are the two DASH
 # subsets, built together by prepare-dash-subsets (one clustering, one curation
 # and one split shared by both, then separated); dash-molecules is the legacy
-# pooled store. CV_STORE picks one.
+# pooled store. spice-high-energy and spice-low-energy are SPICE 2's two kinds
+# of conformation, built together by prepare-spice-subsets in the same way.
+# CV_STORE picks one.
 STORE="${CV_STORE:-dash-qmugs}"
+SPICE_STORE=false
 case "$STORE" in
   dash-qmugs | dash-extra) SUBSET_STORE=true ;;
+  spice-high-energy | spice-low-energy) SUBSET_STORE=false; SPICE_STORE=true ;;
   *) SUBSET_STORE=false ;;
 esac
+# An already-downloaded SPICE-2.0.1.hdf5 (37 GB); without one, prepare-spice-
+# subsets downloads it into the spice-staging store.
+SPICE_HDF5="${CV_SPICE_HDF5:-experiments/stores/spice-2/SPICE-2.0.1.hdf5}"
 
 # Every store keeps its runs, results and figures apart. Shard fits are found
 # by batch id alone (cv._shard_fit_done), so two stores sharing one runs root
@@ -658,6 +665,17 @@ if $SUBSET_STORE; then
     "store_has_columns $STORE split cluster shard collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
     "$PYTHON" -m experiments prepare-dash-subsets \
       --sdf-path experiments/stores/dash-molecules/dashMoleculesSDF_v2.sdf \
+      --n-shards "$N_SHARDS" --workers "${CV_PREPARE_WORKERS:-32}"
+elif $SPICE_STORE; then
+  # Parse, cluster, curate (incomplete molecules, geometry flags), compare
+  # pairs, split and separate in one idempotent command
+  # (experiments/spice_subsets.py); the shard count is shared by both stores,
+  # and the store carries collapse_key and its counts already.
+  SPICE_HDF5_FLAG=()
+  if [ -f "$SPICE_HDF5" ]; then SPICE_HDF5_FLAG=(--hdf5-path "$SPICE_HDF5"); fi
+  step prepare-subsets \
+    "store_has_columns $STORE split cluster shard collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
+    "$PYTHON" -m experiments prepare-spice-subsets "${SPICE_HDF5_FLAG[@]}" \
       --n-shards "$N_SHARDS" --workers "${CV_PREPARE_WORKERS:-32}"
 else
   step prepare-corpus \
