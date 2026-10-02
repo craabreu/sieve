@@ -165,6 +165,21 @@ split keys on `spice_id`, the HDF5 group name. `--hdf5-path` parses an
 already-downloaded copy instead; the collapse key is added with
 `annotate-collapse spice-2 --id-column spice_id`.
 
+For training, SPICE's two kinds of conformation -- 25 snapshots of dynamics
+at 500 K per molecule and the 25 low-energy conformations relaxed from them --
+are built as two separate stores, `spice-high-energy` and `spice-low-energy`,
+through a shared `spice-staging` store, as `prepare-dash-subsets` does for
+DASH:
+
+    uv run python -m experiments prepare-spice-subsets --hdf5-path stores/spice-2/SPICE-2.0.1.hdf5 --workers 32
+
+The kind of each conformation follows from the order of the HDF5 file, which
+lists a molecule's 50 conformations by their generation indices sorted as
+text. Curation removes the molecules without exactly 50 conformations and
+the conformations flagged by the geometry columns; one cluster-level 90/10
+split and `--n-shards` (default 50) train shards are shared by both stores.
+See `docs/spice-stores-plan.md`.
+
 ### Running an experiment
 
 A single-predictor run:

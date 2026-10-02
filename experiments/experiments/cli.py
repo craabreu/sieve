@@ -177,6 +177,21 @@ def _cmd_prepare_dash_subsets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_prepare_spice_subsets(args: argparse.Namespace) -> int:
+    from experiments.spice_subsets import prepare_spice_subsets
+
+    paths = prepare_spice_subsets(
+        DEFAULT_STORES_ROOT,
+        hdf5_path=args.hdf5_path,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit_groups=args.limit_groups,
+    )
+    for kind, path in paths.items():
+        print(f"{kind}: {path}")
+    return 0
+
+
 def _cmd_prepare_themol_store(args: argparse.Namespace) -> int:
     from experiments.prepare_themol import prepare_store
 
@@ -1186,6 +1201,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="processes for the pair diagnostics and the ESP score (default: 16)",
     )
     p_subsets.set_defaults(func=_cmd_prepare_dash_subsets)
+
+    p_spice_subsets = sub.add_parser(
+        "prepare-spice-subsets",
+        help="build the spice-high-energy and spice-low-energy stores from "
+        "SPICE-2.0.1.hdf5: parse, cluster, curate (incomplete molecules, "
+        "geometry-graph mismatches), compare pairs and split in a shared "
+        "spice-staging store, then separate the two kinds of conformation",
+    )
+    p_spice_subsets.add_argument(
+        "--hdf5-path",
+        type=Path,
+        default=None,
+        help="use an already-downloaded SPICE-2.0.1.hdf5 instead of downloading "
+        "a fresh copy (37 GB)",
+    )
+    p_spice_subsets.add_argument(
+        "--n-shards",
+        type=int,
+        default=50,
+        help="cluster-clean train shards, shared by both stores (default: 50)",
+    )
+    p_spice_subsets.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="processes for the parse and the pair diagnostics (default: 16)",
+    )
+    p_spice_subsets.add_argument(
+        "--limit-groups",
+        type=int,
+        default=None,
+        help="parse only the first N HDF5 groups (for a quick trial)",
+    )
+    p_spice_subsets.set_defaults(func=_cmd_prepare_spice_subsets)
 
     p_themol = sub.add_parser(
         "prepare-themol-store",
