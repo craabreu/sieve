@@ -180,6 +180,22 @@ the conformations flagged by the geometry columns; one cluster-level 90/10
 split and `--n-shards` (default 50) train shards are shared by both stores.
 See `docs/spice-stores-plan.md`.
 
+MLPepper v1.1 (ωB97X-D/def2-TZVPP, CC BY 4.0) is distributed as a QCArchive
+view -- one 5.1 GB SQLite file of zstd-compressed msgpack blobs, downloaded
+from Zenodo and checked against its published md5 -- holding, for each of
+its 75,097 entries, one record in vacuum and one in ddX water on the same
+geometry. The two phases are built as two stores over the same entries,
+`mlpepper-vacuum` and `mlpepper-water`, through a shared `mlpepper-staging`
+store, with one clustering, one curation (the five entries whose vacuum
+MBIS partition did not converge, and the geometry flags, which no entry
+raises) and one split, so an entry has the same split and shard in both:
+
+    uv run python -m experiments prepare-mlpepper-stores --sqlite-path /path/to/view.sqlite --workers 32
+
+Each store's `mol` carries that phase's charges as `MBIScharge`; the
+staging store keeps both phases' charges, energies, solvation energies,
+dipoles and population charges per entry. See `docs/other-stores-plan.md`.
+
 ### Running an experiment
 
 A single-predictor run:
