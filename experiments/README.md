@@ -196,6 +196,23 @@ Each store's `mol` carries that phase's charges as `MBIScharge`; the
 staging store keeps both phases' charges, energies, solvation energies,
 dipoles and population charges per entry. See `docs/other-stores-plan.md`.
 
+The curated THEMol store, `themol`, is built from the uncurated `themol-mbis`
+parse through `themol-staging`: each stored Mol is augmented with its charge
+sum, whether it contains B, Si or P, and its heavy-atom skeleton; the unique
+skeletons (2.0 M) are Butina-clustered once, so a protonation series shares a
+cluster (a few hours; cached like every other stage); the curation removes
+the one record whose charges do not add up to its net charge, the multiply
+charged anions (net charge -3 or below, or -2 with B, Si or P, whose MBIS
+charges the SI shows to be artifacts of the diffuse basis in vacuum) and the
+geometry flags; every pair of records of a structure is compared; and one
+cluster-level split with `--n-shards` train shards is written:
+
+    uv run python -m experiments prepare-themol-curated --workers 32
+
+Duplicates and copies are kept, as for MLPepper. `--uncurated-path` points
+at another parse; without any, the HDF5 files are parsed first (from
+`--source-dir`, or downloaded).
+
 ### Running an experiment
 
 A single-predictor run:
