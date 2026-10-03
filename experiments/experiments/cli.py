@@ -177,6 +177,52 @@ def _cmd_prepare_dash_subsets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_prepare_spice_subsets(args: argparse.Namespace) -> int:
+    from experiments.spice_subsets import prepare_spice_subsets
+
+    paths = prepare_spice_subsets(
+        DEFAULT_STORES_ROOT,
+        hdf5_path=args.hdf5_path,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit_groups=args.limit_groups,
+    )
+    for kind, path in paths.items():
+        print(f"{kind}: {path}")
+    return 0
+
+
+def _cmd_prepare_themol_store(args: argparse.Namespace) -> int:
+    from experiments.prepare_themol import prepare_store
+
+    prepare_store(
+        args.store,
+        stores_root=DEFAULT_STORES_ROOT,
+        source_dir=args.source_dir,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit_per_shard=args.limit_per_shard,
+        stop_before_split=args.stop_before_split,
+    )
+    return 0
+
+
+def _cmd_prepare_spice_store(args: argparse.Namespace) -> int:
+    from experiments.prepare_spice import prepare_store
+
+    prepare_store(
+        args.store,
+        stores_root=DEFAULT_STORES_ROOT,
+        hdf5_path=args.hdf5_path,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit_groups=args.limit_groups,
+        stop_before_split=args.stop_before_split,
+        keep_uncurated=args.keep_uncurated,
+    )
+    return 0
+
+
 def _cmd_cluster_report(args: argparse.Namespace) -> int:
     from experiments.prepare_dash import cluster_size_report
 
@@ -186,6 +232,7 @@ def _cmd_cluster_report(args: argparse.Namespace) -> int:
         train=args.train,
         test=args.test,
         candidate_n_shards=candidates,
+        id_columns=tuple(args.id_columns.split(",")),
     )
     print(report)
     return 0
@@ -1155,6 +1202,125 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_subsets.set_defaults(func=_cmd_prepare_dash_subsets)
 
+    p_spice_subsets = sub.add_parser(
+        "prepare-spice-subsets",
+        help="build the spice-high-energy and spice-low-energy stores from "
+        "SPICE-2.0.1.hdf5: parse, cluster, curate (incomplete molecules, "
+        "geometry-graph mismatches), compare pairs and split in a shared "
+        "spice-staging store, then separate the two kinds of conformation",
+    )
+    p_spice_subsets.add_argument(
+        "--hdf5-path",
+        type=Path,
+        default=None,
+        help="use an already-downloaded SPICE-2.0.1.hdf5 instead of downloading "
+        "a fresh copy (37 GB)",
+    )
+    p_spice_subsets.add_argument(
+        "--n-shards",
+        type=int,
+        default=50,
+        help="cluster-clean train shards, shared by both stores (default: 50)",
+    )
+    p_spice_subsets.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="processes for the parse and the pair diagnostics (default: 16)",
+    )
+    p_spice_subsets.add_argument(
+        "--limit-groups",
+        type=int,
+        default=None,
+        help="parse only the first N HDF5 groups (for a quick trial)",
+    )
+    p_spice_subsets.set_defaults(func=_cmd_prepare_spice_subsets)
+
+    p_themol = sub.add_parser(
+        "prepare-themol-store",
+        help="download and parse THEMol's MBIS subset, perceive stereo from "
+        "3D, check it against the reported SMILES, and split",
+    )
+    p_themol.add_argument("store", nargs="?", default="themol-mbis")
+    p_themol.add_argument(
+        "--source-dir",
+        type=Path,
+        default=None,
+        help="use an already-downloaded directory holding mbis_0.h5 .. "
+        "mbis_7.h5 instead of downloading a fresh copy (31 GB)",
+    )
+    p_themol.add_argument(
+        "--n-shards",
+        type=int,
+        default=25,
+        help="cluster-clean train shards for CV; choose via cluster-report "
+        "--id-columns themol_id first (default: 25)",
+    )
+    p_themol.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="parallel parse processes, one HDF5 file each (default: 8)",
+    )
+    p_themol.add_argument(
+        "--limit-per-shard",
+        type=int,
+        default=None,
+        help="parse only the first N records of each HDF5 file",
+    )
+    p_themol.add_argument(
+        "--stop-before-split",
+        action="store_true",
+        help="stop after the parse, without writing the split",
+    )
+    p_themol.set_defaults(func=_cmd_prepare_themol_store)
+
+    p_spice = sub.add_parser(
+        "prepare-spice-store",
+        help="download and parse SPICE 2.0.1's single-molecule records, "
+        "perceive stereo from 3D, check it against the reported SMILES, "
+        "curate conformers, and split",
+    )
+    p_spice.add_argument("store", nargs="?", default="spice-2")
+    p_spice.add_argument(
+        "--hdf5-path",
+        type=Path,
+        default=None,
+        help="use an already-downloaded SPICE-2.0.1.hdf5 instead of "
+        "downloading a fresh copy (37 GB)",
+    )
+    p_spice.add_argument(
+        "--n-shards",
+        type=int,
+        default=25,
+        help="cluster-clean train shards for CV; choose via cluster-report "
+        "--id-columns spice_id first (default: 25)",
+    )
+    p_spice.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="parallel parse processes over blocks of HDF5 groups (default: 16)",
+    )
+    p_spice.add_argument(
+        "--limit-groups",
+        type=int,
+        default=None,
+        help="parse only the first N HDF5 groups",
+    )
+    p_spice.add_argument(
+        "--stop-before-split",
+        action="store_true",
+        help="stop after parse+curate, without writing the split",
+    )
+    p_spice.add_argument(
+        "--keep-uncurated",
+        action="store_true",
+        help="copy the parsed parquet aside as molecules.parquet.uncurated "
+        "before curation runs",
+    )
+    p_spice.set_defaults(func=_cmd_prepare_spice_store)
+
     p_cluster_report = sub.add_parser(
         "cluster-report",
         help="report train-split cluster sizes and achieved shard balance "
@@ -1167,6 +1333,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidates",
         default="10,25,50,100",
         help="comma-separated candidate n_shards values (default: 10,25,50,100)",
+    )
+    p_cluster_report.add_argument(
+        "--id-columns",
+        default="dash_id,chembl_id",
+        help="comma-separated molecule identity columns, first set one wins "
+        "(default: dash_id,chembl_id; themol_id for a THEMol store)",
     )
     p_cluster_report.set_defaults(func=_cmd_cluster_report)
 

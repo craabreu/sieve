@@ -127,6 +127,59 @@ subset, and only then separates the subsets, so a cluster has the same split
 and shard in both stores. Each stage writes its own file in `dash-staging`
 and is skipped when that file exists. See `docs/dash-subset-stores-plan.md`.
 
+THEMol's MBIS subset (PBE0/def2-TZVPD, 3,082,151 molecules, one geometry
+each; CC BY-NC 4.0) is downloaded from Hugging Face -- eight HDF5 files,
+31 GB, pinned to one repository revision and checked against its SHA-256
+digests -- and parsed into `themol-mbis`:
+
+    uv run python -m experiments prepare-themol-store --stop-before-split
+
+`--source-dir /path/to/THEMol/MBIS` parses an already-downloaded copy
+instead.
+
+Each record's graph is read from its atom-mapped isomeric SMILES, its
+stereochemistry is perceived from its own coordinates exactly as for DASH,
+and the SMILES's reported stereochemistry is then checked against it: the
+`stereo_check` column holds each record's verdict (`agree`, `conflict`,
+`perceived_only`, `reported_only`, `both_only`) and
+`stereo_check_summary.txt` the totals. The atom property is `MBIScharge`, as
+for DASH, so the DASH configs apply unchanged. The split keys on
+`themol_id`; its Butina pass is quadratic in the molecule count, so choose
+`--n-shards` with `cluster-report themol-mbis --id-columns themol_id` before
+dropping `--stop-before-split`. `subsample-store`, `partition-store` and
+`annotate-collapse` still key on the DASH id columns and do not yet accept a
+THEMol store.
+
+SPICE 2.0.1 (ωB97M-D3(BJ)/def2-TZVPPD, CC0) is downloaded from Zenodo --
+one 37 GB HDF5 file, checked against its published md5 -- and built into
+`spice-2`:
+
+    uv run python -m experiments prepare-spice-store --keep-uncurated
+
+Only single-molecule records are kept: a group whose SMILES has more than
+one fragment (dimers, ion pairs, water clusters, solvated systems) is left
+out and counted per subset in `spice_summary.txt`, as are groups without MBIS
+charges. Each conformer's stereochemistry is perceived and checked as for
+THEMol, the conformers are then curated with DASH's 0.4 e criterion, and the
+split keys on `spice_id`, the HDF5 group name. `--hdf5-path` parses an
+already-downloaded copy instead; the collapse key is added with
+`annotate-collapse spice-2 --id-column spice_id`.
+
+For training, SPICE's two kinds of conformation -- 25 snapshots of dynamics
+at 500 K per molecule and the 25 low-energy conformations relaxed from them --
+are built as two separate stores, `spice-high-energy` and `spice-low-energy`,
+through a shared `spice-staging` store, as `prepare-dash-subsets` does for
+DASH:
+
+    uv run python -m experiments prepare-spice-subsets --hdf5-path stores/spice-2/SPICE-2.0.1.hdf5 --workers 32
+
+The kind of each conformation follows from the order of the HDF5 file, which
+lists a molecule's 50 conformations by their generation indices sorted as
+text. Curation removes the molecules without exactly 50 conformations and
+the conformations flagged by the geometry columns; one cluster-level 90/10
+split and `--n-shards` (default 50) train shards are shared by both stores.
+See `docs/spice-stores-plan.md`.
+
 ### Running an experiment
 
 A single-predictor run:
@@ -298,7 +351,12 @@ end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
 stop after a given one.
 `CV_STORE` picks the store the studies run on: `dash-qmugs` (the default) or
 `dash-extra`, both built by the workflow's `prepare-subsets` step, or the
-legacy pooled `dash-molecules`. Each store keeps its own runs, results and
+legacy pooled `dash-molecules`. `spice-high-energy` and `spice-low-energy`
+are built by the same step through `prepare-spice-subsets`, from the HDF5
+file at `CV_SPICE_HDF5` (default `experiments/stores/spice-2/SPICE-2.0.1.hdf5`,
+downloaded when absent); the depths and the shard count chosen for DASH are
+defaults only, and Study A should be re-read for SPICE before Study B. Each
+store keeps its own runs, results and
 figures (`experiments/runs/<store>`, `experiments/results/<store>`,
 `experiments/docs/figures/<store>`; the legacy store keeps the original,
 unsuffixed locations), and `EXPERIMENTS_RUNS_ROOT`, which the workflow
