@@ -341,17 +341,27 @@ n_variants() { echo "$SIEVE_VARIANTS" | grep -c '"method"'; }
 # and one split shared by both, then separated); dash-molecules is the legacy
 # pooled store. spice-high-energy and spice-low-energy are SPICE 2's two kinds
 # of conformation, built together by prepare-spice-subsets in the same way.
+# mlpepper-vacuum and mlpepper-water are MLPepper's two phases, built together
+# by prepare-mlpepper-stores; themol is THEMol's curated store, built by
+# prepare-themol-curated from the uncurated themol-mbis parse.
 # CV_STORE picks one.
 STORE="${CV_STORE:-dash-qmugs}"
+SUBSET_STORE=false
 SPICE_STORE=false
+MLPEPPER_STORE=false
+THEMOL_STORE=false
 case "$STORE" in
   dash-qmugs | dash-extra) SUBSET_STORE=true ;;
-  spice-high-energy | spice-low-energy) SUBSET_STORE=false; SPICE_STORE=true ;;
-  *) SUBSET_STORE=false ;;
+  spice-high-energy | spice-low-energy) SPICE_STORE=true ;;
+  mlpepper-vacuum | mlpepper-water) MLPEPPER_STORE=true ;;
+  themol) THEMOL_STORE=true ;;
 esac
 # An already-downloaded SPICE-2.0.1.hdf5 (37 GB); without one, prepare-spice-
 # subsets downloads it into the spice-staging store.
 SPICE_HDF5="${CV_SPICE_HDF5:-experiments/stores/spice-2/SPICE-2.0.1.hdf5}"
+# An already-downloaded MLPepper v1.1 singlepoint view (5.1 GB); without one,
+# prepare-mlpepper-stores downloads it into the mlpepper-staging store.
+MLPEPPER_SQLITE="${CV_MLPEPPER_SQLITE:-experiments/stores/mlpepper-staging/MLPepper-RECAP-Optimized-Fragments-v1.1_singlepoint_view.sqlite}"
 
 # Every store keeps its runs, results and figures apart. Shard fits are found
 # by batch id alone (cv._shard_fit_done), so two stores sharing one runs root
@@ -676,6 +686,25 @@ elif $SPICE_STORE; then
   step prepare-subsets \
     "store_has_columns $STORE split cluster shard collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
     "$PYTHON" -m experiments prepare-spice-subsets "${SPICE_HDF5_FLAG[@]}" \
+      --n-shards "$N_SHARDS" --workers "${CV_PREPARE_WORKERS:-32}"
+elif $MLPEPPER_STORE; then
+  # Parse, cluster, curate (incomplete entries, geometry flags), compare
+  # pairs, split and separate in one idempotent command
+  # (experiments/mlpepper_store.py); both phases share rows, split and shards.
+  MLPEPPER_SQLITE_FLAG=()
+  if [ -f "$MLPEPPER_SQLITE" ]; then MLPEPPER_SQLITE_FLAG=(--sqlite-path "$MLPEPPER_SQLITE"); fi
+  step prepare-subsets \
+    "store_has_columns $STORE split cluster shard collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
+    "$PYTHON" -m experiments prepare-mlpepper-stores "${MLPEPPER_SQLITE_FLAG[@]}" \
+      --n-shards "$N_SHARDS" --workers "${CV_PREPARE_WORKERS:-32}"
+elif $THEMOL_STORE; then
+  # Augment the uncurated themol-mbis parse (parsed from the HDF5 files when
+  # absent), cluster by heavy-atom skeleton (hours), curate (charge sum,
+  # multiply charged anions, geometry flags), compare pairs and split, in one
+  # idempotent command (experiments/themol_store.py).
+  step prepare-subsets \
+    "store_has_columns $STORE split cluster shard collapse_key n_collapsed n_molecules n_enantiomer_forms" -- \
+    "$PYTHON" -m experiments prepare-themol-curated \
       --n-shards "$N_SHARDS" --workers "${CV_PREPARE_WORKERS:-32}"
 else
   step prepare-corpus \

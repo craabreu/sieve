@@ -387,8 +387,12 @@ stop after a given one.
 legacy pooled `dash-molecules`. `spice-high-energy` and `spice-low-energy`
 are built by the same step through `prepare-spice-subsets`, from the HDF5
 file at `CV_SPICE_HDF5` (default `experiments/stores/spice-2/SPICE-2.0.1.hdf5`,
-downloaded when absent); the depths and the shard count chosen for DASH are
-defaults only, and Study A should be re-read for SPICE before Study B. Each
+downloaded when absent). `mlpepper-vacuum` and `mlpepper-water` are built
+the same way through `prepare-mlpepper-stores`, from the SQLite view at
+`CV_MLPEPPER_SQLITE` (downloaded when absent), and `themol` through
+`prepare-themol-curated`, from the uncurated `themol-mbis` parse. The depths
+and the shard count chosen for DASH are defaults only, and Study A should be
+re-read for each of these stores before Study B. Each
 store keeps its own runs, results and
 figures (`experiments/runs/<store>`, `experiments/results/<store>`,
 `experiments/docs/figures/<store>`; the legacy store keeps the original,

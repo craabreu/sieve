@@ -1,6 +1,6 @@
 # MLPepper and THEMol as training-ready stores
 
-Status: approved with decisions D1-D8 (2026-10-03; see the end); being implemented on branch `other-stores`,
+Status: implemented on branch `other-stores` (2026-10-04; results at the end), with decisions D1-D8 (2026-10-03),
 mirroring the DASH and SPICE subset stores (`docs/dash-subset-stores-plan.md`,
 `docs/spice-stores-plan.md`). The analysis behind every curation decision is in sieve_paper (SI
 section "Diagnostics and Curation of the Other Datasets", THEMol and MLPepper;
@@ -176,3 +176,16 @@ Duplicates (one molecule under several uuids, 81,819 molecules) and copies (88,7
 MLPepper: decoding 150k blobs and building 75k Mols, minutes with 32 workers; clustering 56k
 graphs, seconds; 45k pairs, a minute. THEMol: the augment step over 3.08 M Mol blobs, about 10
 min with 48 workers; 305k pairs, about 15 min; clustering 2-4 h (D4).
+
+## Results of the real builds (2026-10-04)
+
+MLPepper (43 s, 32 workers) reproduces the SI: 75,097 entries, 5 incomplete, 0 geometry, 75,092
+kept; 44,935 pairs, 6,860 copies below 0.01 A; 4,183 clusters; split 90.1/9.9, 50 shards.
+
+THEMol (3 h 25 min, 48 workers, almost all of it the skeleton Butina) reproduces the SI curation
+(charge_sum 1, multi_anion 2,481, geometry 3,124 raised / 2,751 removed, 3,076,918 kept, 8,688
+at Q <= -2) and pairs (304,608 pairs, 88,797 copies); 2,004,504 skeletons in 47,585 clusters;
+split 90.1/9.9 by structure, 50 shards of 50,361-50,362 train structures. The molecule count
+differs from the SI's first draft (2,987,645 against 2,990,185) because the store identifies a
+molecule by the canonical SMILES of the stored Mol, whose stereo is perceived from 3D, rather than
+of the deposited SMILES; the SI was updated to the store's count.
