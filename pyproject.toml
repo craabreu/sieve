@@ -45,6 +45,10 @@ charges = [
     "pillow>=10",
     # THEMol's MBIS subset ships as HDF5 (experiments/prepare_themol.py).
     "h5py>=3.9",
+    # MLPepper's QCArchive view stores zstd-compressed msgpack blobs
+    # (experiments/mlpepper_store.py).
+    "zstandard>=0.22",
+    "msgpack>=1.0",
 ]
 
 [build-system]
@@ -125,6 +129,12 @@ allowed-unresolved-imports = [
     # extra alongside them.
     "h5py",
     "h5py.**",
+    # The MLPepper builder decodes the QCArchive view's blobs; both ship in
+    # the `charges` extra.
+    "zstandard",
+    "zstandard.**",
+    "msgpack",
+    "msgpack.**",
     # butina_cluster.py's unconditional `from tqdm.auto import tqdm` --
     # tqdm ships in the `charges` extra (prepare-store's real progress
     # bars), not in CI's [dev,chem] install (see

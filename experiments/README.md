@@ -180,6 +180,39 @@ the conformations flagged by the geometry columns; one cluster-level 90/10
 split and `--n-shards` (default 50) train shards are shared by both stores.
 See `docs/spice-stores-plan.md`.
 
+MLPepper v1.1 (ωB97X-D/def2-TZVPP, CC BY 4.0) is distributed as a QCArchive
+view -- one 5.1 GB SQLite file of zstd-compressed msgpack blobs, downloaded
+from Zenodo and checked against its published md5 -- holding, for each of
+its 75,097 entries, one record in vacuum and one in ddX water on the same
+geometry. The two phases are built as two stores over the same entries,
+`mlpepper-vacuum` and `mlpepper-water`, through a shared `mlpepper-staging`
+store, with one clustering, one curation (the five entries whose vacuum
+MBIS partition did not converge, and the geometry flags, which no entry
+raises) and one split, so an entry has the same split and shard in both:
+
+    uv run python -m experiments prepare-mlpepper-stores --sqlite-path /path/to/view.sqlite --workers 32
+
+Each store's `mol` carries that phase's charges as `MBIScharge`; the
+staging store keeps both phases' charges, energies, solvation energies,
+dipoles and population charges per entry. See `docs/other-stores-plan.md`.
+
+The curated THEMol store, `themol`, is built from the uncurated `themol-mbis`
+parse through `themol-staging`: each stored Mol is augmented with its charge
+sum, whether it contains B, Si or P, and its heavy-atom skeleton; the unique
+skeletons (2.0 M) are Butina-clustered once, so a protonation series shares a
+cluster (a few hours; cached like every other stage); the curation removes
+the one record whose charges do not add up to its net charge, the multiply
+charged anions (net charge -3 or below, or -2 with B, Si or P, whose MBIS
+charges the SI shows to be artifacts of the diffuse basis in vacuum) and the
+geometry flags; every pair of records of a structure is compared; and one
+cluster-level split with `--n-shards` train shards is written:
+
+    uv run python -m experiments prepare-themol-curated --workers 32
+
+Duplicates and copies are kept, as for MLPepper. `--uncurated-path` points
+at another parse; without any, the HDF5 files are parsed first (from
+`--source-dir`, or downloaded).
+
 ### Running an experiment
 
 A single-predictor run:
@@ -354,8 +387,12 @@ stop after a given one.
 legacy pooled `dash-molecules`. `spice-high-energy` and `spice-low-energy`
 are built by the same step through `prepare-spice-subsets`, from the HDF5
 file at `CV_SPICE_HDF5` (default `experiments/stores/spice-2/SPICE-2.0.1.hdf5`,
-downloaded when absent); the depths and the shard count chosen for DASH are
-defaults only, and Study A should be re-read for SPICE before Study B. Each
+downloaded when absent). `mlpepper-vacuum` and `mlpepper-water` are built
+the same way through `prepare-mlpepper-stores`, from the SQLite view at
+`CV_MLPEPPER_SQLITE` (downloaded when absent), and `themol` through
+`prepare-themol-curated`, from the uncurated `themol-mbis` parse. The depths
+and the shard count chosen for DASH are defaults only, and Study A should be
+re-read for each of these stores before Study B. Each
 store keeps its own runs, results and
 figures (`experiments/runs/<store>`, `experiments/results/<store>`,
 `experiments/docs/figures/<store>`; the legacy store keeps the original,

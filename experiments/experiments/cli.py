@@ -192,6 +192,36 @@ def _cmd_prepare_spice_subsets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_prepare_mlpepper_stores(args: argparse.Namespace) -> int:
+    from experiments.mlpepper_store import prepare_mlpepper_stores
+
+    paths = prepare_mlpepper_stores(
+        DEFAULT_STORES_ROOT,
+        sqlite_path=args.sqlite_path,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit_entries=args.limit_entries,
+    )
+    for phase, path in paths.items():
+        print(f"{phase}: {path}")
+    return 0
+
+
+def _cmd_prepare_themol_curated(args: argparse.Namespace) -> int:
+    from experiments.themol_store import prepare_themol_curated
+
+    path = prepare_themol_curated(
+        DEFAULT_STORES_ROOT,
+        uncurated_path=args.uncurated_path,
+        source_dir=args.source_dir,
+        n_shards=args.n_shards,
+        workers=args.workers,
+        limit=args.limit,
+    )
+    print(path)
+    return 0
+
+
 def _cmd_prepare_themol_store(args: argparse.Namespace) -> int:
     from experiments.prepare_themol import prepare_store
 
@@ -1235,6 +1265,81 @@ def build_parser() -> argparse.ArgumentParser:
         help="parse only the first N HDF5 groups (for a quick trial)",
     )
     p_spice_subsets.set_defaults(func=_cmd_prepare_spice_subsets)
+
+    p_mlpepper = sub.add_parser(
+        "prepare-mlpepper-stores",
+        help="build the mlpepper-vacuum and mlpepper-water stores from the MLPepper "
+        "v1.1 SQLite view: parse, cluster, curate (incomplete entries, "
+        "geometry-graph mismatches), compare pairs and split in a shared "
+        "mlpepper-staging store, then separate the two phases",
+    )
+    p_mlpepper.add_argument(
+        "--sqlite-path",
+        type=Path,
+        default=None,
+        help="use an already-downloaded view instead of downloading a fresh copy "
+        "(5.1 GB)",
+    )
+    p_mlpepper.add_argument(
+        "--n-shards",
+        type=int,
+        default=50,
+        help="cluster-clean train shards, shared by both stores (default: 50)",
+    )
+    p_mlpepper.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="processes for the parse and the pair diagnostics (default: 16)",
+    )
+    p_mlpepper.add_argument(
+        "--limit-entries",
+        type=int,
+        default=None,
+        help="parse only the first N entries (for a quick trial)",
+    )
+    p_mlpepper.set_defaults(func=_cmd_prepare_mlpepper_stores)
+
+    p_themol_curated = sub.add_parser(
+        "prepare-themol-curated",
+        help="build the curated themol store from the uncurated themol-mbis parse: "
+        "augment, cluster unique heavy-atom skeletons (hours), curate (charge "
+        "sums, multiply charged anions, geometry-graph mismatches), compare "
+        "pairs and split in a themol-staging store",
+    )
+    p_themol_curated.add_argument(
+        "--uncurated-path",
+        type=Path,
+        default=None,
+        help="molecules.parquet of an uncurated parse (default: the themol-mbis "
+        "store; parsed from --source-dir, or downloaded, when absent)",
+    )
+    p_themol_curated.add_argument(
+        "--source-dir",
+        type=Path,
+        default=None,
+        help="directory holding mbis_0.h5 .. mbis_7.h5, used only when no "
+        "uncurated parse exists",
+    )
+    p_themol_curated.add_argument(
+        "--n-shards",
+        type=int,
+        default=50,
+        help="cluster-clean train shards (default: 50)",
+    )
+    p_themol_curated.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="processes for the augmentation and the pair diagnostics (default: 16)",
+    )
+    p_themol_curated.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="stage only the first N records (for a quick trial)",
+    )
+    p_themol_curated.set_defaults(func=_cmd_prepare_themol_curated)
 
     p_themol = sub.add_parser(
         "prepare-themol-store",
