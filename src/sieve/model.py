@@ -126,7 +126,10 @@ class SieveModel:
         return _predict_loo(self, batch)
 
     def save(self, path) -> None:
-        """Write a single .npz (design.md 9.1).
+        """Write a single compressed .npz (design.md 9.1).
+
+        Compression cuts the file about threefold, since the vocab arrays hold
+        small integers in int64, and ``np.load`` reads it transparently.
 
         Shrunk estimates are deliberately absent: they are derived, and storing
         them would let shrinkage_strength drift out of sync with the values it
@@ -179,7 +182,7 @@ class SieveModel:
                 # Only under the tetrahedral track, so a cis/trans-only or
                 # stereo-blind file keeps exactly the keys it always had.
                 arrays[f"level_{k}_mirror_of"] = lvl.mirror_of
-        np.savez(path, **arrays)
+        np.savez_compressed(path, **arrays)
 
     @classmethod
     def load(cls, path) -> SieveModel:

@@ -19,6 +19,26 @@ def test_round_trip_reproduces_predictions_bit_exactly(tmp_path):
     assert np.array_equal(a, c), "round trip must be bit-exact, not merely close"
 
 
+def test_saved_file_is_compressed(tmp_path):
+    import zipfile
+
+    m = sieve.fit(chain_batch(20, graphs=3), simple_config(max_wl_depth=3))
+    p = tmp_path / "m.npz"
+    m.save(p)
+    with zipfile.ZipFile(p) as z:
+        assert all(i.compress_type == zipfile.ZIP_DEFLATED for i in z.infolist())
+
+
+def test_uncompressed_files_written_before_compression_still_load(tmp_path):
+    b = chain_batch(20, graphs=3)
+    m = sieve.fit(b, simple_config(max_wl_depth=3))
+    p = tmp_path / "m.npz"
+    m.save(p)
+    np.savez(p, **dict(np.load(p, allow_pickle=False)))
+    loaded = sieve.SieveModel.load(p)
+    assert np.array_equal(sieve.predict(m, b), sieve.predict(loaded, b))
+
+
 def test_round_trip_preserves_config(tmp_path):
     cfg = simple_config(max_wl_depth=2, minimum_support=3, shrinkage_strength=0.5)
     m = sieve.fit(chain_batch(10), cfg)
