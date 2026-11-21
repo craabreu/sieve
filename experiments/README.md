@@ -401,6 +401,23 @@ them, with paired differences against `--incumbent`:
       --arm hose-cv-study-b:hose:5 --arm sieve-cv-study-b:sieve-element-continuation-eb:5 \
       --hose hose-cv-study-b:hose:5 --incumbent sieve-element-continuation-eb --out breakdown
 
+Sieve and the HOSE register both back off to a smaller radius when the
+largest one was not seen in training, and a run's record does not say where
+each atom was answered. `matched-radius` assembles each fold model again,
+requires it to reproduce the run's saved predictions, and writes the radius
+that answered each held-out atom to `matched_radius.npz` beside the run (`-1`
+where the global mean did). `score-breakdown` then scores such a run by
+matched radius too, and the report gains the share of atoms and the error at
+each radius. The Sieve arms take minutes; the HOSE arm generates the held-out
+codes again, so give each (repeat, fold) its own process:
+
+    uv run python -m experiments matched-radius spice-high-energy \
+      --arm sieve-cv-study-b:sieve-element-continuation-eb:5 \
+      --variants '[{"method": "sieve-element-continuation-eb", "class_estimator": "continuation", "shrinkage_weight": "empirical_bayes"}]' \
+      --model-cache experiments/results/spice-high-energy/cv-model-cache
+    uv run python -m experiments matched-radius spice-high-energy \
+      --hose hose-cv-study-b:hose:5 --repeats 0 --folds 0
+
 `merge-states` generalizes the old `merge-shards` to either predictor, for a
 final held-out evaluation once all shards are fit:
 

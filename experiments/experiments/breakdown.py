@@ -25,6 +25,12 @@ arm answered with the global mean of the training atoms, its last resort.
 by the net charge of their record, and by their own formal charge. A global R2
 is dominated by the differences between elements, which every arm resolves.
 
+**Matched radius.** A run whose matched radii were recorded
+(``experiments.matched_radius``) is also grouped by them: the radius of the
+class that answered each atom, or ``none`` where the global mean did. The
+share of atoms at each radius says how often the arm backs off, and the error
+at each radius what backing off costs.
+
 **Quantiles.** Every scope carries quantiles of the absolute error, because a
 comparison of MAE with RMSE says nothing certain about medians or tails.
 
@@ -71,6 +77,10 @@ ATOMS_FILE = "atom-table.npz"
 METRICS_FILE = "breakdown_metrics.json"
 QUANTILES = {"q50": 0.5, "q90": 0.9, "q95": 0.95, "q99": 0.99, "q999": 0.999}
 GROUP_SCOPES = ("all", "covered")
+# The group a run is scored by when its matched radii were recorded, and the
+# label of the atoms no class matched.
+MATCHED_GROUP = "matched_radius"
+MATCHED_NONE = "none"
 # The global mean of a fold is a ratio of sums over its training shards, and
 # the order of those sums here is not the order the fold model was merged in.
 FALLBACK_ATOL = 1e-12
@@ -598,8 +608,9 @@ def _score_sample(job: dict[str, Any], table: AtomTable) -> list[Path]:
             )
         pred = _pred(z)
         out: dict[str, float] = dict(outcomes)
+        run_groups = {**groups, **_matched_radius_group(run, true.size)}
         out.update(
-            breakdown(true, pred, scopes, groups=groups, group_scopes=GROUP_SCOPES)
+            breakdown(true, pred, scopes, groups=run_groups, group_scopes=GROUP_SCOPES)
         )
         normalization = _cv(run).get("normalization")
         if net is not None:
@@ -628,6 +639,26 @@ def _score_sample(job: dict[str, Any], table: AtomTable) -> list[Path]:
         (run / METRICS_FILE).write_text(json.dumps(out, indent=1, sort_keys=True))
         written.append(run)
     return written
+
+
+def _matched_radius_group(
+    run: Path, n_atoms: int
+) -> dict[str, tuple[np.ndarray, Mapping[int, str]]]:
+    """The run's own group by matched radius, when its radii were recorded
+    (``experiments.matched_radius``); no group otherwise."""
+    from experiments.matched_radius import UNMATCHED, read_matched
+
+    radius = read_matched(run)
+    if radius is None:
+        return {}
+    if radius.shape != (n_atoms,):
+        raise ValueError(
+            f"{run}: {radius.size} matched radii for {n_atoms} held-out atoms"
+        )
+    labels = {int(r): str(int(r)) for r in np.unique(radius)}
+    if UNMATCHED in labels:
+        labels[UNMATCHED] = MATCHED_NONE
+    return {MATCHED_GROUP: (radius, labels)}
 
 
 def _fallback_scores(
@@ -664,7 +695,12 @@ def _stale(run: Path, *sources: Path) -> bool:
     if not side.exists():
         return True
     written = side.stat().st_mtime
-    return any(written < (s / "predictions.npz").stat().st_mtime for s in sources)
+    if any(written < (s / "predictions.npz").stat().st_mtime for s in sources):
+        return True
+    from experiments.matched_radius import MATCHED_FILE
+
+    radii = run / MATCHED_FILE
+    return radii.exists() and written < radii.stat().st_mtime
 
 
 _TABLE: AtomTable | None = None
@@ -695,7 +731,8 @@ def score_runs(
     """Write ``breakdown_metrics.json`` for every run of ``arms`` that needs one.
 
     A sidecar is redone when it is older than the predictions it was computed
-    from: the run's own, the reference arm's, or the HOSE arm's. With
+    from: the run's own, the reference arm's, or the HOSE arm's; or older than
+    the run's recorded matched radii. With
     ``check``, nothing is written and the runs that would be are returned,
     which needs no ``table``.
     """
@@ -837,6 +874,63 @@ def _group_labels(values: Mapping[str, Any], scope: str, group: str) -> list[str
     return sorted(sizes, key=lambda label: -sizes[label])
 
 
+def _matched_radius_tables(
+    values: Mapping[str, Mapping[str, list[float]]],
+    methods: Sequence[str],
+    n: int,
+    k: int,
+    number: int,
+) -> list[str]:
+    """Share of atoms, RMSE and MAE by matched radius, one column per arm whose
+    radii were recorded; nothing when no arm's were."""
+
+    def get(key: str, method: str) -> np.ndarray:
+        return np.asarray(values.get(key, {}).get(method, [NAN] * n), np.float64)
+
+    lines: list[str] = []
+    for scope in GROUP_SCOPES:
+        prefix, suffix = f"{scope}/{MATCHED_GROUP}/", "/n_atoms"
+        labels = {
+            key[len(prefix) : -len(suffix)]
+            for key in values
+            if key.startswith(prefix) and key.endswith(suffix)
+        }
+        if not labels:
+            continue
+        ordered = sorted(labels, key=lambda s: -1 if s == MATCHED_NONE else int(s))
+        counts = {
+            m: {r: np.nan_to_num(get(f"{prefix}{r}/n_atoms", m)) for r in ordered}
+            for m in methods
+        }
+        totals = {m: sum(counts[m].values()) for m in methods}
+        recorded = [m for m in methods if np.all(totals[m] > 0)]
+        rows = [
+            [r]
+            + [
+                _cell((counts[m][r] / totals[m]).tolist(), k, scale=100.0)
+                for m in recorded
+            ]
+            for r in ordered
+        ]
+        lines += _table(
+            f"{number}. Atoms by matched radius, {scope} atoms (%)",
+            ["radius", *recorded],
+            rows,
+        )
+        for metric in ("rmse", "mae"):
+            rows = [
+                [r]
+                + [_cell(get(f"{prefix}{r}/{metric}", m).tolist(), k) for m in recorded]
+                for r in ordered
+            ]
+            lines += _table(
+                f"{number}. {metric.upper()} by matched radius, {scope} atoms",
+                ["radius", *recorded],
+                rows,
+            )
+    return lines
+
+
 def breakdown_report(
     runs_root: Path,
     arms: Sequence[Arm],
@@ -975,6 +1069,11 @@ def breakdown_report(
                     [group, "atoms per sample", *methods],
                     rows,
                 )
+        number += 1
+
+    radius_lines = _matched_radius_tables(values, methods, n, k, number)
+    if radius_lines:
+        lines += radius_lines
         number += 1
 
     if hose is not None:
