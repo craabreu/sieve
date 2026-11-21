@@ -819,6 +819,69 @@ def _cmd_breakdown_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_matched_radius(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.breakdown import parse_arm
+    from experiments.cv import ModelVariant
+    from experiments.matched_radius import (
+        pending,
+        record_hose_runs,
+        record_sieve_runs,
+    )
+
+    def numbers(text: str | None) -> list[int] | None:
+        return None if text is None else [int(x) for x in text.split(",")]
+
+    try:
+        arms = [parse_arm(spec) for spec in args.arm]
+        hose = parse_arm(args.hose) if args.hose else None
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not arms and hose is None:
+        raise SystemExit("name at least one --arm or the --hose arm")
+    repeats, folds = numbers(args.repeats), numbers(args.folds)
+    if args.check:
+        missing = pending(DEFAULT_RUNS_ROOT, arms, repeats=repeats)
+        if hose is not None:
+            missing += pending(DEFAULT_RUNS_ROOT, [hose], repeats=repeats, folds=folds)
+        for run in missing:
+            print(f"unrecorded: {run}")
+        return 1 if missing else 0
+    written = []
+    if arms:
+        variants = _json.loads(args.variants) if args.variants else []
+        written += record_sieve_runs(
+            DEFAULT_RUNS_ROOT,
+            arms,
+            store=args.store,
+            n_shards=args.n_shards,
+            k=args.k,
+            config_label=args.config_label,
+            fit_depth=args.fit_depth,
+            variants=[ModelVariant.from_dict(v) for v in variants],
+            model_cache=args.model_cache,
+            stores_root=DEFAULT_STORES_ROOT,
+            repeats=repeats,
+            force=args.force,
+            n_jobs=args.n_jobs,
+        )
+    if hose is not None:
+        written += record_hose_runs(
+            DEFAULT_RUNS_ROOT,
+            hose,
+            store=args.store,
+            n_shards=args.n_shards,
+            k=args.k,
+            stores_root=DEFAULT_STORES_ROOT,
+            repeats=repeats,
+            folds=folds,
+            force=args.force,
+        )
+    print(f"recorded {len(written)} run(s)")
+    return 0
+
+
 def _cmd_score_calibration(args: argparse.Namespace) -> int:
     from experiments.calibration import missing_scores, score_runs
 
@@ -2094,6 +2157,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_bd_report.add_argument("--k", type=int, default=5)
     p_bd_report.add_argument("--out", type=Path, default=None)
     p_bd_report.set_defaults(func=_cmd_breakdown_report)
+
+    p_matched = sub.add_parser(
+        "matched-radius",
+        help="error breakdown: the radius that answered each held-out atom of "
+        "saved CV runs, recomputed from the fold models into a file beside "
+        "each run",
+    )
+    p_matched.add_argument("store")
+    p_matched.add_argument(
+        "--arm", action="append", default=[], help=f"a Sieve arm, {arm_help}"
+    )
+    p_matched.add_argument(
+        "--hose", default=None, help="EXPERIMENT:METHOD:DEPTH of the HOSE arm"
+    )
+    p_matched.add_argument(
+        "--variants",
+        default=None,
+        help="the JSON list of variants cv-run-sieve scored; an arm is read "
+        "under the variant of its method name",
+    )
+    p_matched.add_argument("--k", type=int, default=5)
+    p_matched.add_argument("--n-shards", type=int, default=50)
+    p_matched.add_argument("--config-label", default="element-eb")
+    p_matched.add_argument("--fit-depth", type=int, default=10)
+    p_matched.add_argument("--model-cache", type=Path, default=None)
+    p_matched.add_argument(
+        "--repeats", default=None, help="comma-separated; default all"
+    )
+    p_matched.add_argument(
+        "--folds", default=None, help="comma-separated, HOSE arm only; default all"
+    )
+    p_matched.add_argument("--n-jobs", type=int, default=None)
+    p_matched.add_argument(
+        "--check",
+        action="store_true",
+        help="exit 1 if any selected run is unrecorded or stale; write nothing",
+    )
+    p_matched.add_argument("--force", action="store_true")
+    p_matched.set_defaults(func=_cmd_matched_radius)
 
     p_score_cal = sub.add_parser(
         "score-calibration",

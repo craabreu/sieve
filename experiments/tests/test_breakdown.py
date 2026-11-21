@@ -677,3 +677,94 @@ def test_every_arm_reports_its_total_charge_error_on_the_complete_records(scored
     dash = _sidecar(scored, "dash")
     assert dash["all/total/n_scored"] == 2
     assert dash["all/total/rmse"] == pytest.approx(dash["complete/total/rmse"])
+
+
+# --- matched radius ----------------------------------------------------------
+
+
+def _with_radii(s, arm, seed=5):
+    """Record random matched radii beside one arm's run and return them."""
+    from experiments.matched_radius import write_matched
+
+    n = s["true"].size
+    radius = np.random.default_rng(seed).integers(-1, 3, size=n).astype(np.int8)
+    radius[:3] = [-1, 0, 2]  # every label present
+    write_matched(s["paths"][arm], radius)
+    return radius
+
+
+def test_a_run_with_matched_radii_is_scored_by_radius(scored):
+    radius = _with_radii(scored, "sieve")
+    _score(scored)
+    side = _sidecar(scored, "sieve")
+    covered = np.isfinite(scored["pred"]["dash"])
+    for label, value in (("none", -1), ("0", 0), ("2", 2)):
+        for scope, mask in (("all", np.ones_like(covered)), ("covered", covered)):
+            sel = mask & (radius == value)
+            want = _expected(scored["true"], scored["pred"]["sieve"], sel)
+            prefix = f"{scope}/matched_radius/{label}"
+            assert side[f"{prefix}/n_atoms"] == int(sel.sum())
+            assert side[f"{prefix}/rmse"] == pytest.approx(want["rmse"])
+            assert side[f"{prefix}/mae"] == pytest.approx(want["mae"])
+    # an arm without recorded radii has no such scores
+    assert not any("matched_radius" in key for key in _sidecar(scored, "hose"))
+
+
+def test_a_sidecar_older_than_the_matched_radii_is_redone(scored):
+    import os
+
+    from experiments.breakdown import METRICS_FILE
+    from experiments.matched_radius import MATCHED_FILE
+
+    _score(scored)
+    assert _score(scored) == []
+    _with_radii(scored, "sieve")
+    run = scored["paths"]["sieve"]
+    later = (run / METRICS_FILE).stat().st_mtime + 10
+    os.utime(run / MATCHED_FILE, (later, later))
+    assert _score(scored) == [run]
+
+
+def test_matched_radii_of_another_length_are_refused(scored):
+    from experiments.matched_radius import write_matched
+
+    write_matched(scored["paths"]["sieve"], np.zeros(3, np.int8))
+    with pytest.raises(ValueError, match="matched radii"):
+        _score(scored)
+
+
+def test_the_report_tabulates_atoms_and_errors_by_matched_radius(scored):
+    from experiments.breakdown import breakdown_report
+
+    radius = _with_radii(scored, "sieve")
+    _score(scored)
+    text, snapshot = breakdown_report(
+        scored["runs"],
+        list(scored["arms"].values()),
+        incumbent=scored["arms"]["sieve"],
+        hose=scored["arms"]["hose"],
+        k=5,
+    )
+    assert "Atoms by matched radius, all atoms (%)" in text
+    assert "RMSE by matched radius, covered atoms" in text
+    block = text.split("Atoms by matched radius, all atoms (%)")[1].split("\n\n")[1]
+    # only the arm with recorded radii has a column
+    assert "sieve" in block and "hose" not in block and "dash" not in block
+    share = 100 * float((radius == -1).mean())
+    assert f"{share:.2f}" in block
+    assert block.index("none") < block.index("\n  0 ") < block.index("\n  2 ")
+    assert "all/matched_radius/none/n_atoms" in snapshot["values"]
+
+
+def test_a_report_without_matched_radii_has_no_such_section(scored):
+    from experiments.breakdown import breakdown_report
+
+    _score(scored)
+    text, _ = breakdown_report(
+        scored["runs"],
+        list(scored["arms"].values()),
+        incumbent=scored["arms"]["sieve"],
+        hose=scored["arms"]["hose"],
+        k=5,
+    )
+    assert "matched radius" not in text

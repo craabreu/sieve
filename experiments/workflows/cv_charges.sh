@@ -1299,7 +1299,8 @@ step compare "compare_is_up_to_date" -- run_compare
 # is scored on the atoms DASH covers, and on the records it covers entirely,
 # the only ones for which a normalized DASH prediction exists. The same pass
 # gives errors by element and by charge state, quantiles of the absolute
-# error, and the HOSE arm's global-mean fallback with its element-mean control.
+# error, the HOSE arm's global-mean fallback with its element-mean control, and
+# errors by matched radius for the arms whose radii were recorded.
 BREAKDOWN_JOBS="${BREAKDOWN_JOBS:-13}"     # CV samples scored in parallel
 BREAKDOWN_NJOBS="${BREAKDOWN_NJOBS:-16}"   # workers reading the store
 BREAKDOWN_REPORT="$FIGURES_DIR/breakdown"
@@ -1323,6 +1324,62 @@ BREAKDOWN_ARMS="$BREAKDOWN_SIEVE_ARMS --reference $BREAKDOWN_DASH --hose $BREAKD
 step breakdown-atom-table \
   "'$PYTHON' -m experiments atom-table '$STORE' --check" -- \
   "$PYTHON" -m experiments atom-table "$STORE" --n-jobs "$BREAKDOWN_NJOBS"
+
+# Matched radii: which sphere answered each held-out atom, for the Sieve arms
+# and for HOSE (experiments/matched_radius.py). Neither is in a run's record,
+# so each fold model is assembled again and must reproduce the run's saved
+# predictions before its radii are written beside the run. The Sieve arms share
+# a featurized batch per fold and take minutes; the HOSE arm generates the
+# held-out codes again, about as long as study-b-hose itself, and gets one
+# process per (repeat, fold) as that step does. breakdown-scores then scores
+# every run by matched radius.
+MATCHED_JOBS="${MATCHED_JOBS:-5}"          # repeats recorded in parallel (Sieve)
+MATCHED_NJOBS="${MATCHED_NJOBS:-4}"        # featurization workers per repeat
+MATCHED_SIEVE_VARIANTS=$(
+  echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
+import json, sys
+arms = set(json.loads(sys.argv[1])) - {"dash", "hose"}
+print(json.dumps([v for v in json.load(sys.stdin) if v["method"] in arms]))
+' "$DEPTH_BY_METHOD"
+)
+MATCHED_SIEVE_ARGS="$BREAKDOWN_SIEVE_ARMS --k $K --n-shards $N_SHARDS \
+  --config-label $SIEVE_CONFIG_LABEL --fit-depth $SIEVE_MAX_DEPTH \
+  --n-jobs $MATCHED_NJOBS $MODEL_CACHE_FLAG"
+MATCHED_HOSE_ARGS="--hose $BREAKDOWN_HOSE --k $K --n-shards $N_SHARDS"
+export MATCHED_SIEVE_ARGS MATCHED_SIEVE_VARIANTS MATCHED_HOSE_ARGS
+
+record_one_sieve_repeat() {
+  "$PYTHON" -m experiments matched-radius "$STORE" $MATCHED_SIEVE_ARGS \
+    --variants "$MATCHED_SIEVE_VARIANTS" --repeats "$1"
+}
+export -f record_one_sieve_repeat
+
+dispatch_matched_sieve() {
+  each_repeat \
+    | xargs -P "$MATCHED_JOBS" -I{} bash -c 'record_one_sieve_repeat "$1"' -- {}
+}
+
+record_one_hose_fold() {
+  local repeat=${1%% *} fold=${1##* }
+  "$PYTHON" -m experiments matched-radius "$STORE" $MATCHED_HOSE_ARGS \
+    --repeats "$repeat" --folds "$fold"
+}
+export -f record_one_hose_fold
+
+dispatch_matched_hose() {
+  local rep f
+  for rep in $(each_repeat); do
+    for f in $(seq 0 $((K - 1))); do echo "$rep $f"; done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'record_one_hose_fold "$1"' -- {}
+}
+
+step breakdown-matched-sieve \
+  "'$PYTHON' -m experiments matched-radius '$STORE' $MATCHED_SIEVE_ARGS --check" -- \
+  dispatch_matched_sieve
+
+step breakdown-matched-hose \
+  "'$PYTHON' -m experiments matched-radius '$STORE' $MATCHED_HOSE_ARGS --check" -- \
+  dispatch_matched_hose
 
 step breakdown-scores \
   "'$PYTHON' -m experiments score-breakdown '$STORE' $BREAKDOWN_ARMS \
