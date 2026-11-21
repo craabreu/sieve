@@ -408,7 +408,9 @@ final held-out evaluation once all shards are fit:
 
 See `experiments/workflows/cv_charges.sh` for the full sequence, end to
 end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
-stop after a given one.
+stop after a given one. `CV_DRY_RUN=1` evaluates every guard and runs
+nothing, listing the steps that would run; use it before resuming an old
+campaign, where an earlier guard that no longer passes would start a refit.
 `CV_STORE` picks the store the studies run on: `dash-qmugs` (the default) or
 `dash-extra`, both built by the workflow's `prepare-subsets` step, or the
 legacy pooled `dash-molecules`. `spice-high-energy` and `spice-low-energy`
