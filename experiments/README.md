@@ -374,6 +374,33 @@ doi:10.1021/acs.jcim.5c01609):
     uv run python -m experiments compare --experiment dash-cv-study-b --experiment sieve-cv-study-b \
       --depth-by-method '{"dash": 16, "sieve-element-continuation-eb": 6}' --out tukey.png
 
+The error breakdown (`breakdown.py`) rescores the saved predictions of those
+runs, with no refit and no new run. DASH leaves the atoms it cannot match
+without a prediction, so its own RMSE and another arm's are not over the same
+atoms; here every arm is scored on the atoms the `--reference` arm covers, and
+on the records it covers entirely. `atom-table` first writes the element and
+formal charge of every stored atom to `atom-table.npz` beside the store, and
+`score-breakdown` then writes a `breakdown_metrics.json` sidecar beside each
+run (arms are `EXPERIMENT:METHOD:DEPTH`):
+
+    uv run python -m experiments atom-table spice-high-energy
+    uv run python -m experiments score-breakdown spice-high-energy \
+      --arm sieve-cv-study-b:sieve-element-continuation-eb:5 \
+      --reference dash-cv-study-b:dash:16 --hose hose-cv-study-b:hose:5
+
+The sidecar holds RMSE, MAE and R² on each set of atoms (`all`, `covered`,
+`uncovered`, `complete`, `incomplete`), quantiles of the absolute error, the
+same scores by element, formal charge and net charge, and the total-charge
+error per record. With `--hose` it also counts the atoms on which the HOSE
+register falls back to the global mean of the training charges, and rescores
+that arm with the element mean in its place. `compare` reads the sidecar's
+keys as metrics (`--metric covered/rmse`), and `breakdown-report` tabulates
+them, with paired differences against `--incumbent`:
+
+    uv run python -m experiments breakdown-report --arm dash-cv-study-b:dash:16 \
+      --arm hose-cv-study-b:hose:5 --arm sieve-cv-study-b:sieve-element-continuation-eb:5 \
+      --hose hose-cv-study-b:hose:5 --incumbent sieve-element-continuation-eb --out breakdown
+
 `merge-states` generalizes the old `merge-shards` to either predictor, for a
 final held-out evaluation once all shards are fit:
 
@@ -381,7 +408,9 @@ final held-out evaluation once all shards are fit:
 
 See `experiments/workflows/cv_charges.sh` for the full sequence, end to
 end -- one guarded, idempotent step per stage, with `CV_UNTIL=<step>` to
-stop after a given one.
+stop after a given one. `CV_DRY_RUN=1` evaluates every guard and runs
+nothing, listing the steps that would run; use it before resuming an old
+campaign, where an earlier guard that no longer passes would start a refit.
 `CV_STORE` picks the store the studies run on: `dash-qmugs` (the default) or
 `dash-extra`, both built by the workflow's `prepare-subsets` step, or the
 legacy pooled `dash-molecules`. `spice-high-energy` and `spice-low-energy`

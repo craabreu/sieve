@@ -15,6 +15,7 @@
 # Run from the repo root: experiments/workflows/cv_charges.sh
 # Every step is idempotent, so re-running resumes rather than redoes.
 # `CV_UNTIL=<step>` stops after that step (see the step harness below).
+# `CV_DRY_RUN=1` runs nothing and lists the steps that would run.
 #
 # Nothing here is tracked by MLflow, deliberately and at every layer:
 # cv.py contains no MLflow code at all, and `run` leaves tracking off
@@ -70,6 +71,15 @@ fi
 
 CV_UNTIL="${CV_UNTIL:-}"
 
+# `CV_DRY_RUN=1` evaluates every guard and runs nothing: a step whose guard
+# reports it undone is listed as "would run" instead of being started. A new
+# step is appended to a campaign that may be weeks old, and running the
+# workflow to reach it re-evaluates every earlier guard; one of them failing
+# unexpectedly would start a refit. The dry run shows that beforehand. A step
+# that depends on the output of an earlier pending step is listed too, since
+# its guard cannot pass yet.
+CV_DRY_RUN="${CV_DRY_RUN:-}"
+
 # Figures are tracked on purpose (FIGURES_DIR below), while experiments/results
 # is gitignored, so a step that regenerates one leaves the working tree dirty.
 # Every fitting and CV entry point then calls cv._check_clean, which refuses to
@@ -100,6 +110,7 @@ so a figure-producing step would otherwise stop the campaign." || true
 
 STEPS_RUN=()
 STEPS_SKIPPED=()
+STEPS_PENDING=()
 _until_matched=false
 
 step() {
@@ -116,6 +127,9 @@ step() {
   if eval "$guard" > /dev/null 2>&1; then
     echo "== skip  $name"
     STEPS_SKIPPED+=("$name")
+  elif [ -n "$CV_DRY_RUN" ]; then
+    echo "== would run $name"
+    STEPS_PENDING+=("$name")
   else
     echo "== run   $name"
     "$@"
@@ -147,6 +161,9 @@ summarize_steps() {
   echo "=== workflow summary ==="
   echo "ran:     ${#STEPS_RUN[@]} step(s)${STEPS_RUN[*]+: ${STEPS_RUN[*]}}"
   echo "skipped: ${#STEPS_SKIPPED[@]} step(s)${STEPS_SKIPPED[*]+: ${STEPS_SKIPPED[*]}}"
+  if [ -n "$CV_DRY_RUN" ]; then
+    echo "pending: ${#STEPS_PENDING[@]} step(s)${STEPS_PENDING[*]+: ${STEPS_PENDING[*]}}"
+  fi
   if [ -n "$CV_UNTIL" ] && ! declared_steps | grep -qx "$CV_UNTIL"; then
     echo "!! CV_UNTIL=$CV_UNTIL matches no step in $0; nothing stopped early" >&2
     echo "!! steps are: $(declared_steps | tr '\n' ' ')" >&2
@@ -1270,6 +1287,63 @@ run_compare() {
 }
 
 step compare "compare_is_up_to_date" -- run_compare
+
+# ===========================================================================
+# Error breakdown: where the held-out error of Study B sits
+# ===========================================================================
+#
+# experiments/breakdown.py. No refits and no new runs: Study B's saved
+# predictions are rescored on common sets of atoms, into a sidecar beside each
+# run. The DASH arm leaves the atoms it cannot match without a prediction, so
+# its own RMSE and the other arms' are not over the same atoms; here every arm
+# is scored on the atoms DASH covers, and on the records it covers entirely,
+# the only ones for which a normalized DASH prediction exists. The same pass
+# gives errors by element and by charge state, quantiles of the absolute
+# error, and the HOSE arm's global-mean fallback with its element-mean control.
+BREAKDOWN_JOBS="${BREAKDOWN_JOBS:-13}"     # CV samples scored in parallel
+BREAKDOWN_NJOBS="${BREAKDOWN_NJOBS:-16}"   # workers reading the store
+BREAKDOWN_REPORT="$FIGURES_DIR/breakdown"
+BREAKDOWN_INCUMBENT="$SIEVE_METHOD"
+BREAKDOWN_DASH="$DASH_STUDY_B:dash:$DASH_SELECTED_DEPTH"
+BREAKDOWN_HOSE="$HOSE_STUDY_B:hose:$(hose_radius)"
+
+# One --arm per Sieve arm of the comparison, from the same DEPTH_BY_METHOD the
+# compare step read, so the breakdown cannot describe an arm it did not show.
+BREAKDOWN_SIEVE_ARMS=$(
+  echo "$DEPTH_BY_METHOD" | "$PYTHON" -c '
+import json, sys
+arms = json.load(sys.stdin)
+print(" ".join(
+    f"--arm {sys.argv[1]}:{m}:{d}" for m, d in arms.items() if m not in ("dash", "hose")
+))
+' "$SIEVE_STUDY_B"
+)
+BREAKDOWN_ARMS="$BREAKDOWN_SIEVE_ARMS --reference $BREAKDOWN_DASH --hose $BREAKDOWN_HOSE"
+
+step breakdown-atom-table \
+  "'$PYTHON' -m experiments atom-table '$STORE' --check" -- \
+  "$PYTHON" -m experiments atom-table "$STORE" --n-jobs "$BREAKDOWN_NJOBS"
+
+step breakdown-scores \
+  "'$PYTHON' -m experiments score-breakdown '$STORE' $BREAKDOWN_ARMS \
+     --n-shards $N_SHARDS --check" -- \
+  "$PYTHON" -m experiments score-breakdown "$STORE" $BREAKDOWN_ARMS \
+    --n-shards "$N_SHARDS" --n-jobs "$BREAKDOWN_JOBS"
+
+breakdown_report_is_up_to_date() {
+  [ -f "$BREAKDOWN_REPORT.txt" ] || return 1
+  [ -z "$(find $STUDY_B_RUNS -name breakdown_metrics.json \
+            -newer "$BREAKDOWN_REPORT.txt" -print -quit)" ]
+}
+
+run_breakdown_report() {
+  "$PYTHON" -m experiments breakdown-report \
+    --arm "$BREAKDOWN_DASH" --arm "$BREAKDOWN_HOSE" $BREAKDOWN_SIEVE_ARMS \
+    --hose "$BREAKDOWN_HOSE" --incumbent "$BREAKDOWN_INCUMBENT" --k "$K" \
+    --out "$BREAKDOWN_REPORT"
+}
+
+step breakdown-report "breakdown_report_is_up_to_date" -- run_breakdown_report
 
 # ===========================================================================
 # Study C: which featurization?
