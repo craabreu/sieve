@@ -135,10 +135,15 @@ def read_runs_from_dirs(runs_root: Path, experiment: str | None = None) -> list[
         )
         # Metrics scored after the run from its saved predictions (Study D's
         # stereo subsets, experiments.stereo_subsets; Study F's calibration,
-        # experiments.calibration) live in sidecars, so the run's own record
-        # is never rewritten. A key in two places would make the run say two
-        # things, so it is refused rather than overwritten.
-        for name in ("subset_metrics.json", "calibration_metrics.json"):
+        # experiments.calibration; the error breakdown, experiments.breakdown)
+        # live in sidecars, so the run's own record is never rewritten. A key
+        # in two places would make the run say two things, so it is refused
+        # rather than overwritten.
+        for name in (
+            "subset_metrics.json",
+            "calibration_metrics.json",
+            "breakdown_metrics.json",
+        ):
             sidecar = run_dir / name
             if sidecar.exists():
                 extra = json.loads(sidecar.read_text())

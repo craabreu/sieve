@@ -1272,6 +1272,63 @@ run_compare() {
 step compare "compare_is_up_to_date" -- run_compare
 
 # ===========================================================================
+# Error breakdown: where the held-out error of Study B sits
+# ===========================================================================
+#
+# experiments/breakdown.py. No refits and no new runs: Study B's saved
+# predictions are rescored on common sets of atoms, into a sidecar beside each
+# run. The DASH arm leaves the atoms it cannot match without a prediction, so
+# its own RMSE and the other arms' are not over the same atoms; here every arm
+# is scored on the atoms DASH covers, and on the records it covers entirely,
+# the only ones for which a normalized DASH prediction exists. The same pass
+# gives errors by element and by charge state, quantiles of the absolute
+# error, and the HOSE arm's global-mean fallback with its element-mean control.
+BREAKDOWN_JOBS="${BREAKDOWN_JOBS:-13}"     # CV samples scored in parallel
+BREAKDOWN_NJOBS="${BREAKDOWN_NJOBS:-16}"   # workers reading the store
+BREAKDOWN_REPORT="$FIGURES_DIR/breakdown"
+BREAKDOWN_INCUMBENT="$SIEVE_METHOD"
+BREAKDOWN_DASH="$DASH_STUDY_B:dash:$DASH_SELECTED_DEPTH"
+BREAKDOWN_HOSE="$HOSE_STUDY_B:hose:$(hose_radius)"
+
+# One --arm per Sieve arm of the comparison, from the same DEPTH_BY_METHOD the
+# compare step read, so the breakdown cannot describe an arm it did not show.
+BREAKDOWN_SIEVE_ARMS=$(
+  echo "$DEPTH_BY_METHOD" | "$PYTHON" -c '
+import json, sys
+arms = json.load(sys.stdin)
+print(" ".join(
+    f"--arm {sys.argv[1]}:{m}:{d}" for m, d in arms.items() if m not in ("dash", "hose")
+))
+' "$SIEVE_STUDY_B"
+)
+BREAKDOWN_ARMS="$BREAKDOWN_SIEVE_ARMS --reference $BREAKDOWN_DASH --hose $BREAKDOWN_HOSE"
+
+step breakdown-atom-table \
+  "'$PYTHON' -m experiments atom-table '$STORE' --check" -- \
+  "$PYTHON" -m experiments atom-table "$STORE" --n-jobs "$BREAKDOWN_NJOBS"
+
+step breakdown-scores \
+  "'$PYTHON' -m experiments score-breakdown '$STORE' $BREAKDOWN_ARMS \
+     --n-shards $N_SHARDS --check" -- \
+  "$PYTHON" -m experiments score-breakdown "$STORE" $BREAKDOWN_ARMS \
+    --n-shards "$N_SHARDS" --n-jobs "$BREAKDOWN_JOBS"
+
+breakdown_report_is_up_to_date() {
+  [ -f "$BREAKDOWN_REPORT.txt" ] || return 1
+  [ -z "$(find $STUDY_B_RUNS -name breakdown_metrics.json \
+            -newer "$BREAKDOWN_REPORT.txt" -print -quit)" ]
+}
+
+run_breakdown_report() {
+  "$PYTHON" -m experiments breakdown-report \
+    --arm "$BREAKDOWN_DASH" --arm "$BREAKDOWN_HOSE" $BREAKDOWN_SIEVE_ARMS \
+    --hose "$BREAKDOWN_HOSE" --incumbent "$BREAKDOWN_INCUMBENT" --k "$K" \
+    --out "$BREAKDOWN_REPORT"
+}
+
+step breakdown-report "breakdown_report_is_up_to_date" -- run_breakdown_report
+
+# ===========================================================================
 # Study C: which featurization?
 # ===========================================================================
 #

@@ -741,6 +741,84 @@ def _cmd_stereo_subset_masks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_atom_table(args: argparse.Namespace) -> int:
+    from experiments.breakdown import ATOMS_FILE, build_atom_table
+
+    path = DEFAULT_STORES_ROOT / args.store / ATOMS_FILE
+    if args.check:
+        # A workflow guard: the table is rebuilt when the store is.
+        store = DEFAULT_STORES_ROOT / args.store / "molecules.parquet"
+        if not path.exists() or path.stat().st_mtime < store.stat().st_mtime:
+            print(f"stale: {path}")
+            return 1
+        return 0
+    out = build_atom_table(
+        args.store, stores_root=DEFAULT_STORES_ROOT, n_jobs=args.n_jobs
+    )
+    print(f"wrote {out}")
+    return 0
+
+
+def _breakdown_arms(args: argparse.Namespace):
+    """The arms named on the command line, the reference and HOSE arms among
+    them whether or not they were repeated under ``--arm``."""
+    from experiments.breakdown import parse_arm
+
+    try:
+        arms = [parse_arm(spec) for spec in args.arm]
+        reference = parse_arm(args.reference) if args.reference else None
+        hose = parse_arm(args.hose) if args.hose else None
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    for extra in (reference, hose):
+        if extra is not None and extra not in arms:
+            arms.append(extra)
+    return arms, reference, hose
+
+
+def _cmd_score_breakdown(args: argparse.Namespace) -> int:
+    from experiments.breakdown import ATOMS_FILE, load_atom_table, score_runs
+
+    arms, reference, hose = _breakdown_arms(args)
+    options = {
+        "reference": reference,
+        "hose": hose,
+        "n_shards": args.n_shards,
+        "force": args.force,
+    }
+    if args.check:
+        missing = score_runs(DEFAULT_RUNS_ROOT, arms, None, check=True, **options)
+        for run in missing:
+            print(f"unscored: {run}")
+        return 1 if missing else 0
+    table = load_atom_table(DEFAULT_STORES_ROOT / args.store / ATOMS_FILE)
+    written = score_runs(DEFAULT_RUNS_ROOT, arms, table, n_jobs=args.n_jobs, **options)
+    print(f"scored {len(written)} run(s)")
+    return 0
+
+
+def _cmd_breakdown_report(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from experiments.breakdown import breakdown_report
+
+    args.reference = None
+    arms, _, hose = _breakdown_arms(args)
+    incumbent = next((a for a in arms if a.method == args.incumbent), None)
+    if incumbent is None:
+        raise SystemExit(f"--incumbent {args.incumbent!r} is none of the arms")
+    text, snapshot = breakdown_report(
+        DEFAULT_RUNS_ROOT, arms, incumbent=incumbent, hose=hose, k=args.k
+    )
+    print(text, end="")
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.with_suffix(".txt").write_text(text)
+        args.out.with_suffix(".json").write_text(_json.dumps(snapshot, indent=1))
+        print(f"wrote {args.out.with_suffix('.txt')} and .json")
+    return 0
+
+
 def _cmd_score_calibration(args: argparse.Namespace) -> int:
     from experiments.calibration import missing_scores, score_runs
 
@@ -1957,6 +2035,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="score nothing; exit 1 if any selected run is unscored or stale",
     )
     p_score_sub.set_defaults(func=_cmd_score_stereo_subsets)
+
+    p_atoms = sub.add_parser(
+        "atom-table",
+        help="error breakdown: the element and formal charge of every stored "
+        "atom, written beside the store",
+    )
+    p_atoms.add_argument("store")
+    p_atoms.add_argument("--n-jobs", type=int, default=None)
+    p_atoms.add_argument(
+        "--check",
+        action="store_true",
+        help="build nothing; exit 1 if the table is absent or older than the store",
+    )
+    p_atoms.set_defaults(func=_cmd_atom_table)
+
+    arm_help = "EXPERIMENT:METHOD:DEPTH; repeatable"
+    p_score_bd = sub.add_parser(
+        "score-breakdown",
+        help="error breakdown: rescore saved CV predictions on the atoms a "
+        "reference arm covers, by element and charge state, with error "
+        "quantiles and the HOSE fallback control, into each run's "
+        "breakdown_metrics.json",
+    )
+    p_score_bd.add_argument("store")
+    p_score_bd.add_argument("--arm", action="append", default=[], help=arm_help)
+    p_score_bd.add_argument(
+        "--reference",
+        required=True,
+        help="EXPERIMENT:METHOD:DEPTH of the arm whose missing predictions "
+        "define the scopes",
+    )
+    p_score_bd.add_argument(
+        "--hose",
+        default=None,
+        help="EXPERIMENT:METHOD:DEPTH of the HOSE arm, for its fallback",
+    )
+    p_score_bd.add_argument("--n-shards", type=int, default=50)
+    p_score_bd.add_argument("--n-jobs", type=int, default=1)
+    p_score_bd.add_argument(
+        "--force", action="store_true", help="rescore runs already scored"
+    )
+    p_score_bd.add_argument(
+        "--check",
+        action="store_true",
+        help="score nothing; exit 1 if any run is unscored or stale",
+    )
+    p_score_bd.set_defaults(func=_cmd_score_breakdown)
+
+    p_bd_report = sub.add_parser(
+        "breakdown-report", help="error breakdown: the report from the sidecars"
+    )
+    p_bd_report.add_argument("--arm", action="append", default=[], help=arm_help)
+    p_bd_report.add_argument(
+        "--incumbent", required=True, help="METHOD the paired differences are against"
+    )
+    p_bd_report.add_argument("--hose", default=None)
+    p_bd_report.add_argument("--k", type=int, default=5)
+    p_bd_report.add_argument("--out", type=Path, default=None)
+    p_bd_report.set_defaults(func=_cmd_breakdown_report)
 
     p_score_cal = sub.add_parser(
         "score-calibration",
