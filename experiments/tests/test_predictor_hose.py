@@ -249,3 +249,52 @@ def test_canonical_numbering_answers_a_reordered_molecule_at_full_radius():
 def test_an_unknown_numbering_is_refused():
     with pytest.raises(ValueError, match="numbering"):
         _predictor(numbering="sorted")
+
+
+@pytest.mark.parametrize("keys", ["tree", "closure-tree"])
+def test_tree_keys_answer_a_reordered_molecule_at_full_radius(keys):
+    """A tree has no order to break ties in, so the stored order of the atoms
+    cannot reach the keys."""
+    train, moved, order = _glycerol_twice()
+    p = _predictor(max_radius=5, keys=keys)
+    p.fit(train, train, rng=np.random.default_rng(0))
+    got = p.predict(moved).atom_value
+    assert (p.matched_radius == 5).all()
+    np.testing.assert_allclose(got, p.predict(train).atom_value[order], atol=1e-12)
+
+
+def _ring_set(*smiles):
+    from experiments.data import MoleculeSet
+    from rdkit import Chem
+
+    mols = []
+    for i, smi in enumerate(smiles):
+        mol = Chem.AddHs(Chem.MolFromSmiles(smi))
+        for atom in mol.GetAtoms():
+            atom.SetDoubleProp("MBIScharge", 0.1 * (i + 1) * (atom.GetSymbol() == "C"))
+        mols.append(mol)
+    return MoleculeSet(mols=mols, atom_property="MBIScharge")
+
+
+def test_the_closure_tree_keeps_apart_what_the_plain_tree_pools():
+    """Cyclopropane and cyclohexane carbons share a two-sphere tree without
+    closures and not with them."""
+    mset = _ring_set("C1CC1", "C1CCCCC1")
+    carbon = np.array([a.GetSymbol() == "C" for m in mset.mols for a in m.GetAtoms()])
+    for keys, n_values in (("tree", 1), ("closure-tree", 2)):
+        p = _predictor(max_radius=2, keys=keys)
+        p.fit(mset, mset, rng=np.random.default_rng(0))
+        values = p.predict(mset).atom_value[carbon]
+        assert len(set(np.round(values, 9))) == n_values
+
+
+def test_an_unknown_key_kind_is_refused():
+    with pytest.raises(ValueError, match="keys"):
+        _predictor(keys="graph")
+
+
+def test_tree_keys_take_no_numbering():
+    """A tree is the same under any numbering, so asking for one is a
+    mistake rather than a choice."""
+    with pytest.raises(ValueError, match="numbering"):
+        _predictor(keys="tree", numbering="canonical")

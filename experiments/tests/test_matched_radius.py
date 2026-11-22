@@ -316,6 +316,35 @@ def test_a_canonically_numbered_hose_arm_is_read_from_its_own_shard_fits(hose_cv
     assert all(read_matched(run) is not None for run in written)
 
 
+def test_a_tree_keyed_hose_arm_is_read_from_its_own_shard_fits(hose_cv):
+    from experiments.breakdown import Arm
+    from experiments.cv import run_hose_cv, run_hose_shard_fits
+    from experiments.matched_radius import read_matched, record_hose_runs
+
+    run_hose_shard_fits(radius=2, keys="tree", **hose_cv)
+    run_hose_cv(
+        radii=[2],
+        repeats=[0],
+        k=5,
+        save_predictions=True,
+        experiment="hose-tree-cv",
+        method="hose-tree",
+        keys="tree",
+        **hose_cv,
+    )
+    written = record_hose_runs(
+        hose_cv["runs_root"],
+        Arm("hose-tree-cv", "hose-tree", 2),
+        store=hose_cv["store"],
+        n_shards=hose_cv["n_shards"],
+        k=5,
+        stores_root=hose_cv["stores_root"],
+        keys="tree",
+    )
+    assert len(written) == 5
+    assert all(read_matched(run) is not None for run in written)
+
+
 # --- the command ----------------------------------------------------------------
 
 

@@ -240,6 +240,7 @@ def record_hose_runs(
     n_shards: int,
     k: int,
     numbering: str = "stored",
+    keys: str = "code",
     stores_root: Path | None = None,
     repeats: Sequence[int] | None = None,
     folds: Sequence[int] | None = None,
@@ -250,6 +251,8 @@ def record_hose_runs(
     ``numbering`` is the atom numbering the arm's shard fits were generated
     under (``predictors.hose_keys.NUMBERINGS``); a run does not record it, and
     the fold model of the other numbering would not reproduce its predictions.
+    ``keys`` is what their keys were cut from (``predictors.hose_keys.
+    KEY_KINDS``), for the same reason.
 
     The cost is the generation of the held-out codes, about as long as the run
     itself took, and nothing is shared between folds. ``repeats`` and ``folds``
@@ -278,14 +281,14 @@ def record_hose_runs(
     ids = shard_ids(n_shards)
     radius = arm.depth
     paths = {
-        s: _shard_fit_done(runs_root, hose_shard_batch_id(radius, s, numbering))
+        s: _shard_fit_done(runs_root, hose_shard_batch_id(radius, s, numbering, keys))
         for s in ids
     }
     missing = [s for s, path in paths.items() if path is None]
     if missing:
         raise FileNotFoundError(
             f"no hose shard fit at radius {radius} under the {numbering} "
-            f"numbering for {missing}"
+            f"numbering with {keys} keys for {missing}"
         )
     states = {s: load_hose_state(p) for s, p in paths.items() if p is not None}
     samples = _by_sample(todo)
