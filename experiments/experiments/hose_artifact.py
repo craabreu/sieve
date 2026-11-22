@@ -28,6 +28,8 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from experiments.predictors.hose_keys import STORED, check_numbering
+
 
 @dataclass(frozen=True)
 class HoseState:
@@ -43,6 +45,10 @@ class HoseState:
     field, after ``global_count``, because a defaulted field cannot precede
     a non-defaulted one -- construct a ``HoseState`` by keyword when passing
     it.
+
+    ``numbering`` says how the atoms were numbered when the codes were
+    generated (``predictors.hose_keys.NUMBERINGS``). A state saved before the
+    field existed was generated in the stored order of the atoms.
     """
 
     max_radius: int
@@ -50,8 +56,10 @@ class HoseState:
     global_sum: float
     global_count: int
     global_sumsq: float | None = None
+    numbering: str = STORED
 
     def __post_init__(self) -> None:
+        check_numbering(self.numbering)
         if len(self.tables) != self.max_radius + 1:
             raise ValueError(
                 f"expected {self.max_radius + 1} tables (index 0 unused), "
@@ -84,6 +92,12 @@ def merge_hose_states(a: HoseState, b: HoseState) -> HoseState:
             f"({a.max_radius} and {b.max_radius}): a deeper fit's shallower "
             f"spheres are re-rendered, not shared (spec section 7)"
         )
+    if a.numbering != b.numbering:
+        raise ValueError(
+            f"cannot merge HOSE states generated under different atom "
+            f"numbering ({a.numbering} and {b.numbering}): one environment can "
+            f"be spelled differently in each"
+        )
     tables: list[dict[str, tuple[float, float, int]]] = [{}]
     for k in range(1, a.max_radius + 1):
         merged = dict(a.tables[k])
@@ -110,6 +124,7 @@ def merge_hose_states(a: HoseState, b: HoseState) -> HoseState:
         global_sum=a.global_sum + b.global_sum,
         global_count=a.global_count + b.global_count,
         global_sumsq=global_sumsq,
+        numbering=a.numbering,
     )
 
 
@@ -131,7 +146,8 @@ def save_hose_state(state: HoseState, path: str | Path) -> None:
     ``r{k}_sumsq``/``global_sumsq`` are written only when ``state`` carries
     them, so a state built before they existed round-trips to the identical
     legacy file layout -- nothing that reads an old-format ``.npz`` needs to
-    change.
+    change. ``numbering`` is written only when it is not the stored order,
+    for the same reason.
     """
     arrays: dict[str, NDArray] = {
         "max_radius": np.asarray(state.max_radius, dtype=np.int64),
@@ -140,6 +156,8 @@ def save_hose_state(state: HoseState, path: str | Path) -> None:
     }
     if state.has_second_moment:
         arrays["global_sumsq"] = np.asarray(state.global_sumsq, dtype=np.float64)
+    if state.numbering != STORED:
+        arrays["numbering"] = np.asarray(state.numbering, dtype=np.str_)
     for k in range(1, state.max_radius + 1):
         table = state.tables[k]
         keys = list(table)
@@ -187,4 +205,5 @@ def load_hose_state(path: str | Path) -> HoseState:
             global_sum=float(z["global_sum"]),
             global_count=int(z["global_count"]),
             global_sumsq=float(z["global_sumsq"]) if has_moment else None,
+            numbering=str(z["numbering"]) if "numbering" in z.files else STORED,
         )

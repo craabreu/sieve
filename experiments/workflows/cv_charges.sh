@@ -1004,6 +1004,111 @@ step study-a-hose \
   "method_runs_count_is $HOSE_STUDY_A hose $((K * $(n_items "$HOSE_RADII")))" -- \
   dispatch_study_a_hose
 
+# --- The HOSE arm with canonically numbered atoms ---------------------------
+#
+# The generator leaves the nodes of a sphere that score alike in the order of
+# their atom indices, so a code depends on the order in which a molecule's
+# atoms are stored: the same atom of the same molecule, stored in another
+# order, can be given another code, and then misses its class and backs off.
+# Renumbering the atoms of 4,175 dash-qmugs molecules at random changed 17% of
+# their five-sphere codes. The Java generators this one was ported from break
+# those ties by a canonical label, and NMRShiftDB's changes 0.01% of them
+# (sieve_paper/HOSE.md, section 4). `--numbering canonical` numbers the atoms
+# canonically before the generator sees them (predictors/hose_keys.py).
+#
+# The arm above is kept as it was run. This one is a second arm beside it,
+# with its own shard fits (fit-hose-canonical-r<k>-s<nn>), its own experiments
+# and its own method name, so that nothing the earlier guards and figures read
+# is touched, and the two can be compared sample by sample: same folds, same
+# held-out molecules.
+#
+# All three steps sit here, before Study A's figure, rather than each beside
+# its counterpart. The radius of Study B is pinned for this arm as it is for
+# the stored one (HOSE_SELECTED_RADIUS), so nothing here waits on a curve
+# being read, and `CV_UNTIL=study-b-hose-canonical` runs the whole arm on a
+# store whose later steps are not to be reached.
+HOSE_CANONICAL_STUDY_A=hose-canonical-cv-study-a
+HOSE_CANONICAL_STUDY_B=hose-canonical-cv-study-b
+HOSE_CANONICAL_METHOD=hose-canonical
+export HOSE_CANONICAL_METHOD
+
+fit_one_hose_canonical_shard() {
+  "$PYTHON" -m experiments cv-fit-hose-shards "$STORE" \
+    --n-shards "$N_SHARDS" --radius "$HOSE_RADIUS" --shard "$1" \
+    --numbering canonical $COLLAPSE_FLAG
+}
+export -f fit_one_hose_canonical_shard
+
+hose_canonical_shard_fits_done() {
+  local r
+  for r in $(each_hose_radius); do
+    shard_fits_count_is "fit-hose-canonical-r$r-s" "$N_SHARDS" || return 1
+  done
+}
+
+dispatch_hose_canonical_shards() {
+  local r
+  for r in $(each_hose_radius); do
+    echo "--- hose shard fits, canonical numbering: radius $r ---"
+    export HOSE_RADIUS="$r"
+    all_shard_ids | xargs -P "$HOSE_SHARD_JOBS" -n 1 \
+      bash -c 'fit_one_hose_canonical_shard "$1"' --
+  done
+}
+
+step hose-canonical-shard-fits \
+  "hose_canonical_shard_fits_done" -- dispatch_hose_canonical_shards
+
+# One process per (radius, repeat, fold) in both studies, for the reason given
+# at HOSE_CV_JOBS.
+run_one_hose_canonical_cv() {
+  # "<radius> <repeat> <fold>" on one line, from xargs
+  local radius repeat fold
+  read -r radius repeat fold <<< "$1"
+  "$PYTHON" -m experiments cv-run-hose "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --radii "$radius" --folds "$fold" --repeats "$repeat" \
+    --normalization equal_weighted --numbering canonical \
+    --method "$HOSE_CANONICAL_METHOD" $COLLAPSE_FLAG \
+    --experiment "$HOSE_CV_EXPERIMENT" $HOSE_CV_EXTRA
+}
+export -f run_one_hose_canonical_cv
+
+dispatch_hose_canonical_cv() {
+  # <experiment> <extra flags> <radii> <repeats>, the last two space-separated
+  local radius rep f
+  export HOSE_CV_EXPERIMENT="$1"
+  export HOSE_CV_EXTRA="$2"
+  for radius in $3; do
+    for rep in $4; do
+      for f in $(seq 0 $((K - 1))); do echo "$radius $rep $f"; done
+    done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'run_one_hose_canonical_cv "$1"' -- {}
+}
+
+dispatch_study_a_hose_canonical() {
+  dispatch_hose_canonical_cv "$HOSE_CANONICAL_STUDY_A" "" \
+    "$(echo "$HOSE_RADII" | tr ',' ' ')" "$(echo "$STUDY_A_REPEATS" | tr ',' ' ')"
+}
+
+step study-a-hose-canonical \
+  "method_runs_count_is $HOSE_CANONICAL_STUDY_A $HOSE_CANONICAL_METHOD \
+     $((K * $(n_items "$HOSE_RADII") * $(n_items "$STUDY_A_REPEATS")))" -- \
+  dispatch_study_a_hose_canonical
+
+run_study_b_hose_canonical() {
+  local radius
+  radius="$(hose_radius)"
+  echo "--- study B hose, canonical numbering: radius $radius ---"
+  dispatch_hose_canonical_cv "$HOSE_CANONICAL_STUDY_B" "$SAVE_PREDICTIONS_FLAG" \
+    "$radius" "$(echo "$STUDY_B_REPEATS" | tr ',' ' ')"
+}
+
+step study-b-hose-canonical \
+  "method_depth_runs_count_is $HOSE_CANONICAL_STUDY_B $HOSE_CANONICAL_METHOD \
+     \$(hose_radius) $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
+  run_study_b_hose_canonical
+
 # --- Study A's figure -------------------------------------------------------
 #
 # The depth curve as a manuscript figure rather than as sweep's diagnostic
