@@ -629,6 +629,25 @@ HOSE_CV_JOBS="${HOSE_CV_JOBS:-12}"
 HOSE_SELECTED_RADIUS="${HOSE_SELECTED_RADIUS:-5}"
 HOSE_SELECT_SCRIPT=experiments/workflows/select_setting.py
 
+# The HOSE arm the figures, the comparison and the error breakdown report.
+# "canonical" (the default) is the arm whose atoms are numbered canonically
+# before the codes are generated, as the Java generators do (see "The HOSE arm
+# with canonically numbered atoms" below); "stored" is the arm as first run.
+# Both arms stay on disk and keep their own guards; this picks which one is
+# read downstream.
+HOSE_REPORTED="${HOSE_REPORTED:-canonical}"
+case "$HOSE_REPORTED" in
+  canonical)
+    REPORTED_HOSE_STUDY_A=hose-canonical-cv-study-a
+    REPORTED_HOSE_STUDY_B=hose-canonical-cv-study-b
+    REPORTED_HOSE_METHOD=hose-canonical ;;
+  stored)
+    REPORTED_HOSE_STUDY_A="$HOSE_STUDY_A"
+    REPORTED_HOSE_STUDY_B="$HOSE_STUDY_B"
+    REPORTED_HOSE_METHOD=hose ;;
+  *) echo "HOSE_REPORTED must be canonical or stored, got $HOSE_REPORTED" >&2; exit 1 ;;
+esac
+
 # Resolved from Study A's own curve when it exists, by the same rule that
 # chose Sieve's depth 5: the shallowest radius whose mean RMSE lies inside the
 # minimum\'s own Nadeau-Bengio interval, so a plateau is not read as a peak.
@@ -639,7 +658,7 @@ hose_radius() {
     echo "$HOSE_SELECTED_RADIUS"
     return
   fi
-  "$PYTHON" "$HOSE_SELECT_SCRIPT" "$HOSE_STUDY_A" 2>/dev/null || echo 5
+  "$PYTHON" "$HOSE_SELECT_SCRIPT" "$REPORTED_HOSE_STUDY_A" 2>/dev/null || echo 5
 }
 
 DASH_STUDY_A=dash-cv-study-a
@@ -1383,7 +1402,7 @@ step study-b-hose-tree-keys \
 DEPTH_CURVE_METRIC="${DEPTH_CURVE_METRIC:-rmse,r2}"
 DEPTH_CURVE_STEM="$FIGURES_DIR/depth-curve-study-a"
 DEPTH_CURVE_STAMP="$FIGURES_DIR/.depth-curve-inputs"
-STUDY_A_RUNS="$RUNS/$DASH_STUDY_A $RUNS/$SIEVE_STUDY_A $RUNS/$HOSE_STUDY_A"
+STUDY_A_RUNS="$RUNS/$DASH_STUDY_A $RUNS/$SIEVE_STUDY_A $RUNS/$REPORTED_HOSE_STUDY_A"
 
 # Sieve's WL depth 0 is kept off the figure: with no refinement at all the
 # model is element-wise pooled means, whose R^2 of 0.46 compresses the 0.99
@@ -1412,8 +1431,8 @@ DEPTH_CURVE_ARMS=$(
   done
   # HOSE gets its own panel for the same reason DASH does: a sphere count is
   # not a WL depth, so they cannot share an x axis.
-  printf ', {"experiment": "%s", "method": "hose", "label": "HOSE lookup",' \
-    "$HOSE_STUDY_A"
+  printf ', {"experiment": "%s", "method": "%s", "label": "HOSE lookup",' \
+    "$REPORTED_HOSE_STUDY_A" "$REPORTED_HOSE_METHOD"
   printf ' "panel": "HOSE", "x_label": "Number of Spheres"}'
   printf ']' 
 )
@@ -1590,22 +1609,24 @@ DEPTH_BY_METHOD=$(
 import json, sys
 drop = {m for m in sys.argv[4].split(",") if m}
 variants = json.load(sys.stdin)
-known = {v["method"] for v in variants} | {"dash", "hose"}
+hose = sys.argv[5]
+known = {v["method"] for v in variants} | {"dash", hose}
 unknown = drop - known
 if unknown:
     raise SystemExit(f"COMPARE_EXCLUDE names no such arm: {sorted(unknown)}")
-out = {"dash": int(sys.argv[1]), "hose": int(sys.argv[3])}
+out = {"dash": int(sys.argv[1]), hose: int(sys.argv[3])}
 out = {m: d for m, d in out.items() if m not in drop}
 out.update({v["method"]: int(sys.argv[2]) for v in variants if v["method"] not in drop})
 print(json.dumps(out))
-' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH" "$(hose_radius)" "$COMPARE_EXCLUDE"
+' "$DASH_SELECTED_DEPTH" "$SIEVE_SELECTED_DEPTH" "$(hose_radius)" "$COMPARE_EXCLUDE" \
+  "$REPORTED_HOSE_METHOD"
 )
 
 # A stamp of what the figures were drawn FROM, beside them. mtimes catch new
 # runs; they cannot catch a changed metric list or a changed set of arms,
 # which change the figures just as much. Guard on both.
 COMPARE_STAMP="$FIGURES_DIR/.compare-inputs"
-STUDY_B_RUNS="$RUNS/$DASH_STUDY_B $RUNS/$SIEVE_STUDY_B $RUNS/$HOSE_STUDY_B"
+STUDY_B_RUNS="$RUNS/$DASH_STUDY_B $RUNS/$SIEVE_STUDY_B $RUNS/$REPORTED_HOSE_STUDY_B"
 
 compare_is_up_to_date() {
   [ -f "$COMPARE_STAMP" ] || return 1
@@ -1626,7 +1647,7 @@ run_compare() {
     echo "--- $m ---"
     "$PYTHON" -m experiments compare \
       --experiment "$DASH_STUDY_B" --experiment "$SIEVE_STUDY_B" \
-      --experiment "$HOSE_STUDY_B" \
+      --experiment "$REPORTED_HOSE_STUDY_B" \
       --metric "$m" \
       --depth-by-method "$DEPTH_BY_METHOD" \
       --out "$(tukey_plot "$m")" \
@@ -1658,7 +1679,7 @@ BREAKDOWN_NJOBS="${BREAKDOWN_NJOBS:-16}"   # workers reading the store
 BREAKDOWN_REPORT="$FIGURES_DIR/breakdown"
 BREAKDOWN_INCUMBENT="$SIEVE_METHOD"
 BREAKDOWN_DASH="$DASH_STUDY_B:dash:$DASH_SELECTED_DEPTH"
-BREAKDOWN_HOSE="$HOSE_STUDY_B:hose:$(hose_radius)"
+BREAKDOWN_HOSE="$REPORTED_HOSE_STUDY_B:$REPORTED_HOSE_METHOD:$(hose_radius)"
 
 # One --arm per Sieve arm of the comparison, from the same DEPTH_BY_METHOD the
 # compare step read, so the breakdown cannot describe an arm it did not show.
@@ -1667,9 +1688,9 @@ BREAKDOWN_SIEVE_ARMS=$(
 import json, sys
 arms = json.load(sys.stdin)
 print(" ".join(
-    f"--arm {sys.argv[1]}:{m}:{d}" for m, d in arms.items() if m not in ("dash", "hose")
+    f"--arm {sys.argv[1]}:{m}:{d}" for m, d in arms.items() if m not in ("dash", sys.argv[2])
 ))
-' "$SIEVE_STUDY_B"
+' "$SIEVE_STUDY_B" "$REPORTED_HOSE_METHOD"
 )
 BREAKDOWN_ARMS="$BREAKDOWN_SIEVE_ARMS --reference $BREAKDOWN_DASH --hose $BREAKDOWN_HOSE"
 
@@ -1690,14 +1711,17 @@ MATCHED_NJOBS="${MATCHED_NJOBS:-4}"        # featurization workers per repeat
 MATCHED_SIEVE_VARIANTS=$(
   echo "$SIEVE_VARIANTS" | "$PYTHON" -c '
 import json, sys
-arms = set(json.loads(sys.argv[1])) - {"dash", "hose"}
+arms = set(json.loads(sys.argv[1])) - {"dash", sys.argv[2]}
 print(json.dumps([v for v in json.load(sys.stdin) if v["method"] in arms]))
-' "$DEPTH_BY_METHOD"
+' "$DEPTH_BY_METHOD" "$REPORTED_HOSE_METHOD"
 )
 MATCHED_SIEVE_ARGS="$BREAKDOWN_SIEVE_ARMS --k $K --n-shards $N_SHARDS \
   --config-label $SIEVE_CONFIG_LABEL --fit-depth $SIEVE_MAX_DEPTH \
   --n-jobs $MATCHED_NJOBS $MODEL_CACHE_FLAG"
-MATCHED_HOSE_ARGS="--hose $BREAKDOWN_HOSE --k $K --n-shards $N_SHARDS"
+MATCHED_HOSE_NUMBERING=stored
+[ "$HOSE_REPORTED" = canonical ] && MATCHED_HOSE_NUMBERING=canonical
+MATCHED_HOSE_ARGS="--hose $BREAKDOWN_HOSE --hose-numbering $MATCHED_HOSE_NUMBERING \
+  --k $K --n-shards $N_SHARDS"
 export MATCHED_SIEVE_ARGS MATCHED_SIEVE_VARIANTS MATCHED_HOSE_ARGS
 
 record_one_sieve_repeat() {
