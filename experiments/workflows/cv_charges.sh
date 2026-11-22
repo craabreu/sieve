@@ -1231,6 +1231,131 @@ step study-b-sieve-hose-vocab \
      $SIEVE_SELECTED_DEPTH $((K * $(n_items "$STUDY_B_REPEATS")))'" -- \
   dispatch_study_b_vocab
 
+# --- The HOSE lookup on trees -----------------------------------------------
+#
+# HOSE's estimator (backoff lookup, global-mean fallback) with keys cut from
+# the tree a HOSE code is written from instead of from the code's string
+# (predictors/hose_trees.py), with and without its ring closures. Without
+# closures the tree is the unrolled tree of the Sieve label with HOSE's
+# vocabulary, and its classes are that label's; with them, the meeting of two
+# walks in one sphere is written under both, so no order is needed. Three
+# comparisons then separate what the HOSE arm differs from Sieve by:
+#
+#   hose-tree         vs  hose-closure-tree      the ring closure alone
+#   hose-closure-tree vs  hose-canonical         the string alone
+#   hose-tree         vs  sieve-el-fc-bt-...     the estimator alone
+#
+# On 4,000 dash-qmugs molecules the closures split tree classes holding 3.6,
+# 9.7, 5.7 and 2.1% of atoms at radii 2 to 5, and the canonical codes split
+# closure-tree classes holding a further 6.6, 8.6, 2.0 and 0.3%
+# (sieve_paper_work/hose_trees/validate.log).
+#
+# Same radii, folds and pinned Study B radius as the other HOSE arms, so every
+# pair is matched sample by sample. Run on TREE_KEY_STORES only (default
+# dash-qmugs), skipped elsewhere as the vocabulary arm's steps are.
+TREE_KEY_STORES="${TREE_KEY_STORES:-dash-qmugs}"
+TREE_KEY_KINDS="tree closure-tree"
+
+fit_one_tree_key_shard() {
+  "$PYTHON" -m experiments cv-fit-hose-shards "$STORE" \
+    --n-shards "$N_SHARDS" --radius "$HOSE_RADIUS" --shard "$1" \
+    --keys "$TREE_KEYS" $COLLAPSE_FLAG
+}
+export -f fit_one_tree_key_shard
+
+tree_key_shard_fits_done() {
+  local keys r
+  for keys in $TREE_KEY_KINDS; do
+    for r in $(each_hose_radius); do
+      shard_fits_count_is "fit-hose-$keys-r$r-s" "$N_SHARDS" || return 1
+    done
+  done
+}
+
+dispatch_tree_key_shards() {
+  local keys r
+  for keys in $TREE_KEY_KINDS; do
+    for r in $(each_hose_radius); do
+      echo "--- hose shard fits, $keys keys: radius $r ---"
+      export HOSE_RADIUS="$r" TREE_KEYS="$keys"
+      all_shard_ids | xargs -P "$HOSE_SHARD_JOBS" -n 1 \
+        bash -c 'fit_one_tree_key_shard "$1"' --
+    done
+  done
+}
+
+run_one_tree_key_cv() {
+  # "<keys> <radius> <repeat> <fold>" on one line, from xargs
+  local keys radius repeat fold
+  read -r keys radius repeat fold <<< "$1"
+  "$PYTHON" -m experiments cv-run-hose "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --radii "$radius" --folds "$fold" --repeats "$repeat" \
+    --normalization equal_weighted --keys "$keys" \
+    --method "hose-$keys" $COLLAPSE_FLAG \
+    --experiment "hose-$keys-cv-$HOSE_CV_STUDY" $HOSE_CV_EXTRA
+}
+export -f run_one_tree_key_cv
+
+dispatch_tree_key_cv() {
+  # <study> <extra flags> <radii> <repeats>, the last two space-separated
+  local keys radius rep f
+  export HOSE_CV_STUDY="$1"
+  export HOSE_CV_EXTRA="$2"
+  for keys in $TREE_KEY_KINDS; do
+    for radius in $3; do
+      for rep in $4; do
+        for f in $(seq 0 $((K - 1))); do echo "$keys $radius $rep $f"; done
+      done
+    done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'run_one_tree_key_cv "$1"' -- {}
+}
+
+dispatch_study_a_tree_keys() {
+  dispatch_tree_key_cv study-a "" \
+    "$(echo "$HOSE_RADII" | tr ',' ' ')" "$(echo "$STUDY_A_REPEATS" | tr ',' ' ')"
+}
+
+run_study_b_tree_keys() {
+  local radius
+  radius="$(hose_radius)"
+  echo "--- study B hose on trees: radius $radius ---"
+  dispatch_tree_key_cv study-b "$SAVE_PREDICTIONS_FLAG" \
+    "$radius" "$(echo "$STUDY_B_REPEATS" | tr ',' ' ')"
+}
+
+tree_key_runs_done() {
+  # <study> <expected runs per kind> [radius]
+  local keys
+  for keys in $TREE_KEY_KINDS; do
+    if [ -n "${3:-}" ]; then
+      method_depth_runs_count_is "hose-$keys-cv-$1" "hose-$keys" "$3" "$2" || return 1
+    else
+      method_runs_count_is "hose-$keys-cv-$1" "hose-$keys" "$2" || return 1
+    fi
+  done
+}
+
+tree_key_guard() {
+  case ",$TREE_KEY_STORES," in
+    *",$STORE,"*) eval "$1" ;;
+    *) true ;;
+  esac
+}
+
+step hose-tree-key-shard-fits "tree_key_guard tree_key_shard_fits_done" -- \
+  dispatch_tree_key_shards
+
+step study-a-hose-tree-keys \
+  "tree_key_guard 'tree_key_runs_done study-a \
+     $((K * $(n_items "$HOSE_RADII") * $(n_items "$STUDY_A_REPEATS")))'" -- \
+  dispatch_study_a_tree_keys
+
+step study-b-hose-tree-keys \
+  "tree_key_guard 'tree_key_runs_done study-b \
+     $((K * $(n_items "$STUDY_B_REPEATS"))) \$(hose_radius)'" -- \
+  run_study_b_tree_keys
+
 # --- Study A's figure -------------------------------------------------------
 #
 # The depth curve as a manuscript figure rather than as sweep's diagnostic

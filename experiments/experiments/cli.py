@@ -11,6 +11,7 @@ from pathlib import Path
 from experiments.config import load_config
 from experiments.cv import DEFAULT_MODEL_CACHE
 from experiments.data import DEFAULT_STORES_ROOT
+from experiments.predictors.hose_keys import KEY_KINDS as HOSE_KEY_KINDS
 from experiments.predictors.hose_keys import NUMBERINGS as HOSE_NUMBERINGS
 from experiments.runner import (
     DEFAULT_ARTIFACT_ROOT,
@@ -569,6 +570,7 @@ def _cmd_cv_fit_hose_shards(args: argparse.Namespace) -> int:
         n_shards=args.n_shards,
         radius=args.radius,
         numbering=args.numbering,
+        keys=args.keys,
         shard=args.shard,
         collapse=args.collapse,
         weight_by_collapse=args.weight_by_collapse,
@@ -594,6 +596,7 @@ def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
         normalization=args.normalization,
         method=args.method,
         numbering=args.numbering,
+        keys=args.keys,
         experiment=args.experiment,
         seed=args.seed,
         save_predictions=args.save_predictions,
@@ -877,6 +880,7 @@ def _cmd_matched_radius(args: argparse.Namespace) -> int:
             n_shards=args.n_shards,
             k=args.k,
             numbering=args.hose_numbering,
+            keys=args.hose_keys,
             stores_root=DEFAULT_STORES_ROOT,
             repeats=repeats,
             folds=folds,
@@ -1759,6 +1763,12 @@ def build_parser() -> argparse.ArgumentParser:
         "depends on the order the atoms are stored in; 'canonical' renumbers "
         "them canonically first. Each numbering is its own shard set"
     )
+    keys_help = (
+        "what the keys are cut from: 'code', the HOSE code's string; 'tree' "
+        "and 'closure-tree', the tree the code is written from, without and "
+        "with its ring closures, keyed with no order (predictors/hose_trees.py). "
+        "Each kind is its own shard set"
+    )
     p_cv_fit_hose = sub.add_parser(
         "cv-fit-hose-shards",
         help="fit the HOSE lookup once per shard AT ONE RADIUS -- unlike the "
@@ -1782,6 +1792,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cv_fit_hose.add_argument(
         "--numbering", choices=HOSE_NUMBERINGS, default="stored", help=numbering_help
+    )
+    p_cv_fit_hose.add_argument(
+        "--keys", choices=HOSE_KEY_KINDS, default="code", help=keys_help
     )
     p_cv_fit_hose.add_argument("--seed", type=int, default=0)
     p_cv_fit_hose.add_argument(
@@ -1831,6 +1844,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=HOSE_NUMBERINGS,
         default="stored",
         help=numbering_help + "; give the arm a --method of its own",
+    )
+    p_cv_run_hose.add_argument(
+        "--keys",
+        choices=HOSE_KEY_KINDS,
+        default="code",
+        help=keys_help + "; give the arm a --method of its own",
     )
     p_cv_run_hose.add_argument("--experiment", default="hose-cv")
     p_cv_run_hose.add_argument("--save-predictions", action="store_true")
@@ -2195,6 +2214,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=HOSE_NUMBERINGS,
         default="stored",
         help="the atom numbering the HOSE arm's shard fits were generated under",
+    )
+    p_matched.add_argument(
+        "--hose-keys",
+        choices=HOSE_KEY_KINDS,
+        default="code",
+        help="what the keys of the HOSE arm's shard fits were cut from",
     )
     p_matched.add_argument(
         "--variants",

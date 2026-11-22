@@ -364,3 +364,101 @@ def test_run_hose_cv_with_canonical_numbering_uses_its_own_shard_fits(tmp_path):
     for r in results:
         cv = json.loads((r.run_dir / "manifest.json").read_text())["config"]["cv"]
         assert cv["method"] == "hose-canonical"
+
+
+def _fit_keyed(mset, radius, keys):
+    from experiments.predictors.hose import HoseLookupPredictor
+
+    p = HoseLookupPredictor(max_radius=radius, keys=keys)
+    p.fit(mset, mset, rng=np.random.default_rng(0))
+    return p
+
+
+def test_a_state_carries_its_keys_through_disk(tmp_path):
+    from experiments.hose_artifact import load_hose_state, save_hose_state
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    assert _fit(mset, 2).model_state().keys == "code"
+    state = _fit_keyed(mset, 2, "closure-tree").model_state()
+    assert state.keys == "closure-tree"
+    path = tmp_path / "hose.npz"
+    save_hose_state(state, path)
+    assert load_hose_state(path).keys == "closure-tree"
+    save_hose_state(_fit(mset, 2).model_state(), path)
+    with np.load(path) as z:
+        assert "keys" not in z.files
+
+
+def test_merge_refuses_two_different_key_kinds():
+    from experiments.hose_artifact import merge_hose_states
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    with pytest.raises(ValueError, match="keys"):
+        merge_hose_states(
+            _fit_keyed(mset, 2, "tree").model_state(),
+            _fit_keyed(mset, 2, "closure-tree").model_state(),
+        )
+
+
+def test_a_predictor_adopts_the_keys_of_the_state_it_is_given():
+    from experiments.predictors.hose import HoseLookupPredictor
+
+    mset = synthetic_molecule_set(n_mol=6, seed=0)
+    fitted = _fit_keyed(mset, 3, "tree")
+    adopted = HoseLookupPredictor(max_radius=3)
+    adopted.set_model_state(fitted.model_state())
+    assert adopted.keys == "tree"
+    np.testing.assert_array_equal(
+        adopted.predict(mset).atom_value, fitted.predict(mset).atom_value
+    )
+
+
+def test_shard_fits_of_each_key_kind_are_named_apart():
+    from experiments.cv import hose_shard_batch_id
+
+    assert hose_shard_batch_id(5, "s01") == "fit-hose-r5-s01"
+    assert hose_shard_batch_id(5, "s01", "canonical") == "fit-hose-canonical-r5-s01"
+    assert hose_shard_batch_id(5, "s01", keys="tree") == "fit-hose-tree-r5-s01"
+    assert (
+        hose_shard_batch_id(5, "s01", keys="closure-tree")
+        == "fit-hose-closure-tree-r5-s01"
+    )
+
+
+def test_run_hose_cv_with_tree_keys_uses_its_own_shard_fits(tmp_path):
+    from experiments.cv import run_hose_cv, run_hose_shard_fits
+    from experiments.hose_artifact import load_hose_state
+
+    from experiments.tests.test_cv import _write_shard_store
+
+    n_shards, k = 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=20, n_shards=n_shards, seed=2
+    )
+    common: dict[str, Any] = {
+        "store": store,
+        "n_shards": n_shards,
+        "runs_root": tmp_path / "runs",
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+    run_hose_shard_fits(radius=2, **common)
+    with pytest.raises(FileNotFoundError, match="closure-tree"):
+        run_hose_cv(radii=[2], repeats=[0], k=k, keys="closure-tree", **common)
+
+    paths = run_hose_shard_fits(radius=2, keys="closure-tree", **common)
+    assert len(paths) == n_shards
+    for path in paths:
+        assert path.parent.name.startswith("fit-hose-closure-tree-r2-s")
+        assert load_hose_state(path).keys == "closure-tree"
+        manifest = json.loads((path.parent / "manifest.json").read_text())
+        assert manifest["keys"] == "closure-tree"
+    results = run_hose_cv(
+        radii=[2],
+        repeats=[0],
+        k=k,
+        keys="closure-tree",
+        method="hose-ctree",
+        **common,
+    )
+    assert len(results) == k

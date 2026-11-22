@@ -28,8 +28,11 @@ from experiments.predictors import register
 from experiments.predictors.base import Prediction, RawPrediction
 from experiments.predictors.hose_keys import (
     CANONICAL,
+    CLOSURE_TREE,
+    CODE,
     MAX_SPHERES,
     STORED,
+    check_keys,
     check_numbering,
     sphere_prefix,
 )
@@ -69,7 +72,11 @@ class HoseLookupPredictor:
     name: ClassVar[str] = "hose"
 
     def __init__(
-        self, max_radius: int = 5, n_min: int = 1, numbering: str = STORED
+        self,
+        max_radius: int = 5,
+        n_min: int = 1,
+        numbering: str = STORED,
+        keys: str = CODE,
     ) -> None:
         if max_radius < 1:
             raise ValueError(f"max_radius must be >= 1, got {max_radius}")
@@ -83,6 +90,12 @@ class HoseLookupPredictor:
         self.max_radius = max_radius
         self.n_min = n_min
         self.numbering = check_numbering(numbering)
+        self.keys = check_keys(keys)
+        if self.keys != CODE and self.numbering != STORED:
+            raise ValueError(
+                f"keys={self.keys!r} takes no numbering: a tree is the same "
+                f"under any numbering of the atoms, got {self.numbering!r}"
+            )
         self._tables: list[dict[str, tuple[float, int]]] | None = None
         # Per-key sum of y^2, kept separate from ``_tables`` (mean, count):
         # predict/n_min/the backoff loop read only ``_tables``, so this is
@@ -122,6 +135,20 @@ class HoseLookupPredictor:
                         mol, atom.GetIdx(), max_radius=self.max_radius
                     )
 
+    def _keys(self, mols: list[Any]) -> Iterator[list[str]]:
+        """Per atom, in the flattened atom order of ``mols``, its keys at
+        ``1 .. max_radius`` spheres: prefixes of one code, or trees."""
+        if self.keys == CODE:
+            for code in self._codes(mols):
+                yield [sphere_prefix(code, k) for k in range(1, self.max_radius + 1)]
+            return
+        from experiments.predictors.hose_trees import tree_keys
+
+        for mol in mols:
+            yield from tree_keys(
+                mol, self.max_radius, closure=self.keys == CLOSURE_TREE
+            )
+
     def fit(
         self, train: MoleculeSet, val: MoleculeSet, *, rng: np.random.Generator
     ) -> None:
@@ -138,10 +165,10 @@ class HoseLookupPredictor:
         counts: list[defaultdict[str, int]] = [
             defaultdict(int) for _ in range(self.max_radius + 1)
         ]
-        for value, code in zip(target, self._codes(train.mols), strict=True):
+        for value, keys in zip(target, self._keys(train.mols), strict=True):
             v = float(value)
             for k in range(1, self.max_radius + 1):
-                key = sphere_prefix(code, k)
+                key = keys[k - 1]
                 sums[k][key] += v
                 sumsqs[k][key] += v * v
                 counts[k][key] += 1
@@ -159,10 +186,10 @@ class HoseLookupPredictor:
             raise RuntimeError("fit must be called before predict")
         atom_value: NDArray[np.float64] = np.empty(test.n_atoms, dtype=np.float64)
         matched: NDArray[np.int64] = np.zeros(test.n_atoms, dtype=np.int64)
-        for i, code in enumerate(self._codes(test.mols)):
+        for i, keys in enumerate(self._keys(test.mols)):
             value, answered_at = self._global_mean, 0
             for k in range(self.max_radius, 0, -1):
-                entry = self._tables[k].get(sphere_prefix(code, k))
+                entry = self._tables[k].get(keys[k - 1])
                 if entry is not None and entry[1] >= self.n_min:
                     value, answered_at = entry[0], k
                     break
@@ -205,16 +232,19 @@ class HoseLookupPredictor:
             global_count=self._global_count,
             global_sumsq=self._global_sumsq,
             numbering=self.numbering,
+            keys=self.keys,
         )
 
     def set_model_state(self, state: Any) -> None:
         """Adopt an already-merged state, skipping ``fit``. The state's own
         radius wins: a state is only valid at the radius it was generated
         at (spec section 7), so silently reading it at another would score a
-        model nobody fitted. Its numbering wins for the same reason: the
-        queries must be spelled the way the stored keys were."""
+        model nobody fitted. Its numbering and its kind of keys win for the
+        same reason: the queries must be spelled the way the stored keys
+        were."""
         self.max_radius = state.max_radius
         self.numbering = state.numbering
+        self.keys = state.keys
         self._tables = [{}] + [
             {key: (s / c, c) for key, (s, _qq, c) in state.tables[k].items()}
             for k in range(1, state.max_radius + 1)

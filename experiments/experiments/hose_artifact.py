@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from experiments.predictors.hose_keys import STORED, check_numbering
+from experiments.predictors.hose_keys import CODE, STORED, check_keys, check_numbering
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,10 @@ class HoseState:
     ``numbering`` says how the atoms were numbered when the codes were
     generated (``predictors.hose_keys.NUMBERINGS``). A state saved before the
     field existed was generated in the stored order of the atoms.
+
+    ``keys`` says what the keys were cut from (``predictors.hose_keys.
+    KEY_KINDS``): codes, or the trees they are written from. A state saved
+    before the field existed holds codes.
     """
 
     max_radius: int
@@ -57,9 +61,11 @@ class HoseState:
     global_count: int
     global_sumsq: float | None = None
     numbering: str = STORED
+    keys: str = CODE
 
     def __post_init__(self) -> None:
         check_numbering(self.numbering)
+        check_keys(self.keys)
         if len(self.tables) != self.max_radius + 1:
             raise ValueError(
                 f"expected {self.max_radius + 1} tables (index 0 unused), "
@@ -98,6 +104,11 @@ def merge_hose_states(a: HoseState, b: HoseState) -> HoseState:
             f"numbering ({a.numbering} and {b.numbering}): one environment can "
             f"be spelled differently in each"
         )
+    if a.keys != b.keys:
+        raise ValueError(
+            f"cannot merge HOSE states with different keys ({a.keys} and "
+            f"{b.keys}): they are different vocabularies"
+        )
     tables: list[dict[str, tuple[float, float, int]]] = [{}]
     for k in range(1, a.max_radius + 1):
         merged = dict(a.tables[k])
@@ -125,6 +136,7 @@ def merge_hose_states(a: HoseState, b: HoseState) -> HoseState:
         global_count=a.global_count + b.global_count,
         global_sumsq=global_sumsq,
         numbering=a.numbering,
+        keys=a.keys,
     )
 
 
@@ -147,7 +159,7 @@ def save_hose_state(state: HoseState, path: str | Path) -> None:
     them, so a state built before they existed round-trips to the identical
     legacy file layout -- nothing that reads an old-format ``.npz`` needs to
     change. ``numbering`` is written only when it is not the stored order,
-    for the same reason.
+    and ``keys`` only when they are not codes, for the same reason.
     """
     arrays: dict[str, NDArray] = {
         "max_radius": np.asarray(state.max_radius, dtype=np.int64),
@@ -158,6 +170,8 @@ def save_hose_state(state: HoseState, path: str | Path) -> None:
         arrays["global_sumsq"] = np.asarray(state.global_sumsq, dtype=np.float64)
     if state.numbering != STORED:
         arrays["numbering"] = np.asarray(state.numbering, dtype=np.str_)
+    if state.keys != CODE:
+        arrays["keys"] = np.asarray(state.keys, dtype=np.str_)
     for k in range(1, state.max_radius + 1):
         table = state.tables[k]
         keys = list(table)
@@ -206,4 +220,5 @@ def load_hose_state(path: str | Path) -> HoseState:
             global_count=int(z["global_count"]),
             global_sumsq=float(z["global_sumsq"]) if has_moment else None,
             numbering=str(z["numbering"]) if "numbering" in z.files else STORED,
+            keys=str(z["keys"]) if "keys" in z.files else CODE,
         )

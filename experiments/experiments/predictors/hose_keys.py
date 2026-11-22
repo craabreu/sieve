@@ -53,6 +53,23 @@ def check_numbering(numbering: str) -> str:
     return numbering
 
 
+# What a key is cut from. "code" is a HOSE code's string, cut by
+# ``sphere_prefix``. "tree" and "closure-tree" are the tree the code is written
+# from, without and with its ring closures, keyed with no order at all
+# (``predictors.hose_trees``). They are three vocabularies: a state records its
+# kind, and states of different kinds do not merge.
+CODE = "code"
+TREE = "tree"
+CLOSURE_TREE = "closure-tree"
+KEY_KINDS: tuple[str, ...] = (CODE, TREE, CLOSURE_TREE)
+
+
+def check_keys(keys: str) -> str:
+    if keys not in KEY_KINDS:
+        raise ValueError(f"keys must be one of {KEY_KINDS}, got {keys!r}")
+    return keys
+
+
 def sphere_prefix(code: str, k: int) -> str:
     """The first ``k`` spheres of ``code``, as a prefix of it.
 
