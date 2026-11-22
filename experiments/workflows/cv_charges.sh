@@ -1109,6 +1109,128 @@ step study-b-hose-canonical \
      \$(hose_radius) $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
   run_study_b_hose_canonical
 
+# --- Sieve with HOSE's vocabulary --------------------------------------------
+#
+# Element and formal charge on the atoms, bond types on the bonds: the
+# information a HOSE code writes. Apart from the ring closure, the tree behind
+# a Sieve label of this vocabulary is the tree behind a HOSE code (measured on
+# 4,175 dash-qmugs molecules: identical classes at radii 1 to 5), so the arm
+# sits between the incumbent, which differs from it in the vocabulary alone,
+# and the HOSE arm, which differs from it in the ring closure, the string and
+# the estimator. The estimator is the incumbent's (continuation, no
+# shrinkage) and the fits are derived from SIEVE_PREDICTOR_PARAMS with only
+# the attributes swapped, so the vocabulary is the one thing that moves.
+#
+# Its own experiments rather than an entry in SIEVE_FEATURIZATIONS: Study C
+# runs on every store and its steps come after study-b-sieve, whose guard on
+# dash-qmugs reports undone (that store holds an eighth Study B arm the
+# workflow no longer declares). Placed here, `CV_UNTIL=study-b-sieve-hose-vocab`
+# reaches it without evaluating that guard.
+#
+# Run on VOCAB_STORES only (default dash-qmugs); on any other store the steps
+# are skipped without being evaluated, so a run there never starts them.
+VOCAB_STORES="${VOCAB_STORES:-dash-qmugs}"
+VOCAB_LABEL=el-fc-bt
+VOCAB_ATTRIBUTES=element,formal_charge
+VOCAB_EDGE_ATTRIBUTES=bond_type
+VOCAB_CODES="experiments/stores/$STORE/sieve-codes-$VOCAB_LABEL.json"
+VOCAB_CONFIG_LABEL="$VOCAB_LABEL-eb"   # the FIT applies empirical_bayes, as SIEVE_CONFIG_LABEL's does
+VOCAB_METHOD="sieve-$VOCAB_LABEL-continuation"
+VOCAB_STUDY_A=sieve-hose-vocab-cv-study-a
+VOCAB_STUDY_B=sieve-hose-vocab-cv-study-b
+VOCAB_VARIANT="[{\"method\": \"$VOCAB_METHOD\", \"class_estimator\": \"continuation\", \"shrinkage_weight\": null}]"
+VOCAB_PARAMS=$(
+  "$PYTHON" -c '
+import json, sys
+params = json.loads(sys.argv[1])
+params["attributes"] = sys.argv[2].split(",")
+params["edge_attributes"] = sys.argv[3].split(",")
+print(json.dumps(params))
+' "$SIEVE_PREDICTOR_PARAMS" "$VOCAB_ATTRIBUTES" "$VOCAB_EDGE_ATTRIBUTES"
+)
+
+fit_one_vocab_shard() {
+  "$PYTHON" -m experiments cv-fit-sieve-shards "$STORE" \
+    --n-shards "$N_SHARDS" --max-depth "$SIEVE_MAX_DEPTH" --shard "$1" \
+    --codes-path "$VOCAB_CODES" --config-label "$VOCAB_CONFIG_LABEL" \
+    --predictor-params "$VOCAB_PARAMS" \
+    $COLLAPSE_FLAG
+}
+export -f fit_one_vocab_shard
+export VOCAB_CODES VOCAB_CONFIG_LABEL VOCAB_PARAMS VOCAB_VARIANT VOCAB_METHOD
+export VOCAB_STUDY_B SIEVE_SELECTED_DEPTH MODEL_CACHE_FLAG SAVE_PREDICTIONS_FLAG
+
+dispatch_vocab_shards() {
+  all_shard_ids | xargs -P "$SIEVE_SHARD_JOBS" -n 1 \
+    bash -c 'fit_one_vocab_shard "$1"' --
+}
+
+run_study_a_vocab() {
+  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --depths "$SIEVE_DEPTHS" --repeats "$STUDY_A_REPEATS" \
+    --codes-path "$VOCAB_CODES" --config-label "$VOCAB_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
+    --predictor-params "$VOCAB_PARAMS" \
+    --variants "$VOCAB_VARIANT" \
+    $MODEL_CACHE_FLAG $COLLAPSE_FLAG \
+    --normalization equal_weighted --method "$VOCAB_METHOD" \
+    --experiment "$VOCAB_STUDY_A"
+}
+
+# One process per repeat, as in Study C's comparison: a repeat's merge
+# assembly peaks near 30 GB.
+VOCAB_JOBS="${VOCAB_JOBS:-3}"
+
+run_one_vocab_repeat() {
+  "$PYTHON" -m experiments cv-run-sieve "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --depths "$SIEVE_SELECTED_DEPTH" --repeats "$1" \
+    --codes-path "$VOCAB_CODES" --config-label "$VOCAB_CONFIG_LABEL" \
+    --fit-depth "$SIEVE_MAX_DEPTH" \
+    --predictor-params "$VOCAB_PARAMS" \
+    --variants "$VOCAB_VARIANT" \
+    $MODEL_CACHE_FLAG $COLLAPSE_FLAG \
+    --normalization equal_weighted --method "$VOCAB_METHOD" \
+    --experiment "$VOCAB_STUDY_B" \
+    $SAVE_PREDICTIONS_FLAG
+}
+export -f run_one_vocab_repeat
+
+dispatch_study_b_vocab() {
+  echo "$STUDY_B_REPEATS" | tr ',' '\n' \
+    | xargs -P "$VOCAB_JOBS" -n 1 bash -c 'run_one_vocab_repeat "$1"' --
+}
+
+# On a store outside VOCAB_STORES each guard is `true`, so the step reads as
+# done and nothing runs; the steps stay declared, so CV_UNTIL can name them
+# on any store.
+vocab_guard() {
+  case ",$VOCAB_STORES," in
+    *",$STORE,"*) eval "$1" ;;
+    *) true ;;
+  esac
+}
+
+step sieve-hose-vocab-codes "vocab_guard 'file_exists $VOCAB_CODES'" -- \
+  "$PYTHON" -m experiments build-sieve-codes "$STORE" \
+    --attributes "$VOCAB_ATTRIBUTES" \
+    --edge-attributes "$VOCAB_EDGE_ATTRIBUTES" --out "$VOCAB_CODES"
+
+step sieve-hose-vocab-shard-fits \
+  "vocab_guard 'shard_fits_count_is fit-sieve-$VOCAB_CONFIG_LABEL-w$SIEVE_MAX_DEPTH-s $N_SHARDS'" -- \
+  dispatch_vocab_shards
+
+step study-a-sieve-hose-vocab \
+  "vocab_guard 'method_runs_count_is $VOCAB_STUDY_A $VOCAB_METHOD \
+     $((K * $(n_items "$SIEVE_DEPTHS")))'" -- \
+  run_study_a_vocab
+
+step study-b-sieve-hose-vocab \
+  "vocab_guard 'method_depth_runs_count_is $VOCAB_STUDY_B $VOCAB_METHOD \
+     $SIEVE_SELECTED_DEPTH $((K * $(n_items "$STUDY_B_REPEATS")))'" -- \
+  dispatch_study_b_vocab
+
 # --- Study A's figure -------------------------------------------------------
 #
 # The depth curve as a manuscript figure rather than as sweep's diagnostic
