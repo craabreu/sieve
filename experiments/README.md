@@ -418,6 +418,25 @@ codes again, so give each (repeat, fold) its own process:
     uv run python -m experiments matched-radius spice-high-energy \
       --hose hose-cv-study-b:hose:5 --repeats 0 --folds 0
 
+The HOSE code generator leaves atoms that score alike in the order of their
+indices, so a code depends on the order in which a molecule's atoms are
+stored, and an atom whose code is spelled differently from that of its
+training class misses the class and backs off. `--numbering canonical`, on
+`cv-fit-hose-shards` and `cv-run-hose`, numbers the atoms canonically before
+the codes are generated, as the Java generators the package was ported from
+do. A numbering is its own shard set (`fit-hose-canonical-r<k>-s<nn>`), a
+fitted state records it, and states of different numberings do not merge;
+give the arm a method name of its own, and pass `--hose-numbering canonical`
+to `matched-radius` for it. `cv_charges.sh` runs this arm beside the stored
+one, as `hose-canonical` in `hose-canonical-cv-study-a` and
+`hose-canonical-cv-study-b`:
+
+    uv run python -m experiments cv-fit-hose-shards spice-high-energy \
+      --n-shards 50 --radius 5 --numbering canonical --collapse
+    uv run python -m experiments cv-run-hose spice-high-energy --n-shards 50 \
+      --radii 5 --repeats 0 --numbering canonical --method hose-canonical \
+      --experiment hose-canonical-cv-study-b --collapse --save-predictions
+
 `merge-states` generalizes the old `merge-shards` to either predictor, for a
 final held-out evaluation once all shards are fit:
 

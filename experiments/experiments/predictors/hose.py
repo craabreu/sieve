@@ -26,13 +26,51 @@ from numpy.typing import NDArray
 from experiments.data import MoleculeSet
 from experiments.predictors import register
 from experiments.predictors.base import Prediction, RawPrediction
-from experiments.predictors.hose_keys import MAX_SPHERES, sphere_prefix
+from experiments.predictors.hose_keys import (
+    CANONICAL,
+    MAX_SPHERES,
+    STORED,
+    check_numbering,
+    sphere_prefix,
+)
+
+
+def canonically_numbered(mol: Any) -> tuple[Any, list[int]]:
+    """``mol`` with its atoms renumbered canonically, and ``order``: atom
+    ``j`` of the copy is atom ``order[j]`` of ``mol``.
+
+    The ranking reads the constitution only. Stereochemistry, isotopes and
+    atom maps are left out because the codes do not carry them: with them in,
+    two stereoisomers could be numbered differently and an environment they
+    share be spelled in two ways. Atoms the ranking cannot tell apart are
+    ordered by their index; where they are equivalent by symmetry, which is
+    the usual case, either order gives the same codes.
+    """
+    from rdkit import Chem
+
+    rank = list(
+        Chem.CanonicalRankAtoms(
+            mol,
+            breakTies=True,
+            includeChirality=False,
+            includeIsotopes=False,
+            includeAtomMaps=False,
+        )
+    )
+    order = sorted(range(mol.GetNumAtoms()), key=rank.__getitem__)
+    copy = Chem.RenumberAtoms(mol, order)
+    # The generator asks for ring sizes even when it does not write them, and
+    # a renumbered molecule does not always keep its ring information.
+    Chem.FastFindRings(copy)
+    return copy, order
 
 
 class HoseLookupPredictor:
     name: ClassVar[str] = "hose"
 
-    def __init__(self, max_radius: int = 5, n_min: int = 1) -> None:
+    def __init__(
+        self, max_radius: int = 5, n_min: int = 1, numbering: str = STORED
+    ) -> None:
         if max_radius < 1:
             raise ValueError(f"max_radius must be >= 1, got {max_radius}")
         if max_radius > MAX_SPHERES:
@@ -44,6 +82,7 @@ class HoseLookupPredictor:
             raise ValueError(f"n_min must be >= 1, got {n_min}")
         self.max_radius = max_radius
         self.n_min = n_min
+        self.numbering = check_numbering(numbering)
         self._tables: list[dict[str, tuple[float, int]]] | None = None
         # Per-key sum of y^2, kept separate from ``_tables`` (mean, count):
         # predict/n_min/the backoff loop read only ``_tables``, so this is
@@ -60,15 +99,28 @@ class HoseLookupPredictor:
 
         Generated once at ``max_radius``; every shorter key is cut from it by
         ``sphere_prefix``. The generator is imported here, not at module
-        scope, so the harness loads without the optional dependency."""
+        scope, so the harness loads without the optional dependency.
+
+        Under the canonical numbering the generator is given a canonically
+        numbered copy of each molecule (see ``hose_keys.NUMBERINGS`` for why);
+        the codes are still yielded in the stored order of the atoms."""
         from hosegen import HoseGenerator
 
         generator = HoseGenerator()
         for mol in mols:
-            for atom in mol.GetAtoms():
-                yield generator.get_Hose_codes(
-                    mol, atom.GetIdx(), max_radius=self.max_radius
-                )
+            if self.numbering == CANONICAL:
+                copy, order = canonically_numbered(mol)
+                codes = [""] * len(order)
+                for j, i in enumerate(order):
+                    codes[i] = generator.get_Hose_codes(
+                        copy, j, max_radius=self.max_radius
+                    )
+                yield from codes
+            else:
+                for atom in mol.GetAtoms():
+                    yield generator.get_Hose_codes(
+                        mol, atom.GetIdx(), max_radius=self.max_radius
+                    )
 
     def fit(
         self, train: MoleculeSet, val: MoleculeSet, *, rng: np.random.Generator
@@ -152,14 +204,17 @@ class HoseLookupPredictor:
             global_sum=self._global_mean * self._global_count,
             global_count=self._global_count,
             global_sumsq=self._global_sumsq,
+            numbering=self.numbering,
         )
 
     def set_model_state(self, state: Any) -> None:
         """Adopt an already-merged state, skipping ``fit``. The state's own
         radius wins: a state is only valid at the radius it was generated
         at (spec section 7), so silently reading it at another would score a
-        model nobody fitted."""
+        model nobody fitted. Its numbering wins for the same reason: the
+        queries must be spelled the way the stored keys were."""
         self.max_radius = state.max_radius
+        self.numbering = state.numbering
         self._tables = [{}] + [
             {key: (s / c, c) for key, (s, _qq, c) in state.tables[k].items()}
             for k in range(1, state.max_radius + 1)

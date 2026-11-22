@@ -27,6 +27,31 @@ from __future__ import annotations
 DELIMITERS: list[str] = ["(", "/", "/", ")"] + ["/"] * 8
 MAX_SPHERES: int = len(DELIMITERS)
 
+# How the atoms of a molecule are numbered when its codes are generated.
+#
+# The generator orders the nodes of a sphere by a score and leaves nodes of
+# equal score in the order of their atom indices, so the code of an atom
+# depends on the order in which the molecule's atoms happen to be stored: the
+# same atom of the same molecule, stored in another order, can get another
+# code, miss its class and back off. The Java generators this one was ported
+# from (CDK's and NMRShiftDB's) break those ties by a canonical label instead.
+# "canonical" restores that: the atoms are renumbered canonically before the
+# generator sees them. "stored" is the generator as it comes, kept because the
+# runs made before this was known were generated that way.
+#
+# The two are different vocabularies, since one environment can be spelled
+# differently in each, so a fitted state records its numbering and states of
+# different numberings do not merge.
+STORED = "stored"
+CANONICAL = "canonical"
+NUMBERINGS: tuple[str, ...] = (STORED, CANONICAL)
+
+
+def check_numbering(numbering: str) -> str:
+    if numbering not in NUMBERINGS:
+        raise ValueError(f"numbering must be one of {NUMBERINGS}, got {numbering!r}")
+    return numbering
+
 
 def sphere_prefix(code: str, k: int) -> str:
     """The first ``k`` spheres of ``code``, as a prefix of it.

@@ -299,11 +299,20 @@ def sieve_shard_batch_id(config_label: str, depth: int, shard: str) -> str:
     return f"fit-sieve-{config_label}-w{depth}-{shard}"
 
 
-def hose_shard_batch_id(radius: int, shard: str) -> str:
+def hose_shard_batch_id(radius: int, shard: str, numbering: str = "stored") -> str:
     """Carries the radius, unlike Sieve's and DASH's: a HOSE fit is valid at
     exactly the radius it was generated at, so radius-3 and radius-5 shards
-    are different artifacts and must not share a directory name."""
-    return f"fit-hose-r{radius}-{shard}"
+    are different artifacts and must not share a directory name.
+
+    Carries the atom numbering too when it is not the stored order
+    (``predictors.hose_keys.NUMBERINGS``), for the same reason. The stored
+    order keeps the name it had before numbering was a choice, so the shard
+    fits already on disk are still found."""
+    from experiments.predictors.hose_keys import STORED, check_numbering
+
+    if check_numbering(numbering) == STORED:
+        return f"fit-hose-r{radius}-{shard}"
+    return f"fit-hose-{numbering}-r{radius}-{shard}"
 
 
 def cv_batch_id(*, repeat: int, fold: int, method: str, depth: int) -> str:
@@ -582,6 +591,7 @@ def fit_hose_shard(
     store: str,
     shard: str,
     radius: int,
+    numbering: str = "stored",
     atom_property: str = "MBIScharge",
     collapse: bool = False,
     weight_by_collapse: bool = False,
@@ -602,7 +612,7 @@ def fit_hose_shard(
     from experiments.config import TargetCfg
     from experiments.predictors.hose import HoseLookupPredictor
 
-    batch_id = hose_shard_batch_id(radius, shard)
+    batch_id = hose_shard_batch_id(radius, shard, numbering)
     existing = _shard_fit_done(runs_root, batch_id)
     if existing is not None:
         logger.info("hose shard %r (r%d) already fit; skipping", shard, radius)
@@ -624,7 +634,7 @@ def fit_hose_shard(
 
         train = collapse_molecule_set(train, weight_by_collapse=weight_by_collapse)
 
-    predictor = HoseLookupPredictor(max_radius=radius)
+    predictor = HoseLookupPredictor(max_radius=radius, numbering=numbering)
     t0 = time.perf_counter()
     predictor.fit(train, train, rng=np.random.default_rng(seed))
     fit_s = time.perf_counter() - t0
@@ -652,6 +662,7 @@ def fit_hose_shard(
                 "collapse": collapse,
                 "weight_by_collapse": weight_by_collapse,
                 "radius": radius,
+                "numbering": numbering,
                 "n_train_conformers": train.n_conformers,
                 "elapsed_s": {"fit": fit_s},
             },
@@ -667,6 +678,7 @@ def run_hose_shard_fits(
     store: str,
     n_shards: int,
     radius: int,
+    numbering: str = "stored",
     shard: str | None = None,
     collapse: bool = False,
     weight_by_collapse: bool = False,
@@ -683,6 +695,7 @@ def run_hose_shard_fits(
             store=store,
             shard=s,
             radius=radius,
+            numbering=numbering,
             collapse=collapse,
             weight_by_collapse=weight_by_collapse,
             seed=seed,
@@ -1265,6 +1278,7 @@ def run_hose_cv(
     k: int = 5,
     normalization: str = "equal_weighted",
     method: str = "hose",
+    numbering: str = "stored",
     save_predictions: bool = False,
     score_train: bool = False,
     collapse: bool = False,
@@ -1297,8 +1311,11 @@ def run_hose_cv(
     because one assembly serves every depth, which is the saving that does
     not exist here.
 
-    Requires ``run_hose_shard_fits`` at each requested radius; raises naming
-    the radius and shards that are missing.
+    Requires ``run_hose_shard_fits`` at each requested radius and under the
+    same ``numbering``; raises naming the radius and shards that are missing.
+    The two numberings are separate shard sets, and a run should carry a
+    ``method`` that tells them apart, since ``numbering`` itself is recorded
+    in the shard fits and their states, not in the run.
 
     Paired with ``equal_weighted`` normalization by default. This arm has no
     per-atom variance to weight by -- it is a plain mean lookup, no
@@ -1340,14 +1357,15 @@ def run_hose_cv(
     results: list[RunResult] = []
     for radius in radii:
         paths_or_none = {
-            sid: _shard_fit_done(runs_root, hose_shard_batch_id(radius, sid))
+            sid: _shard_fit_done(runs_root, hose_shard_batch_id(radius, sid, numbering))
             for sid in ids
         }
         missing = [sid for sid, path in paths_or_none.items() if path is None]
         if missing:
             raise FileNotFoundError(
-                f"no hose shard fit at radius {radius} for {missing}; run "
-                f"run_hose_shard_fits --radius {radius} first"
+                f"no hose shard fit at radius {radius} under the {numbering} "
+                f"numbering for {missing}; run run_hose_shard_fits --radius "
+                f"{radius} --numbering {numbering} first"
             )
         states = {
             sid: load_hose_state(path)

@@ -200,3 +200,52 @@ def test_fit_records_the_second_moment_and_leaves_predictions_alone():
         assert qq >= s * s / c - 1e-9
     p.set_model_state(state)
     np.testing.assert_allclose(p.predict(mset).atom_value, before)
+
+
+def _glycerol_twice():
+    """Glycerol and the same molecule with its first atom moved to the end,
+    each as a one-molecule set with distinct charges on the heavy atoms.
+    ``order[j]`` is the atom of the first that became atom ``j`` of the second.
+    """
+    from experiments.data import MoleculeSet
+    from rdkit import Chem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles("OCC(O)CO"))
+    order = [*range(1, mol.GetNumAtoms()), 0]
+    moved = Chem.RenumberAtoms(mol, order)
+    for i, atom in enumerate(mol.GetAtoms()):
+        atom.SetDoubleProp("MBIScharge", 0.1 * i)
+    for j, atom in enumerate(moved.GetAtoms()):
+        atom.SetDoubleProp("MBIScharge", 0.1 * order[j])
+    sets = [MoleculeSet(mols=[m], atom_property="MBIScharge") for m in (mol, moved)]
+    return sets[0], sets[1], order
+
+
+def test_stored_numbering_misses_classes_when_the_atoms_are_reordered():
+    """The defect the canonical numbering exists for: the generator breaks
+    ties by atom index, so the same atom of the same molecule gets another
+    code once the atoms are stored in another order, and the lookup backs
+    off. If this stops failing, the generator was fixed upstream."""
+    train, moved, _order = _glycerol_twice()
+    p = _predictor(max_radius=5)
+    p.fit(train, train, rng=np.random.default_rng(0))
+    p.predict(moved)
+    assert (p.matched_radius < 5).any()
+
+
+def test_canonical_numbering_answers_a_reordered_molecule_at_full_radius():
+    train, moved, order = _glycerol_twice()
+    p = _predictor(max_radius=5, numbering="canonical")
+    p.fit(train, train, rng=np.random.default_rng(0))
+    got = p.predict(moved).atom_value
+    assert (p.matched_radius == 5).all()
+    # Each prediction sits at the index of its own atom, not at the index the
+    # canonical numbering gave it: an atom's class holds that atom's charge.
+    expected = p.predict(train).atom_value[order]
+    np.testing.assert_allclose(got, expected, rtol=0, atol=1e-12)
+    assert len(set(np.round(expected, 9))) > 3
+
+
+def test_an_unknown_numbering_is_refused():
+    with pytest.raises(ValueError, match="numbering"):
+        _predictor(numbering="sorted")

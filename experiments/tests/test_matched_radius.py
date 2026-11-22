@@ -284,6 +284,38 @@ def test_a_hose_run_whose_predictions_disagree_is_refused(hose_cv):
         _record_hose(hose_cv)
 
 
+def test_a_canonically_numbered_hose_arm_is_read_from_its_own_shard_fits(hose_cv):
+    """The arm's shard fits are named apart, so the numbering has to be said;
+    the stored fits of the fixture are there too and must not be the ones
+    read."""
+    from experiments.breakdown import Arm
+    from experiments.cv import run_hose_cv, run_hose_shard_fits
+    from experiments.matched_radius import read_matched, record_hose_runs
+
+    run_hose_shard_fits(radius=2, numbering="canonical", **hose_cv)
+    run_hose_cv(
+        radii=[2],
+        repeats=[0],
+        k=5,
+        save_predictions=True,
+        experiment="hose-canonical-cv",
+        method="hose-canonical",
+        numbering="canonical",
+        **hose_cv,
+    )
+    written = record_hose_runs(
+        hose_cv["runs_root"],
+        Arm("hose-canonical-cv", "hose-canonical", 2),
+        store=hose_cv["store"],
+        n_shards=hose_cv["n_shards"],
+        k=5,
+        stores_root=hose_cv["stores_root"],
+        numbering="canonical",
+    )
+    assert len(written) == 5
+    assert all(read_matched(run) is not None for run in written)
+
+
 # --- the command ----------------------------------------------------------------
 
 

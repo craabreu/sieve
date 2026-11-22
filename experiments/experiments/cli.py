@@ -11,6 +11,7 @@ from pathlib import Path
 from experiments.config import load_config
 from experiments.cv import DEFAULT_MODEL_CACHE
 from experiments.data import DEFAULT_STORES_ROOT
+from experiments.predictors.hose_keys import NUMBERINGS as HOSE_NUMBERINGS
 from experiments.runner import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_RUNS_ROOT,
@@ -567,6 +568,7 @@ def _cmd_cv_fit_hose_shards(args: argparse.Namespace) -> int:
         store=args.store,
         n_shards=args.n_shards,
         radius=args.radius,
+        numbering=args.numbering,
         shard=args.shard,
         collapse=args.collapse,
         weight_by_collapse=args.weight_by_collapse,
@@ -591,6 +593,7 @@ def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
         k=args.k,
         normalization=args.normalization,
         method=args.method,
+        numbering=args.numbering,
         experiment=args.experiment,
         seed=args.seed,
         save_predictions=args.save_predictions,
@@ -873,6 +876,7 @@ def _cmd_matched_radius(args: argparse.Namespace) -> int:
             store=args.store,
             n_shards=args.n_shards,
             k=args.k,
+            numbering=args.hose_numbering,
             stores_root=DEFAULT_STORES_ROOT,
             repeats=repeats,
             folds=folds,
@@ -1749,6 +1753,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_cv_fit_sieve.add_argument("--allow-dirty", action="store_true")
     p_cv_fit_sieve.set_defaults(func=_cmd_cv_fit_sieve_shards)
 
+    numbering_help = (
+        "how the atoms are numbered when the codes are generated. The "
+        "generator breaks ties by atom index, so under 'stored' a code "
+        "depends on the order the atoms are stored in; 'canonical' renumbers "
+        "them canonically first. Each numbering is its own shard set"
+    )
     p_cv_fit_hose = sub.add_parser(
         "cv-fit-hose-shards",
         help="fit the HOSE lookup once per shard AT ONE RADIUS -- unlike the "
@@ -1769,6 +1779,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="fit only this one shard (e.g. s07) -- the seam an xargs -P "
         "dispatch uses to put one shard per process",
+    )
+    p_cv_fit_hose.add_argument(
+        "--numbering", choices=HOSE_NUMBERINGS, default="stored", help=numbering_help
     )
     p_cv_fit_hose.add_argument("--seed", type=int, default=0)
     p_cv_fit_hose.add_argument(
@@ -1813,6 +1826,12 @@ def build_parser() -> argparse.ArgumentParser:
         "variance, and equal_weighted is the scheme that does not use one",
     )
     p_cv_run_hose.add_argument("--method", default="hose")
+    p_cv_run_hose.add_argument(
+        "--numbering",
+        choices=HOSE_NUMBERINGS,
+        default="stored",
+        help=numbering_help + "; give the arm a --method of its own",
+    )
     p_cv_run_hose.add_argument("--experiment", default="hose-cv")
     p_cv_run_hose.add_argument("--save-predictions", action="store_true")
     p_cv_run_hose.add_argument("--score-train", action="store_true")
@@ -2170,6 +2189,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_matched.add_argument(
         "--hose", default=None, help="EXPERIMENT:METHOD:DEPTH of the HOSE arm"
+    )
+    p_matched.add_argument(
+        "--hose-numbering",
+        choices=HOSE_NUMBERINGS,
+        default="stored",
+        help="the atom numbering the HOSE arm's shard fits were generated under",
     )
     p_matched.add_argument(
         "--variants",
