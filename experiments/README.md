@@ -437,6 +437,25 @@ one, as `hose-canonical` in `hose-canonical-cv-study-a` and
       --radii 5 --repeats 0 --numbering canonical --method hose-canonical \
       --experiment hose-canonical-cv-study-b --collapse --save-predictions
 
+`--keys nmrshiftdb` runs NMRShiftDB's own lookup in place of a register built
+on HOSE codes. Its codes come from NMRShiftDB's Java code at revision 2699,
+which `experiments/nmrshiftdb/setup.sh` fetches and builds once into
+`experiments/external/nmrshiftdb2-r2699` (it needs `svn` and `conda`). Each
+training atom stores its plain code and its code with ring sizes at six
+spheres; a query atom's plain code is stripped one sphere at a time until a
+stored code begins with it, and the prediction is the mean of the distinct
+pairs of value and molecule so matched. `--fallback none` on `cv-run-hose`
+leaves an atom that matches nothing unpredicted, as NMRShiftDB does, and the
+metrics count it in `n_nan`. `cv_charges.sh` runs it as `nmrshiftdb` in
+`nmrshiftdb-cv-study-a` and `nmrshiftdb-cv-study-b`:
+
+    experiments/nmrshiftdb/setup.sh
+    uv run python -m experiments cv-fit-hose-shards dash-qmugs \
+      --n-shards 50 --radius 6 --keys nmrshiftdb --collapse
+    uv run python -m experiments cv-run-hose dash-qmugs --n-shards 50 \
+      --radii 6 --repeats 0 --keys nmrshiftdb --fallback none \
+      --method nmrshiftdb --experiment nmrshiftdb-cv-study-b --collapse
+
 `merge-states` generalizes the old `merge-shards` to either predictor, for a
 final held-out evaluation once all shards are fit:
 
