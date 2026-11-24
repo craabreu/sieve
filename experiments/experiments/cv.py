@@ -310,10 +310,17 @@ def hose_shard_batch_id(
     (``predictors.hose_keys.NUMBERINGS``), and the kind of keys when they are
     not codes (``predictors.hose_keys.KEY_KINDS``), for the same reason. The
     stored order and codes keep the name they had before either was a choice,
-    so the shard fits already on disk are still found."""
+    so the shard fits already on disk are still found.
+
+    Tree keys carry ``rooted`` as well: their states record the class of
+    each one-sphere key's central atom (``HoseState.roots``), which Sieve's
+    estimators need and the tree fits saved before it did not hold. The new
+    name keeps those older fits from being found, and counted, as current."""
     from experiments.predictors.hose_keys import (
+        CLOSURE_TREE,
         CODE,
         STORED,
+        TREE,
         check_keys,
         check_numbering,
     )
@@ -323,6 +330,8 @@ def hose_shard_batch_id(
         parts.append(numbering)
     if check_keys(keys) != CODE:
         parts.append(keys)
+    if keys in (TREE, CLOSURE_TREE):
+        parts.append("rooted")
     return "-".join([*parts, f"r{radius}", shard])
 
 
@@ -1296,6 +1305,7 @@ def run_hose_cv(
     numbering: str = "stored",
     keys: str = "code",
     fallback: str = "global",
+    estimator: str = "raw",
     save_predictions: bool = False,
     score_train: bool = False,
     collapse: bool = False,
@@ -1337,6 +1347,13 @@ def run_hose_cv(
     ``fallback`` is what answers an atom whose one-sphere key is unseen
     (``predictors.hose.FALLBACKS``): the global mean, or nothing, a NaN that
     the metrics exclude and count in ``n_nan``.
+
+    ``estimator`` is how a matched class is read
+    (``predictors.hose_estimators.ESTIMATORS``): its raw mean, as the
+    register does, or Sieve's continuation estimate without or with
+    empirical-Bayes shrinkage, which needs tree keys. Like ``keys``, it is
+    recorded only through ``method``. The analytic training curve assumes
+    the raw estimator and is skipped under the others.
 
     Paired with ``equal_weighted`` normalization by default. This arm has no
     per-atom variance to weight by -- it is a plain mean lookup, no
@@ -1427,7 +1444,12 @@ def run_hose_cv(
 
                 held_out = concat_molecule_sets([mset_by_shard[sid] for sid in group])
                 floors = _floors_for(store, group, held_out, stores_root=stores_root)
-                predictor = HoseLookupPredictor(max_radius=radius, fallback=fallback)
+                predictor = HoseLookupPredictor(
+                    max_radius=radius,
+                    keys=keys,
+                    fallback=fallback,
+                    estimator=estimator,
+                )
                 predictor.set_model_state(train_states[fold])
 
                 t0 = time.perf_counter()
@@ -1454,7 +1476,7 @@ def run_hose_cv(
                 # predating this column must keep working, just without the
                 # analytic columns, rather than crash the whole run.
                 analytic_stats = analytic_loo = None
-                if train_states[fold].has_second_moment:
+                if train_states[fold].has_second_moment and estimator == "raw":
                     from experiments.analytic import hose_train_stats
 
                     analytic_stats = hose_train_stats(train_states[fold], radius)

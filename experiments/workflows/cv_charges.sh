@@ -1393,7 +1393,7 @@ tree_key_shard_fits_done() {
   local keys r
   for keys in $TREE_KEY_KINDS; do
     for r in $(each_hose_radius); do
-      shard_fits_count_is "fit-hose-$keys-r$r-s" "$N_SHARDS" || return 1
+      shard_fits_count_is "fit-hose-$keys-rooted-r$r-s" "$N_SHARDS" || return 1
     done
   done
 }
@@ -1481,6 +1481,81 @@ step study-b-hose-tree-keys \
   "tree_key_guard 'tree_key_runs_done study-b \
      $((K * $(n_items "$STUDY_B_REPEATS"))) \$(hose_radius)'" -- \
   run_study_b_tree_keys
+
+# --- Sieve's estimators on the trees ----------------------------------------
+#
+# The same tree shard fits, read with Sieve's continuation estimate, without
+# and with empirical-Bayes shrinkage, instead of raw class means
+# (predictors/hose_estimators.py). On plain trees the chain of classes is that
+# of the Sieve label with element and formal charge on the atoms and bond types
+# on the bonds, so the plain-tree continuation arm reproduces the vocabulary
+# arm (sieve-el-fc-bt-continuation) sample by sample, which checks the whole
+# path; on closure trees the chain differs from it by the ring closure alone.
+# So
+#
+#   hose-tree-<est>  vs  hose-closure-tree-<est>   the closure under Sieve's
+#                                                  estimator <est>
+#
+# Same radii, folds and pinned Study B radius as the other HOSE arms.
+TREE_ESTIMATORS="continuation continuation-eb"
+
+run_one_tree_estimator_cv() {
+  # "<keys> <estimator> <radius> <repeat> <fold>" on one line, from xargs
+  local keys estimator radius repeat fold
+  read -r keys estimator radius repeat fold <<< "$1"
+  "$PYTHON" -m experiments cv-run-hose "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --radii "$radius" --folds "$fold" --repeats "$repeat" \
+    --normalization equal_weighted --keys "$keys" --estimator "$estimator" \
+    --method "hose-$keys-$estimator" $COLLAPSE_FLAG \
+    --experiment "hose-$keys-$estimator-cv-$HOSE_CV_STUDY" $HOSE_CV_EXTRA
+}
+export -f run_one_tree_estimator_cv
+
+dispatch_tree_estimator_cv() {
+  # <study> <extra flags> <radii> <repeats>, the last two space-separated
+  local keys estimator radius rep f
+  export HOSE_CV_STUDY="$1"
+  export HOSE_CV_EXTRA="$2"
+  for keys in $TREE_KEY_KINDS; do
+    for estimator in $TREE_ESTIMATORS; do
+      for radius in $3; do
+        for rep in $4; do
+          for f in $(seq 0 $((K - 1))); do
+            echo "$keys $estimator $radius $rep $f"
+          done
+        done
+      done
+    done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'run_one_tree_estimator_cv "$1"' -- {}
+}
+
+tree_estimator_runs_done() {
+  # <study> <expected runs per arm> [radius]
+  local keys estimator method
+  for keys in $TREE_KEY_KINDS; do
+    for estimator in $TREE_ESTIMATORS; do
+      method="hose-$keys-$estimator"
+      if [ -n "${3:-}" ]; then
+        method_depth_runs_count_is "$method-cv-$1" "$method" "$3" "$2" || return 1
+      else
+        method_runs_count_is "$method-cv-$1" "$method" "$2" || return 1
+      fi
+    done
+  done
+}
+
+step study-a-hose-tree-estimators \
+  "tree_key_guard 'tree_estimator_runs_done study-a \
+     $((K * $(n_items "$HOSE_RADII") * $(n_items "$STUDY_A_REPEATS")))'" -- \
+  dispatch_tree_estimator_cv study-a "" \
+    "$(echo "$HOSE_RADII" | tr ',' ' ')" "$(echo "$STUDY_A_REPEATS" | tr ',' ' ')"
+
+step study-b-hose-tree-estimators \
+  "tree_key_guard 'tree_estimator_runs_done study-b \
+     $((K * $(n_items "$STUDY_B_REPEATS"))) \$(hose_radius)'" -- \
+  dispatch_tree_estimator_cv study-b "$SAVE_PREDICTIONS_FLAG" \
+    "$(hose_radius)" "$(echo "$STUDY_B_REPEATS" | tr ',' ' ')"
 
 # --- Study A's figure -------------------------------------------------------
 #

@@ -1,11 +1,15 @@
 """A plain HOSE-code lookup baseline: the inference rule of Bremser's register
 and of NMRShiftDB, scored on this corpus.
 
-Backoff only. There is deliberately no continuation estimate and no shrinkage
-here; see docs/superpowers/specs/2026-09-16-hose-baseline-design.md §1. The arm
-answers what the incumbent lookup tradition does, and is not an ablation of
-Sieve -- HOSE codes carry bond order and aromaticity, which the fitted Sieve
-models in this series do not.
+Backoff only by default. There is deliberately no continuation estimate and
+no shrinkage in the register itself; see
+docs/superpowers/specs/2026-09-16-hose-baseline-design.md §1. The arm answers
+what the incumbent lookup tradition does, and is not an ablation of Sieve --
+HOSE codes carry bond order and aromaticity, which the fitted Sieve models in
+this series do not. With tree keys, ``estimator`` can instead read Sieve's
+continuation estimate, with or without empirical-Bayes shrinkage, over the
+classes of the trees (``predictors.hose_estimators``): on closure trees, that
+is Sieve with the ring closure of a HOSE code.
 
 Every key a fitted model uses is cut from a single code generated at its own
 ``max_radius``, never from codes generated separately per radius. A sweep over
@@ -26,6 +30,7 @@ from numpy.typing import NDArray
 from experiments.data import MoleculeSet
 from experiments.predictors import register
 from experiments.predictors.base import Prediction, RawPrediction
+from experiments.predictors.hose_estimators import RAW, check_estimator
 from experiments.predictors.hose_keys import (
     CANONICAL,
     CLOSURE_TREE,
@@ -33,6 +38,7 @@ from experiments.predictors.hose_keys import (
     MAX_SPHERES,
     NMRSHIFTDB,
     STORED,
+    TREE,
     check_keys,
     check_numbering,
     sphere_prefix,
@@ -88,6 +94,7 @@ class HoseLookupPredictor:
         numbering: str = STORED,
         keys: str = CODE,
         fallback: str = GLOBAL,
+        estimator: str = RAW,
     ) -> None:
         if max_radius < 1:
             raise ValueError(f"max_radius must be >= 1, got {max_radius}")
@@ -105,6 +112,21 @@ class HoseLookupPredictor:
         self.fallback = fallback
         self.numbering = check_numbering(numbering)
         self.keys = check_keys(keys)
+        self.estimator = check_estimator(estimator)
+        if self.estimator != RAW:
+            # A code's string does not say the charge of its central atom,
+            # which the attribute level of the Sieve chain needs.
+            if self.keys not in (TREE, CLOSURE_TREE):
+                raise ValueError(
+                    f"estimator={self.estimator!r} needs tree keys, got "
+                    f"keys={self.keys!r}"
+                )
+            if self.fallback != GLOBAL or self.n_min != 1:
+                raise ValueError(
+                    f"estimator={self.estimator!r} backs off as Sieve does, "
+                    f"to the global mean with n_min=1; got fallback="
+                    f"{self.fallback!r}, n_min={self.n_min}"
+                )
         if self.keys != CODE and self.numbering != STORED:
             raise ValueError(
                 f"keys={self.keys!r} takes no numbering: a tree is the same "
@@ -130,6 +152,11 @@ class HoseLookupPredictor:
         self._global_count: int = 0
         self._global_sumsq: float | None = None
         self._matched_radius: NDArray[np.int64] | None = None
+        # One-sphere key -> class of its central atom, for tree keys only
+        # (HoseState.roots), and Sieve's estimates when ``estimator`` asks
+        # for them, computed from the state on first use.
+        self._roots: dict[str, str] | None = None
+        self._estimates: list[dict[str, float]] | None = None
 
     def _codes(self, mols: list[Any]) -> Iterator[str]:
         """One full code per atom, in the flattened atom order of ``mols``.
@@ -186,6 +213,15 @@ class HoseLookupPredictor:
                 mol, self.max_radius, closure=self.keys == CLOSURE_TREE
             )
 
+    @staticmethod
+    def _root_keys(mols: list[Any]) -> Iterator[str]:
+        """Per atom, in the flattened atom order of ``mols``, its class before
+        any sphere (``hose_trees.root_keys``)."""
+        from experiments.predictors.hose_trees import root_keys
+
+        for mol in mols:
+            yield from root_keys(mol)
+
     def fit(
         self, train: MoleculeSet, val: MoleculeSet, *, rng: np.random.Generator
     ) -> None:
@@ -212,6 +248,14 @@ class HoseLookupPredictor:
                 sums[k][key] += v
                 sumsqs[k][key] += v * v
                 counts[k][key] += 1
+        self._roots = None
+        if self.keys in (TREE, CLOSURE_TREE):
+            self._roots = {}
+            for keys, root in zip(
+                self._keys(train.mols), self._root_keys(train.mols), strict=True
+            ):
+                self._roots[keys[0]] = root
+        self._estimates = None
         self._tables = [
             {key: (sums[k][key] / counts[k][key], counts[k][key]) for key in counts[k]}
             for k in range(self.max_radius + 1)
@@ -275,6 +319,8 @@ class HoseLookupPredictor:
     def predict(self, test: MoleculeSet) -> Prediction:
         if self._tables is None or self._global_mean is None:
             raise RuntimeError("fit must be called before predict")
+        if self.estimator != RAW:
+            return self._predict_estimated(test)
         atom_value: NDArray[np.float64] = np.empty(test.n_atoms, dtype=np.float64)
         matched: NDArray[np.int64] = np.zeros(test.n_atoms, dtype=np.int64)
         last_resort = self._global_mean if self.fallback == GLOBAL else np.nan
@@ -290,10 +336,39 @@ class HoseLookupPredictor:
         self._matched_radius = matched
         return Prediction(atom_value=atom_value)
 
+    def _predict_estimated(self, test: MoleculeSet) -> Prediction:
+        """Sieve's backoff over the chain of the trees: the deepest class
+        seen in training answers, with Sieve's estimate of it, down to the
+        class of the atom before any sphere (matched radius 0), and the
+        global mean below that (matched radius -1)."""
+        from experiments.predictors.hose_estimators import class_estimates
+
+        if self._estimates is None:
+            self._estimates = class_estimates(self.model_state(), self.estimator)
+        est = self._estimates
+        atom_value: NDArray[np.float64] = np.empty(test.n_atoms, dtype=np.float64)
+        matched: NDArray[np.int64] = np.empty(test.n_atoms, dtype=np.int64)
+        for i, (keys, root) in enumerate(
+            zip(self._keys(test.mols), self._root_keys(test.mols), strict=True)
+        ):
+            value, answered_at = self._global_mean, -1
+            for k, key in [(k, keys[k - 1]) for k in range(self.max_radius, 0, -1)] + [
+                (0, root)
+            ]:
+                if (v := est[k].get(key)) is not None:
+                    value, answered_at = v, k
+                    break
+            atom_value[i] = value
+            matched[i] = answered_at
+        self._matched_radius = matched
+        return Prediction(atom_value=atom_value)
+
     @property
     def matched_radius(self) -> NDArray[np.int64]:
         """The radius that answered each atom of the most recent ``predict``,
-        ``0`` where the global mean did. One entry per atom, in the same order
+        ``0`` where the global mean did -- under the raw estimator. Under
+        Sieve's estimators, ``0`` is the class of the atom before any sphere
+        and ``-1`` the global mean, as in Sieve. One entry per atom, in the same order
         as ``Prediction.atom_value``."""
         if self._matched_radius is None:
             raise RuntimeError("predict must be called before matched_radius")
@@ -325,6 +400,7 @@ class HoseLookupPredictor:
             global_sumsq=self._global_sumsq,
             numbering=self.numbering,
             keys=self.keys,
+            roots=self._roots,
         )
 
     def set_model_state(self, state: Any) -> None:
@@ -348,6 +424,13 @@ class HoseLookupPredictor:
         self._global_mean = state.global_mean
         self._global_count = state.global_count
         self._global_sumsq = state.global_sumsq
+        self._roots = state.roots
+        self._estimates = None
+        if self.estimator != RAW and self.keys not in (TREE, CLOSURE_TREE):
+            raise ValueError(
+                f"estimator={self.estimator!r} needs a tree state, got "
+                f"keys={self.keys!r}"
+            )
 
     def save_model_state(self, path: str | Any) -> None:
         from experiments.hose_artifact import save_hose_state

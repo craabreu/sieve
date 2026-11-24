@@ -53,6 +53,13 @@ class HoseState:
     ``keys`` says what the keys were cut from (``predictors.hose_keys.
     KEY_KINDS``): codes, or the trees they are written from. A state saved
     before the field existed holds codes.
+
+    ``roots`` maps every one-sphere key of a tree state to the class of its
+    central atom before any sphere (``predictors.hose_trees.root_keys``),
+    which a one-sphere tree determines. It is what Sieve's estimators need
+    beyond the tables: the attribute level of the chain, whose statistics are
+    sums of one-sphere statistics. ``None`` for a code state, and for a tree
+    state saved before the field existed.
     """
 
     max_radius: int
@@ -62,6 +69,7 @@ class HoseState:
     global_sumsq: float | None = None
     numbering: str = STORED
     keys: str = CODE
+    roots: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         check_numbering(self.numbering)
@@ -129,6 +137,17 @@ def merge_hose_states(a: HoseState, b: HoseState) -> HoseState:
         if a.global_sumsq is None or b.global_sumsq is None
         else a.global_sumsq + b.global_sumsq
     )
+    # None when either side lacks them, as for the second moment: a union
+    # would leave the other side's one-sphere keys without a root.
+    roots = None
+    if a.roots is not None and b.roots is not None:
+        roots = dict(a.roots)
+        for key, root in b.roots.items():
+            if roots.setdefault(key, root) != root:
+                raise ValueError(
+                    f"one-sphere key {key!r} has root {roots[key]!r} in one "
+                    f"state and {root!r} in the other"
+                )
     return HoseState(
         max_radius=a.max_radius,
         tables=tuple(tables),
@@ -137,6 +156,7 @@ def merge_hose_states(a: HoseState, b: HoseState) -> HoseState:
         global_sumsq=global_sumsq,
         numbering=a.numbering,
         keys=a.keys,
+        roots=roots,
     )
 
 
@@ -159,7 +179,8 @@ def save_hose_state(state: HoseState, path: str | Path) -> None:
     them, so a state built before they existed round-trips to the identical
     legacy file layout -- nothing that reads an old-format ``.npz`` needs to
     change. ``numbering`` is written only when it is not the stored order,
-    and ``keys`` only when they are not codes, for the same reason.
+    and ``keys`` only when they are not codes, for the same reason, as is
+    ``r1_root`` only when the state carries roots.
     """
     arrays: dict[str, NDArray] = {
         "max_radius": np.asarray(state.max_radius, dtype=np.int64),
@@ -185,6 +206,10 @@ def save_hose_state(state: HoseState, path: str | Path) -> None:
         if state.has_second_moment:
             arrays[f"r{k}_sumsq"] = np.asarray(
                 [table[key][1] for key in keys], dtype=np.float64
+            )
+        if k == 1 and state.roots is not None:
+            arrays["r1_root"] = np.asarray(
+                [state.roots[key] for key in keys], dtype=np.str_
             )
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,4 +246,12 @@ def load_hose_state(path: str | Path) -> HoseState:
             global_sumsq=float(z["global_sumsq"]) if has_moment else None,
             numbering=str(z["numbering"]) if "numbering" in z.files else STORED,
             keys=str(z["keys"]) if "keys" in z.files else CODE,
+            roots=(
+                {
+                    str(k): str(r)
+                    for k, r in zip(z["r1_keys"], z["r1_root"], strict=True)
+                }
+                if "r1_root" in z.files
+                else None
+            ),
         )
