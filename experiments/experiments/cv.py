@@ -1295,6 +1295,7 @@ def run_hose_cv(
     method: str = "hose",
     numbering: str = "stored",
     keys: str = "code",
+    fallback: str = "global",
     save_predictions: bool = False,
     score_train: bool = False,
     collapse: bool = False,
@@ -1332,6 +1333,10 @@ def run_hose_cv(
     are missing. Each (numbering, keys) is a separate shard set, and a run
     should carry a ``method`` that tells them apart, since neither is
     recorded in the run, only in the shard fits and their states.
+
+    ``fallback`` is what answers an atom whose one-sphere key is unseen
+    (``predictors.hose.FALLBACKS``): the global mean, or nothing, a NaN that
+    the metrics exclude and count in ``n_nan``.
 
     Paired with ``equal_weighted`` normalization by default. This arm has no
     per-atom variance to weight by -- it is a plain mean lookup, no
@@ -1422,7 +1427,7 @@ def run_hose_cv(
 
                 held_out = concat_molecule_sets([mset_by_shard[sid] for sid in group])
                 floors = _floors_for(store, group, held_out, stores_root=stores_root)
-                predictor = HoseLookupPredictor(max_radius=radius)
+                predictor = HoseLookupPredictor(max_radius=radius, fallback=fallback)
                 predictor.set_model_state(train_states[fold])
 
                 t0 = time.perf_counter()

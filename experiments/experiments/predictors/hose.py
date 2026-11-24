@@ -31,11 +31,21 @@ from experiments.predictors.hose_keys import (
     CLOSURE_TREE,
     CODE,
     MAX_SPHERES,
+    NMRSHIFTDB,
     STORED,
     check_keys,
     check_numbering,
     sphere_prefix,
+    stripped_code,
 )
+
+# What answers an atom whose one-sphere key is unseen. "global" is this
+# register's own last resort, the mean of every training atom. "none" leaves
+# the atom unpredicted (NaN), as NMRShiftDB does for every element but carbon,
+# whose fallback is a table of carbon-13 shifts with no counterpart here.
+GLOBAL = "global"
+NONE = "none"
+FALLBACKS: tuple[str, ...] = (GLOBAL, NONE)
 
 
 def canonically_numbered(mol: Any) -> tuple[Any, list[int]]:
@@ -77,6 +87,7 @@ class HoseLookupPredictor:
         n_min: int = 1,
         numbering: str = STORED,
         keys: str = CODE,
+        fallback: str = GLOBAL,
     ) -> None:
         if max_radius < 1:
             raise ValueError(f"max_radius must be >= 1, got {max_radius}")
@@ -87,8 +98,11 @@ class HoseLookupPredictor:
             )
         if n_min < 1:
             raise ValueError(f"n_min must be >= 1, got {n_min}")
+        if fallback not in FALLBACKS:
+            raise ValueError(f"fallback must be one of {FALLBACKS}, got {fallback!r}")
         self.max_radius = max_radius
         self.n_min = n_min
+        self.fallback = fallback
         self.numbering = check_numbering(numbering)
         self.keys = check_keys(keys)
         if self.keys != CODE and self.numbering != STORED:
@@ -96,6 +110,16 @@ class HoseLookupPredictor:
                 f"keys={self.keys!r} takes no numbering: a tree is the same "
                 f"under any numbering of the atoms, got {self.numbering!r}"
             )
+        if self.keys == NMRSHIFTDB:
+            from experiments.predictors.nmrshiftdb_codes import STORED_SPHERES
+
+            if max_radius > STORED_SPHERES:
+                raise ValueError(
+                    f"max_radius must be <= {STORED_SPHERES} with nmrshiftdb "
+                    f"keys, the spheres NMRShiftDB stores, got {max_radius}"
+                )
+            if n_min != 1:
+                raise ValueError("nmrshiftdb keys take no support threshold")
         self._tables: list[dict[str, tuple[float, int]]] | None = None
         # Per-key sum of y^2, kept separate from ``_tables`` (mean, count):
         # predict/n_min/the backoff loop read only ``_tables``, so this is
@@ -138,6 +162,19 @@ class HoseLookupPredictor:
     def _keys(self, mols: list[Any]) -> Iterator[list[str]]:
         """Per atom, in the flattened atom order of ``mols``, its keys at
         ``1 .. max_radius`` spheres: prefixes of one code, or trees."""
+        if self.keys == NMRSHIFTDB:
+            from experiments.predictors.nmrshiftdb_codes import nmrshiftdb_codes
+
+            for _plain, _ring, query in nmrshiftdb_codes(
+                mols, query_spheres=self.max_radius
+            ):
+                # An empty code is one the generator could not produce; ""
+                # is no stored key, so every sphere misses.
+                yield [
+                    stripped_code(query, k) if query else ""
+                    for k in range(1, self.max_radius + 1)
+                ]
+            return
         if self.keys == CODE:
             for code in self._codes(mols):
                 yield [sphere_prefix(code, k) for k in range(1, self.max_radius + 1)]
@@ -155,6 +192,9 @@ class HoseLookupPredictor:
         del val, rng
         if train.n_conformers == 0:
             raise ValueError("hose requires a non-empty train split")
+        if self.keys == NMRSHIFTDB:
+            self._fit_nmrshiftdb(train)
+            return
         target = train.atom_target
         sums: list[defaultdict[str, float]] = [
             defaultdict(float) for _ in range(self.max_radius + 1)
@@ -181,13 +221,65 @@ class HoseLookupPredictor:
         self._global_count = int(np.size(target))
         self._global_sumsq = float(np.sum(np.square(target)))
 
+    def _fit_nmrshiftdb(self, train: MoleculeSet) -> None:
+        """NMRShiftDB's register: every stored code of a training atom, plain
+        and with ring sizes, cut to ``1 .. max_radius`` spheres, and a class
+        holding the distinct pairs of value and molecule among the atoms whose
+        codes reach it.
+
+        A prediction from the database is the mean of ``SELECT DISTINCT
+        VALUE, SPECTRUM_ID, LABGROUP_ID ... WHERE HOSE_CODE like
+        '<query>%'`` over a table with one row per stored code of an atom.
+        One molecule here plays the part of one spectrum, and there are no lab
+        groups, so a value counts once per molecule and class however many of
+        its atoms, or of their two codes, carry it there. Pairs of different
+        molecules never coincide, so the classes are sums over molecules and
+        merge across shards exactly."""
+        from experiments.predictors.nmrshiftdb_codes import nmrshiftdb_codes
+
+        target = train.atom_target
+        rows = nmrshiftdb_codes(train.mols)
+        sums: list[defaultdict[str, float]] = [
+            defaultdict(float) for _ in range(self.max_radius + 1)
+        ]
+        sumsqs: list[defaultdict[str, float]] = [
+            defaultdict(float) for _ in range(self.max_radius + 1)
+        ]
+        counts: list[defaultdict[str, int]] = [
+            defaultdict(int) for _ in range(self.max_radius + 1)
+        ]
+        start = 0
+        for n in train.num_atoms:
+            seen: set[tuple[int, str, float]] = set()
+            for i in range(start, start + int(n)):
+                v = float(target[i])
+                for code in rows[i]:
+                    if not code:
+                        continue
+                    for k in range(1, self.max_radius + 1):
+                        seen.add((k, sphere_prefix(code, k), v))
+            for k, key, v in seen:
+                sums[k][key] += v
+                sumsqs[k][key] += v * v
+                counts[k][key] += 1
+            start += int(n)
+        self._tables = [
+            {key: (sums[k][key] / counts[k][key], counts[k][key]) for key in counts[k]}
+            for k in range(self.max_radius + 1)
+        ]
+        self._sumsq = [dict(sumsqs[k]) for k in range(self.max_radius + 1)]
+        self._global_mean = float(np.mean(target))
+        self._global_count = int(np.size(target))
+        self._global_sumsq = float(np.sum(np.square(target)))
+
     def predict(self, test: MoleculeSet) -> Prediction:
         if self._tables is None or self._global_mean is None:
             raise RuntimeError("fit must be called before predict")
         atom_value: NDArray[np.float64] = np.empty(test.n_atoms, dtype=np.float64)
         matched: NDArray[np.int64] = np.zeros(test.n_atoms, dtype=np.int64)
+        last_resort = self._global_mean if self.fallback == GLOBAL else np.nan
         for i, keys in enumerate(self._keys(test.mols)):
-            value, answered_at = self._global_mean, 0
+            value, answered_at = last_resort, 0
             for k in range(self.max_radius, 0, -1):
                 entry = self._tables[k].get(keys[k - 1])
                 if entry is not None and entry[1] >= self.n_min:

@@ -597,6 +597,7 @@ def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
         method=args.method,
         numbering=args.numbering,
         keys=args.keys,
+        fallback=args.fallback,
         experiment=args.experiment,
         seed=args.seed,
         save_predictions=args.save_predictions,
@@ -1850,6 +1851,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=HOSE_KEY_KINDS,
         default="code",
         help=keys_help + "; give the arm a --method of its own",
+    )
+    p_cv_run_hose.add_argument(
+        "--fallback",
+        choices=("global", "none"),
+        default="global",
+        help="what answers an atom whose one-sphere key is unseen: the "
+        "global mean (default) or nothing, a NaN that scoring excludes and "
+        "counts, as NMRShiftDB does for every element but carbon",
     )
     p_cv_run_hose.add_argument("--experiment", default="hose-cv")
     p_cv_run_hose.add_argument("--save-predictions", action="store_true")

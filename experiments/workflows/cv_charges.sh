@@ -1128,6 +1128,113 @@ step study-b-hose-canonical \
      \$(hose_radius) $((K * $(n_items "$STUDY_B_REPEATS")))" -- \
   run_study_b_hose_canonical
 
+# --- NMRShiftDB's own lookup -------------------------------------------------
+#
+# The HOSE arms above are a register built on HOSE codes; this one is the
+# prediction routine of NMRShiftDB itself, run on the same folds. Its codes
+# come from NMRShiftDB's own Java code (revision 2699; build it once with
+# experiments/nmrshiftdb/setup.sh): every training atom stores its plain CDK
+# code and its code with ring sizes at six spheres, a query atom's plain code
+# is stripped one sphere at a time until some stored code begins with it, and
+# the prediction is the mean of the distinct pairs of value and molecule so
+# matched (predictors/hose.py, `keys="nmrshiftdb"`). An atom that matches
+# nothing is left unpredicted (`--fallback none`), as NMRShiftDB leaves it;
+# scoring excludes it and counts it in n_nan, and the predictions of Study B
+# are saved so that any common subset can be scored afterwards.
+#
+# The stored codes do not depend on the radius, but the shard fits are still
+# one set per radius (fit-hose-nmrshiftdb-r<k>-s<nn>), so that the driver of
+# the other HOSE arms runs this one unchanged. Radii stop at six, the spheres
+# NMRShiftDB stores. Study B runs at NMRSHIFTDB_STUDY_B_RADII: five, the radius
+# of the other HOSE arms, and six, NMRShiftDB's own setting
+# (hosecode.spheres=6).
+NMRSHIFTDB_RADII="${NMRSHIFTDB_RADII:-1,2,3,4,5,6}"
+NMRSHIFTDB_STUDY_B_RADII="${NMRSHIFTDB_STUDY_B_RADII:-5,6}"
+NMRSHIFTDB_STUDY_A=nmrshiftdb-cv-study-a
+NMRSHIFTDB_STUDY_B=nmrshiftdb-cv-study-b
+NMRSHIFTDB_METHOD=nmrshiftdb
+# Java processes per Python process, for the codes of the held-out molecules.
+export NMRSHIFTDB_JOBS="${NMRSHIFTDB_JOBS:-2}"
+export NMRSHIFTDB_METHOD
+
+each_nmrshiftdb_radius() {
+  { echo "$NMRSHIFTDB_RADII"; echo "$NMRSHIFTDB_STUDY_B_RADII"; } | tr ',' '\n' \
+    | grep -v '^$' | sort -n -u
+}
+
+fit_one_nmrshiftdb_shard() {
+  "$PYTHON" -m experiments cv-fit-hose-shards "$STORE" \
+    --n-shards "$N_SHARDS" --radius "$HOSE_RADIUS" --shard "$1" \
+    --keys nmrshiftdb $COLLAPSE_FLAG
+}
+export -f fit_one_nmrshiftdb_shard
+
+nmrshiftdb_shard_fits_done() {
+  local r
+  for r in $(each_nmrshiftdb_radius); do
+    shard_fits_count_is "fit-hose-nmrshiftdb-r$r-s" "$N_SHARDS" || return 1
+  done
+}
+
+dispatch_nmrshiftdb_shards() {
+  local r
+  for r in $(each_nmrshiftdb_radius); do
+    echo "--- NMRShiftDB shard fits: radius $r ---"
+    export HOSE_RADIUS="$r"
+    all_shard_ids | xargs -P "$HOSE_SHARD_JOBS" -n 1 \
+      bash -c 'fit_one_nmrshiftdb_shard "$1"' --
+  done
+}
+
+step nmrshiftdb-shard-fits \
+  "nmrshiftdb_shard_fits_done" -- dispatch_nmrshiftdb_shards
+
+run_one_nmrshiftdb_cv() {
+  # "<radius> <repeat> <fold>" on one line, from xargs
+  local radius repeat fold
+  read -r radius repeat fold <<< "$1"
+  "$PYTHON" -m experiments cv-run-hose "$STORE" \
+    --n-shards "$N_SHARDS" --k "$K" \
+    --radii "$radius" --folds "$fold" --repeats "$repeat" \
+    --normalization equal_weighted --keys nmrshiftdb --fallback none \
+    --method "$NMRSHIFTDB_METHOD" $COLLAPSE_FLAG \
+    --experiment "$HOSE_CV_EXPERIMENT" $HOSE_CV_EXTRA
+}
+export -f run_one_nmrshiftdb_cv
+
+dispatch_nmrshiftdb_cv() {
+  # <experiment> <extra flags> <radii> <repeats>, the last two space-separated
+  local radius rep f
+  export HOSE_CV_EXPERIMENT="$1"
+  export HOSE_CV_EXTRA="$2"
+  for radius in $3; do
+    for rep in $4; do
+      for f in $(seq 0 $((K - 1))); do echo "$radius $rep $f"; done
+    done
+  done | xargs -P "$HOSE_CV_JOBS" -I{} bash -c 'run_one_nmrshiftdb_cv "$1"' -- {}
+}
+
+dispatch_study_a_nmrshiftdb() {
+  dispatch_nmrshiftdb_cv "$NMRSHIFTDB_STUDY_A" "" \
+    "$(echo "$NMRSHIFTDB_RADII" | tr ',' ' ')" "$(echo "$STUDY_A_REPEATS" | tr ',' ' ')"
+}
+
+step study-a-nmrshiftdb \
+  "method_runs_count_is $NMRSHIFTDB_STUDY_A $NMRSHIFTDB_METHOD \
+     $((K * $(n_items "$NMRSHIFTDB_RADII") * $(n_items "$STUDY_A_REPEATS")))" -- \
+  dispatch_study_a_nmrshiftdb
+
+dispatch_study_b_nmrshiftdb() {
+  dispatch_nmrshiftdb_cv "$NMRSHIFTDB_STUDY_B" "$SAVE_PREDICTIONS_FLAG" \
+    "$(echo "$NMRSHIFTDB_STUDY_B_RADII" | tr ',' ' ')" \
+    "$(echo "$STUDY_B_REPEATS" | tr ',' ' ')"
+}
+
+step study-b-nmrshiftdb \
+  "method_runs_count_is $NMRSHIFTDB_STUDY_B $NMRSHIFTDB_METHOD \
+     $((K * $(n_items "$NMRSHIFTDB_STUDY_B_RADII") * $(n_items "$STUDY_B_REPEATS")))" -- \
+  dispatch_study_b_nmrshiftdb
+
 # --- Sieve with HOSE's vocabulary --------------------------------------------
 #
 # Element and formal charge on the atoms, bond types on the bonds: the
