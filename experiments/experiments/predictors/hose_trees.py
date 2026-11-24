@@ -202,3 +202,11 @@ def tree_keys(mol: Any, radius: int, *, closure: bool) -> list[list[str]]:
         _chain(atoms[i].GetSymbol(), lambda k, i=i: digest(i, -1, "", k), radius)
         for i in range(len(atoms))
     ]
+
+
+def root_keys(mol: Any) -> list[str]:
+    """``roots[i]``: the class of atom ``i`` before any sphere, its element
+    symbol and hosegen's charge code. This is the attribute level of the Sieve
+    chain whose unrolled tree the plain tree is, and the parent of every
+    one-sphere tree, which determines it: the root of a tree carries both."""
+    return [f"{a.GetSymbol()}{_charge_code(a)}" for a in mol.GetAtoms()]

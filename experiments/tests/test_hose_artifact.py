@@ -418,10 +418,11 @@ def test_shard_fits_of_each_key_kind_are_named_apart():
 
     assert hose_shard_batch_id(5, "s01") == "fit-hose-r5-s01"
     assert hose_shard_batch_id(5, "s01", "canonical") == "fit-hose-canonical-r5-s01"
-    assert hose_shard_batch_id(5, "s01", keys="tree") == "fit-hose-tree-r5-s01"
+    # tree fits carry roots, and a name of their own apart from older fits
+    assert hose_shard_batch_id(5, "s01", keys="tree") == "fit-hose-tree-rooted-r5-s01"
     assert (
         hose_shard_batch_id(5, "s01", keys="closure-tree")
-        == "fit-hose-closure-tree-r5-s01"
+        == "fit-hose-closure-tree-rooted-r5-s01"
     )
 
 
@@ -449,7 +450,7 @@ def test_run_hose_cv_with_tree_keys_uses_its_own_shard_fits(tmp_path):
     paths = run_hose_shard_fits(radius=2, keys="closure-tree", **common)
     assert len(paths) == n_shards
     for path in paths:
-        assert path.parent.name.startswith("fit-hose-closure-tree-r2-s")
+        assert path.parent.name.startswith("fit-hose-closure-tree-rooted-r2-s")
         assert load_hose_state(path).keys == "closure-tree"
         manifest = json.loads((path.parent / "manifest.json").read_text())
         assert manifest["keys"] == "closure-tree"
@@ -462,3 +463,40 @@ def test_run_hose_cv_with_tree_keys_uses_its_own_shard_fits(tmp_path):
         **common,
     )
     assert len(results) == k
+
+
+def test_run_hose_cv_reads_tree_shard_fits_with_sieves_estimator(tmp_path):
+    """Tree shard fits carry their roots, so one shard set serves the raw
+    lookup and Sieve's estimators alike."""
+    from experiments.cv import run_hose_cv, run_hose_shard_fits
+    from experiments.hose_artifact import load_hose_state
+
+    from experiments.tests.test_cv import _write_shard_store
+
+    n_shards, k = 10, 5
+    store, stores_root = _write_shard_store(
+        tmp_path, n_mol=20, n_shards=n_shards, seed=2
+    )
+    common: dict[str, Any] = {
+        "store": store,
+        "n_shards": n_shards,
+        "runs_root": tmp_path / "runs",
+        "stores_root": stores_root,
+        "allow_dirty": True,
+    }
+    paths = run_hose_shard_fits(radius=2, keys="closure-tree", **common)
+    assert all(load_hose_state(p).roots for p in paths)
+    by_estimator = {}
+    for estimator in ("raw", "continuation", "continuation-eb"):
+        results = run_hose_cv(
+            radii=[2],
+            repeats=[0],
+            k=k,
+            keys="closure-tree",
+            estimator=estimator,
+            method=f"hose-ctree-{estimator}",
+            **common,
+        )
+        assert len(results) == k
+        by_estimator[estimator] = [r.metrics["rmse"] for r in results]
+    assert by_estimator["raw"] != by_estimator["continuation"]

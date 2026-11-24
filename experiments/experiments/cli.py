@@ -598,6 +598,7 @@ def _cmd_cv_run_hose(args: argparse.Namespace) -> int:
         numbering=args.numbering,
         keys=args.keys,
         fallback=args.fallback,
+        estimator=args.estimator,
         experiment=args.experiment,
         seed=args.seed,
         save_predictions=args.save_predictions,
@@ -1859,6 +1860,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="what answers an atom whose one-sphere key is unseen: the "
         "global mean (default) or nothing, a NaN that scoring excludes and "
         "counts, as NMRShiftDB does for every element but carbon",
+    )
+    p_cv_run_hose.add_argument(
+        "--estimator",
+        choices=("raw", "continuation", "continuation-eb"),
+        default="raw",
+        help="how a matched class is read: its raw mean (default), or "
+        "Sieve's continuation estimate without or with empirical-Bayes "
+        "shrinkage, with tree keys only; give the arm a --method of its own",
     )
     p_cv_run_hose.add_argument("--experiment", default="hose-cv")
     p_cv_run_hose.add_argument("--save-predictions", action="store_true")
